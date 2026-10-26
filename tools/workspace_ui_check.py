@@ -35,6 +35,7 @@ TOOLS = Path(__file__).resolve().parent
 sys.path.append(str(TOOLS))
 sys.path.append(str(TOOLS.parent / "tests"))
 import evidence  # noqa: E402
+import residue  # noqa: E402
 
 # The app checked: this checkout, or a package's app folder with --app.
 APP = evidence.app_folder(TOOLS.parent)
@@ -775,7 +776,7 @@ def checks(window, ws, mid, long_mid, grow_mid, fail_mid, report):
         report["listeners"] = listeners(tree)
         report["blocked_calls"] = list(shell.blocked_calls)
     except Exception as exc:
-        report["error"] = f"{type(exc).__name__}: {exc}"
+        report["error"] = error_text(exc)
     finally:
         window.destroy()
 
@@ -1273,6 +1274,12 @@ def logged_bridge(bridge, calls):
     return type("Api", (), {"__slots__": (), **names})()
 
 
+def error_text(exc):
+    """An error as a report carries it: without the home folder or the
+    Windows user name (P3; #419)."""
+    return residue.redact(f"{type(exc).__name__}: {exc}")
+
+
 def interpreter():
     """This Python as it was started, with its options (-I -B -X ... for a
     package), to start the locked scenario's own process the same way."""
@@ -1297,8 +1304,9 @@ def run_locked_child(args, flag, timeout=300, extra=()):
         except subprocess.TimeoutExpired:
             return {"error": f"the locked scenario did not finish in {timeout} s"}
         if not out.is_file():
-            return {"error": f"the locked scenario wrote no report (exit {done.returncode}): "
-                             f"{(done.stderr or '').strip()[-400:]}"}
+            return {"error": residue.redact(
+                f"the locked scenario wrote no report (exit {done.returncode}): "
+                f"{(done.stderr or '').strip()[-400:]}")}
         return json.loads(out.read_text(encoding="utf-8"))
 
 
@@ -1353,7 +1361,7 @@ def locked_checks(window, ws, calls, report):
                 break
             time.sleep(0.2)
     except Exception as exc:
-        report["error"] = f"{type(exc).__name__}: {exc}"
+        report["error"] = error_text(exc)
     finally:
         report["calls"] = list(calls)
         if "close_app" not in calls:         # the button did not close it: never hang
@@ -1370,7 +1378,7 @@ def locked_main(out):
         try:
             ws = locked_workspace(root)
         except Exception as exc:
-            report["error"] = f"{type(exc).__name__}: {exc}"
+            report["error"] = error_text(exc)
         else:
             holder = {}
             window = shell.create_window(
@@ -1380,7 +1388,7 @@ def locked_main(out):
             shell.run(locked_checks, (window, ws, calls, report),
                       storage_path=shell.storage_folder(ws.root))
             ws.close()
-    Path(out).write_text(json.dumps(report, indent=2), encoding="utf-8")
+    residue.write_guarded(out, report)
     return 0
 
 
@@ -1472,10 +1480,14 @@ def main():
     report["failed_meeting_problems"] = failed_meeting_problems(
         report.get("failed_meeting") or {})
     report["draft_problems"] = draft_scenario.draft_problems(report.get("drafts") or {})
-    out.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print(json.dumps(report, indent=2))
+    # Last: a report that would carry the Windows user name is written as a
+    # failing report naming only where (P3; review of 78f17ee, #419).
+    written = residue.write_guarded(out, report)
+    print(json.dumps(written, indent=2))
 
     bad = []
+    if written is not report:
+        bad.append(residue.CARRIES_USER_NAME)
     if report.get("error"):
         bad.append(report["error"])
     if [x for x in report.get("listeners", []) if x["proto"] == "TCP"]:

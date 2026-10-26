@@ -435,6 +435,72 @@ class StampTests(TempDir):
                          saved["evidence"]["package_sha256"])
         self.assertIn("tools_commit", saved["evidence"])
 
+    STAMP_KEYS = {"kind", "package_sha256", "package", "version", "commit", "release",
+                  "folder_matches_package", "folder_differences", "folder_differences_listed",
+                  "tools_commit", "tools_clean", "folder_matched_before", "check_passed",
+                  "pass"}
+
+    def test_the_stamp_holds_no_path(self):
+        # The stamp is added after a check's own name guard (review of
+        # 78f17ee, #419): its fields are pinned, and none holds the zip's, the
+        # folder's or any other absolute path, only names inside the package.
+        zpath, folder = make_package(self.root)
+        before = evidence.identity(zpath, folder)
+        (folder / "app/extra.py").write_bytes(b"")
+        (folder / "runtime/python.exe").write_bytes(b"changed")
+        ev = evidence.stamp({}, "perf", zpath, folder, True, before, run={"runs": 3})
+        self.assertEqual(self.STAMP_KEYS | {"run"}, set(ev))
+        self.assertEqual(self.STAMP_KEYS, set(evidence.stamp({}, "ui", zpath, folder, True)))
+        self.assertEqual(["added: app/extra.py", "changed: runtime/python.exe"],
+                         ev["folder_differences_listed"])
+        texts = [v for v in ev.values() if isinstance(v, str)]
+        texts += ev["folder_differences_listed"]
+        for text in texts:
+            with self.subTest(text=text):
+                for path in (self.root, folder, zpath, Path.home()):
+                    self.assertNotIn(str(path).lower(), text.lower())
+                    self.assertNotIn(path.as_posix().lower(), text.lower())
+                self.assertNotRegex(text, r"(^|[\s:])([A-Za-z]:[\\/]|[\\/]{2}|/(?!/))")
+
+    def test_a_stamped_report_that_would_carry_the_user_name_fails_without_it(self):
+        # Synthetic user. A file named after the user, left in the version
+        # folder, is listed by name in the stamp; a report body the check did
+        # not guard carries it too. Either way the stamped report is the
+        # guard's failing report, and the evidence fails (#419).
+        import residue
+        env = {"USERNAME": "Pat.Example", "USERPROFILE": "C:\\Users\\Pat.Example"}
+        zpath, folder = make_package(self.root)
+        before = evidence.identity(zpath, folder)
+        out = self.root / "ui.json"
+        for label, body, left in (("body", {"note": "run by Pat.Example"}, None),
+                                  ("stamp", {"api_surface": ["status"]},
+                                   "app/torchinductor_Pat.Example.py")):
+            with self.subTest(where=label):
+                if left:
+                    (folder / left).write_bytes(b"")
+                out.write_text(json.dumps(body), encoding="utf-8")
+                with mock.patch("builtins.print") as printed:
+                    ev = evidence.stamp_file(out, "ui", zpath, folder, True, before,
+                                             environ=env)
+                self.assertFalse(ev["pass"])
+                text = out.read_text(encoding="utf-8")
+                self.assertNotIn("pat.example", text.lower())
+                saved = json.loads(text)
+                self.assertEqual([residue.CARRIES_USER_NAME], saved["failed"])
+                self.assertEqual({"kind": "ui", "check_passed": False, "pass": False},
+                                 saved["evidence"])
+                self.assertIn(residue.CARRIES_USER_NAME, printed.call_args.args[0])
+                self.assertTrue(any(p.endswith("ui did not pass")
+                                    for p in evidence.check(ev["package_sha256"], [out])))
+        # The same report without the name is stamped as it was.
+        (folder / "app/torchinductor_Pat.Example.py").unlink()
+        out.write_text(json.dumps({"note": "run by someone"}), encoding="utf-8")
+        with mock.patch("builtins.print"):
+            ev = evidence.stamp_file(out, "ui", zpath, folder, True, before, environ=env)
+        saved = json.loads(out.read_text(encoding="utf-8"))
+        self.assertEqual((True, "run by someone", ev), (ev["pass"], saved["note"],
+                                                        saved["evidence"]))
+
     def test_an_unknown_kind_is_refused(self):
         zpath, folder = make_package(self.root)
         with self.assertRaises(ValueError):

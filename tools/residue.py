@@ -21,6 +21,9 @@
 #     folder or the Windows user name (P3: the reports are published with a
 #     release). guarded(): the last step before a report is written; a
 #     report that would still carry the user name anywhere fails instead.
+#     write_guarded(): guarded() and the write, for the performance, UI and
+#     accessibility reports (#419); evidence.stamp_file() guards the stamped
+#     report of every kind again.
 #   - dumps(): crash dumps under the throwaway base, counted by name and
 #     size (os.walk and stat only): no dump is ever opened, copied or
 #     printed. system_dumps() counts the signed-in user's own dump folders,
@@ -34,7 +37,9 @@ import os
 import re
 import secrets
 import time
+import unicodedata
 from pathlib import Path
+from urllib.parse import quote, quote_plus
 
 CHUNK = 8 << 20                       # bytes read at a time while scanning
 CONTROL_FOLDER = "residue-control"    # in the base folder, outside the profile
@@ -397,10 +402,23 @@ PLACEHOLDERS = ("<base>", "<home>", "<user>")
 CARRIES_USER_NAME = "report would carry the Windows user name"
 
 
+def _spellings(name):
+    """name as text can spell it before _escaped(): composed (NFC) and
+    decomposed (NFD: a macron as a letter and a combining mark, as a file
+    name from another system can arrive), and each of those URL-encoded (a
+    file:// address; %20 or + for a space). Review of 78f17ee (#419)."""
+    out = set()
+    for form in {name, unicodedata.normalize("NFC", name), unicodedata.normalize("NFD", name)}:
+        out |= {form, quote(form, safe=""), quote_plus(form, safe="")}
+    return out
+
+
 def _name_regex(names):
-    """One pattern for every _escaped() form of each name, as a word
-    (_NAME_BEFORE, _NAME_AFTER), case ignored; None when there is no name."""
-    forms = sorted({f for name in names for f in _escaped(name)}, key=len, reverse=True)
+    """One pattern for every _escaped() form of each of the names'
+    _spellings(), as a word (_NAME_BEFORE, _NAME_AFTER), case ignored; None
+    when there is no name."""
+    forms = sorted({f for name in names for spelt in _spellings(name) for f in _escaped(spelt)},
+                   key=len, reverse=True)
     if not forms:
         return None
     return re.compile(_NAME_BEFORE + "(?:" + "|".join(map(re.escape, forms)) + ")"
@@ -408,13 +426,29 @@ def _name_regex(names):
 
 
 def user_names(environ=None):
-    """The names a report must not carry: the Windows user name and the
-    profile folder's own name when it differs (each of 3 characters or
-    more, as redact() replaces)."""
+    """The names a report must not carry: the Windows user name, the profile
+    folder's own name when it differs, and that folder's short (8.3) name,
+    such as PATEXA~1, which a path can carry in place of the long one
+    (review of 78f17ee, #419); each of 3 characters or more, as redact()
+    replaces."""
     environ = os.environ if environ is None else environ
     profile = (environ.get("USERPROFILE") or "").rstrip("\\/")
-    names = {environ.get("USERNAME") or "", re.split(r"[\\/]", profile)[-1]}
+    names = {environ.get("USERNAME") or ""}
+    if profile:
+        for form in {profile, _short(profile).rstrip("\\/")}:
+            names.add(re.split(r"[\\/]", form)[-1])
     return {name for name in names if len(name) >= 3}
+
+
+# A long run of hex digits standing on its own: a SHA-256 (64), a commit id
+# (40) or a model's verification key (16, workspace/asr_engines.py). A user
+# name made only of the letters a to f (Abe, Dee) turns up inside one about
+# once in 200 hashes, so user_name_at() looks past these runs rather than
+# fail on them (review of 78f17ee, #419). Only a whole run counts: with a
+# letter or digit more on either side, or capitals and small letters mixed,
+# it is not one, so a name beside a hash (a slash, an underscore or a space
+# between) is still found.
+_HEX_RUN = re.compile(r"(?<![0-9A-Za-z])(?:[0-9a-f]{16,}|[0-9A-F]{16,})(?![0-9A-Za-z])")
 
 
 def redact(text, base=None, environ=None, error=True):
@@ -476,7 +510,8 @@ def user_name_at(report, environ=None):
     and string as decoded, and the report as json.dumps writes it. Each
     place is its key path, a list of keys and list positions; a key that
     carries the name is written as "<key>", so a path never holds the name.
-    The placeholders redact() writes are not the name."""
+    The placeholders redact() writes are not the name, and nor is a match
+    inside a long run of hex digits (_HEX_RUN: a hash or a commit id)."""
     rx = _name_regex(user_names(environ))
     if rx is None:
         return []
@@ -484,7 +519,7 @@ def user_name_at(report, environ=None):
     def carries(text):
         for placeholder in PLACEHOLDERS:
             text = text.replace(placeholder, " ")
-        return rx.search(text) is not None
+        return rx.search(_HEX_RUN.sub(" ", text)) is not None
 
     found = []
 
@@ -525,6 +560,17 @@ def guarded(report, environ=None):
                and not user_name_at([f], environ)]
     return {"when": report.get("when"), "pass": False,
             "failed": [CARRIES_USER_NAME, *earlier], "user_name_at": at}
+
+
+def write_guarded(path, report, environ=None):
+    """Write the report to path as JSON after guarded(), the last step, and
+    return what was written: the report itself, or the failing report put
+    in its place (P3). The performance, UI and accessibility checks write
+    every report with this (review of 78f17ee, #419); a caller tells the two
+    apart with `is`."""
+    written = guarded(report, environ)
+    Path(path).write_text(json.dumps(written, indent=2), encoding="utf-8")
+    return written
 
 
 def logs_scanned(scanned, n, prefix):

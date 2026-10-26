@@ -141,6 +141,50 @@ class ParentTests(unittest.TestCase):
                              "the environment probe failed (ValueError: damaged version.json)")
             self.assertEqual(saved["each_run"], [])
 
+    # A synthetic user (review of 78f17ee, #419): the report goes through the
+    # same name guard as the packaged checks' reports, and an error loses the
+    # home folder and the name first.
+    USER = {"USERNAME": "Pat.Example", "USERPROFILE": "C:\\Users\\Pat.Example"}
+
+    def guarded_run(self, **environment):
+        import os
+        import tempfile
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp:
+            report = Path(tmp) / "perf.json"
+            args = SimpleNamespace(quick=True, settle=0, window=0, runs=1, leak_minutes=0,
+                                   report=str(report), app=None)
+            idle = {s: {"cpu_percent_of_one_core": 0.2, "private_mb": 700}
+                    for s in perf_check.IDLE_STATES}
+            with mock.patch.dict(os.environ, self.USER), \
+                    mock.patch.object(perf_check, "environment", **environment), \
+                    mock.patch.object(perf_check, "display_watch", return_value=FakeDisplay()), \
+                    mock.patch.object(perf_check, "refresh_now", return_value=None), \
+                    mock.patch.object(perf_check, "one_run", return_value=idle), \
+                    mock.patch.object(perf_check, "BUDGETS", Path(tmp) / "none.json"), \
+                    mock.patch("builtins.print"):
+                rc = perf_check.parent(args)
+            return rc, report.read_text(encoding="utf-8")
+
+    def test_a_report_that_would_carry_the_user_name_fails_without_it(self):
+        import residue
+        rc, text = self.guarded_run(return_value={"note": "measured for Pat.Example"})
+        self.assertEqual(1, rc)
+        self.assertNotIn("pat.example", text.lower())
+        saved = json.loads(text)
+        self.assertEqual(([residue.CARRIES_USER_NAME], [["environment", "note"]]),
+                         (saved["failed"], saved["user_name_at"]))
+        rc, text = self.guarded_run(return_value={"note": "measured"})
+        self.assertEqual(0, rc)
+        self.assertEqual({"note": "measured"}, json.loads(text)["environment"])
+
+    def test_an_error_is_written_without_the_home_folder_or_the_name(self):
+        rc, text = self.guarded_run(side_effect=ValueError(
+            "C:\\Users\\Pat.Example\\v\\version.json is damaged"))
+        self.assertEqual(2, rc)
+        self.assertEqual("the environment probe failed (ValueError: <home>\\v\\version.json "
+                         "is damaged)", json.loads(text)["error"])
+
     def test_the_help_says_the_worker_unload_uses_the_slowest_run(self):
         self.assertIn("the slowest run", perf_check.HELP)
 

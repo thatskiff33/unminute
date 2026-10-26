@@ -807,7 +807,7 @@ def checks(window, ws, mid, report, modes=(None,), feed=None):
                 feed.end()
                 evaluate(window, WAIT + "await wait(800); return true;")
     except Exception as exc:
-        report["error"] = f"{type(exc).__name__}: {exc}"
+        report["error"] = error_text(exc)
     finally:
         window.destroy()
 
@@ -841,9 +841,16 @@ def locked_checks(window, report, modes=(None,)):
             audit["reflow"] = reflow(window)
             report["views"][view_key("locked screen", shown, modes)] = audit
     except Exception as exc:
-        report["error"] = f"{type(exc).__name__}: {exc}"
+        report["error"] = error_text(exc)
     finally:
         window.destroy()
+
+
+def error_text(exc):
+    """An error as a report carries it: without the home folder or the
+    Windows user name (P3; #419). tools/ is on the path by then (main())."""
+    import residue
+    return residue.redact(f"{type(exc).__name__}: {exc}")
 
 
 def locked_findings(locked):
@@ -885,12 +892,13 @@ def locked_main(out, modes):
         try:
             ws = locked_workspace(Path(tmp))
         except Exception as exc:
-            report["error"] = f"{type(exc).__name__}: {exc}"
+            report["error"] = error_text(exc)
         else:
             window = create_window(ws, "Accessibility check, locked (synthetic data)")
             shell.run(locked_checks, (window, report, modes))
             ws.close()
-    Path(out).write_text(json.dumps(report, indent=2), encoding="utf-8")
+    import residue
+    residue.write_guarded(out, report)
     return 0
 
 
@@ -945,9 +953,14 @@ def main():
     report.setdefault("views", {}).update(locked.get("views") or {})
     excepted = owner_exceptions(report)
     report["owner_exceptions"] = {"decision": DECISION_298, "findings": excepted}
-    out.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print(json.dumps(report, indent=2))
+    # Last: a report that would carry the Windows user name is written as a
+    # failing report naming only where (P3; review of 78f17ee, #419).
+    import residue
+    written = residue.write_guarded(out, report)
+    print(json.dumps(written, indent=2))
     problems = findings(report) + locked_findings(locked)
+    if written is not report:
+        problems.append(residue.CARRIES_USER_NAME)
     if excepted:
         print(f"OWNER EXCEPTIONS ({len(excepted)}, not failures; {DECISION_298}):\n- "
               + "\n- ".join(excepted))
