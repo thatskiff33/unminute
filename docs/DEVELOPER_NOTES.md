@@ -243,6 +243,13 @@ real time, and remove it when the cause is fixed.
   filled by one found command still left about 12 s a run) and waits until PowerShell
   writes it. Other one-off starts through
   `tools/windows_powershell.py` still pay the search once each.
+  Filling it took 41 to 50 s in each CI chunk with installer tests, so the chunk job keeps the
+  file between runs (#389): `actions/cache`, keyed by the runner image and the Windows
+  PowerShell version, restores it to the path named in `UNMINUTE_PSMODULE_CACHE`, and
+  `module_cache` uses a file found there as it is. A miss, or an empty file, is filled there
+  and saved by the first chunk to finish; a stale file is still correct, as PowerShell
+  analyses again any module whose file changed. Locally the variable is unset and nothing
+  changes.
 - **Windows PowerShell 5.1 reads a `.ps1` without a byte-order mark in the system code
   page.** Keep the installer scripts and their Pester tests ASCII; build other characters
   from their code points (`[char]0x212A`).

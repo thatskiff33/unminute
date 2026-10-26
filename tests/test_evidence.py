@@ -843,7 +843,12 @@ class PrepareTests(TempDir):
 
     def package_python(self, folder, *, flags=True):
         exe = str(folder / "runtime" / "python.exe")
-        f = types.SimpleNamespace(isolated=int(flags), dont_write_bytecode=int(flags))
+        # The real flags with the two the check reads replaced: a codec imported for the
+        # first time while this is in place (zipfile's cp437) reads others (#389).
+        real = {n: getattr(sys.flags, n) for n in dir(sys.flags)
+                if not n.startswith("_") and not callable(getattr(sys.flags, n))}
+        f = types.SimpleNamespace(**{**real, "isolated": int(flags),
+                                     "dont_write_bytecode": int(flags)})
         # A package's file is its __init__.py; a submodule's is its own .py.
         modules = {n: types.SimpleNamespace(__file__=str(
                        folder / "app" / n / "__init__.py" if "." not in n

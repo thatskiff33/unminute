@@ -110,11 +110,46 @@ jobs:
             --require-hashes --no-deps --find-links packaging/wheels `
             -r "$env:RUNNER_TEMP/test-requirements.txt"
           if ($LASTEXITCODE -ne 0) { exit 1 }
+      # Windows PowerShell's module analysis cache for the installer tests (#389):
+      # filling it took 45 to 60 s in each chunk with installer tests, so it is
+      # kept between runs, keyed by the runner image and the Windows PowerShell
+      # version. A miss, or a stale or empty file, only costs that time again
+      # (module_cache in tests/test_hardening.py). It holds module paths and the
+      # command names they export, nothing from the repository.
+      - name: Module analysis cache key
+        id: psmodules
+        shell: pwsh
+        run: |
+          $ps = powershell.exe -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          "key=psmodule-analysis-$env:ImageOS-$env:ImageVersion-$ps" >> $env:GITHUB_OUTPUT
+          "UNMINUTE_PSMODULE_CACHE=$env:RUNNER_TEMP\psmodules\ModuleAnalysisCache" >> $env:GITHUB_ENV
+      - name: Restore the module analysis cache
+        id: psmodules-restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}\psmodules\ModuleAnalysisCache
+          key: ${{ steps.psmodules.outputs.key }}
       - name: Unit tests (strict skips), this chunk
         env:
           CHUNK: ${{ matrix.chunk }}
           CHUNKS: ${{ strategy.job-total }}
         run: python tools/run_tests.py --strict-skips --chunk "$env:CHUNK/$env:CHUNKS"
+      # Saved only after a miss, by a chunk whose installer tests filled it; the
+      # first chunk to save wins and the others' saves are refused, harmlessly.
+      - name: Was the module analysis cache filled
+        id: psmodules-filled
+        if: ${{ !cancelled() && steps.psmodules-restore.outputs.cache-hit != 'true' }}
+        shell: pwsh
+        run: |
+          $file = Get-Item -LiteralPath $env:UNMINUTE_PSMODULE_CACHE -ErrorAction Ignore
+          "filled=$([bool]($file -and $file.Length -gt 0))" >> $env:GITHUB_OUTPUT
+      - name: Save the module analysis cache
+        if: ${{ !cancelled() && steps.psmodules-filled.outputs.filled == 'True' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}\psmodules\ModuleAnalysisCache
+          key: ${{ steps.psmodules.outputs.key }}
 
   windows-tests:
     # The required check. It passes only when every chunk above passed: a
