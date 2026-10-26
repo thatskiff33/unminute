@@ -57,8 +57,16 @@ jobs:
   coverage:
     # Report only: no floor yet (docs/RELEASE_STANDARD.md, section 7). Worker
     # and decoder child processes are not measured.
+    # Bounded at 45 minutes (#406, the #386 CI-time budget). It took 17 to 26 minutes in
+    # 34 of the 40 latest runs as at 27 October 2026 (4 were cancelled), but 1 h 41 min
+    # and 1 h 44 min in two (65774f2 and 9d246f7): only the installer tests (tests/test_hardening.py,
+    # tests/test_uninstall_offboard.py), which start Windows PowerShell, were slower, by 12
+    # to 21 times; every other module took its usual time, and the module analysis cache
+    # those tests fill (#332) was filled as usual (48 and 50 s). The cause is not known.
+    # A run past the bound fails, which blocks nothing, and frees the runner.
     name: Coverage (report only)
     runs-on: windows-2025
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
