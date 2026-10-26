@@ -205,11 +205,30 @@ class AssessTests(unittest.TestCase):
         blockers, _ = dev_status.assess(stuck, REQUIRED, ["Review of 1234567"])
         found = " | ".join(blockers)
         for text in ("required check failing: Ruff",
-                     "required check still running: Unit tests (Windows)",
                      "no 'Commit reviewed:' line names the head commit abcdef1",
                      "merge state DIRTY", "range-diff"):
             with self.subTest(text=text):
                 self.assertIn(text, found)
+
+    def test_a_running_required_check_does_not_stop_arming(self):
+        # 26 Oct 2026: review while CI runs, then arm auto-merge; GitHub waits for the
+        # required checks, so a running one is a note, not a blocker.
+        oid = "abcdef1234567890abcdef1234567890abcdef12"
+        rollup = [check("Ruff", "SUCCESS"), check("Unit tests (Windows)", None, "IN_PROGRESS")]
+        blockers, info = dev_status.assess(pr(9, isDraft=True, mergeStateStatus="BLOCKED",
+                                              headRefOid=oid, statusCheckRollup=rollup),
+                                           REQUIRED, [f"Commit reviewed: {oid}"])
+        self.assertEqual([], blockers)
+        joined = " | ".join(info)
+        self.assertIn("required check still running: Unit tests (Windows)", joined)
+        self.assertIn(f"--auto --squash --match-head-commit {oid}", joined)
+
+    def test_an_armed_pr_says_to_disarm_before_pushing(self):
+        _, info = dev_status.assess(pr(9, statusCheckRollup=self.GREEN,
+                                       autoMergeRequest={"mergeMethod": "SQUASH"}),
+                                    REQUIRED, self.REVIEW)
+        self.assertIn("--disable-auto", " ".join(info))
+        self.assertNotIn("auto-merge not armed", " ".join(info))
 
     def test_github_blocking_for_a_reason_not_read_here_is_reported(self):
         for merge, text in (("BLOCKED", "unresolved review threads"),
