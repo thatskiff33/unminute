@@ -1474,7 +1474,8 @@ class PackagedCheckTests(TempDir):
                         "audit_files": 1, "verify_audit": "ok"},
             "recording": {"consent": "asked and recorded", "recording_windows": 8,
                           "key_while_recording": "opens", "stopped": True, "imported": 1,
-                          "key_after_import": "missing", "discarded": True,
+                          "key_after_import": "missing", "key_before_discard": "opens",
+                          "discarded": True,
                           "key_after_discard": "missing", "recordings_waiting": 0,
                           "other_questions": [],
                           "during": {"seconds": 8.1, "windows": 8, "control_missed": [],
@@ -1489,7 +1490,14 @@ class PackagedCheckTests(TempDir):
                                                  "Unminute/workspace/workspace.db"],
                          "found": {}, "unreadable": [], "unexpected_files": [],
                          "logs_scanned": ["Unminute/workspace/logs/app.log"],
-                         "temp_files_left": 0, "content_backups": []},
+                         "temp_files_left": [],
+                         "redirected_files_left": {"TEMP": [], "APPDATA": [],
+                                                   "USERPROFILE": []},
+                         "left_unexplained": [],
+                         "outside_new": {"model_cache": ["whisper/.verified/small-ab.json"],
+                                         "LocalLow": []},
+                         "outside_unexplained": [], "outside_unreadable": [],
+                         "content_backups": []},
             "dumps": {"dumps": 0, "crash_files": 0},
             "idle_window": {"window_running": True, "processes": 7,
                             "cpu_percent_of_one_core": 1.5, "working_set_mb": 484}}
@@ -1558,6 +1566,9 @@ class PackagedCheckTests(TempDir):
             "recording confirmed, then its key erased": [
                 self.changed("recording", key_after_import="opens"),
                 self.changed("recording", key_after_discard="opens"),
+                # "missing" means something only if the same id opened first.
+                self.changed("recording", key_before_discard="missing"),
+                self.changed("recording", key_before_discard=None),
                 self.changed("recording", key_while_recording="missing"),
                 self.changed("recording", recordings_waiting=1),
                 self.changed("recording", consent=None),
@@ -1581,7 +1592,20 @@ class PackagedCheckTests(TempDir):
                 self.changed("residual", unreadable=["Unminute/workspace/workspace.db"]),
                 self.changed("residual", content_backups=["x.bak"])],
             "only the workspace's own files left": [
-                self.changed("residual", unexpected_files=["stray.bin"])],
+                self.changed("residual", unexpected_files=["stray.bin"]),
+                self.changed("residual", unexpected_files=["workspace/media/"])],
+            # TEMP leftovers are named and fail unless explained (review of #335).
+            "nothing left in TEMP, APPDATA or the user folder": [
+                self.changed("residual", left_unexplained=["TEMP/tmpab12.wav"]),
+                self.changed("residual", left_unexplained=["USERPROFILE/.cache/x.bin"]),
+                self.changed("residual", temp_files_left=3),
+                self.changed("residual", redirected_files_left=None)],
+            # The real LocalLow and model cache, by name (the owner's decision,
+            # 26 Oct 2026).
+            "nothing new outside the base unexplained": [
+                self.changed("residual", outside_unexplained=["LocalLow/SomeApp/x.dat"]),
+                self.changed("residual", outside_unreadable=["model_cache/gpu/"]),
+                self.changed("residual", outside_new=None)],
             "logs scanned": [self.changed("residual", logs_scanned=[])],
             "no crash dumps": [self.changed("dumps", dumps=1),
                                self.changed("dumps", crash_files=1)],
@@ -1725,7 +1749,7 @@ class CrashVerdictTests(unittest.TestCase):
                            blockers=["meetings"])
     CLEAN = {"files": ["crash/Unminute/workspace/workspace.db"], "found": {},
              "unreadable": [], "control_missed": [], "unexpected_files": [],
-             "logs_scanned": 2}
+             "temp_files": [], "left_unexplained": [], "logs_scanned": 2}
 
     def good(self):
         k, clean = self.KILL, self.CLEAN
@@ -1750,15 +1774,19 @@ class CrashVerdictTests(unittest.TestCase):
                              "state": crash_state(meetings=0, audio_files=0, blockers=[],
                                                   audio_key=None, audio_removed=None),
                              "windows": 8, "control_missed": [], "found": {},
-                             "unreadable": []},
+                             "unreadable": [], "partial_left": 0, "unexpected_files": [],
+                             "temp_files": [], "left_unexplained": []},
             "recording_crash": {"seconds_at_kill": 12.3, "killed": True,
                                 "kept": {"recovered": True, "seconds": 10.0, "imported": 1,
+                                         "key_before_keep": "opens",
                                          "key_after_import": "missing"},
                                 "state": crash_state(), "windows": 8, "control_missed": [],
                                 "found": {}, "unreadable": [], "partial_chunks_left": 0},
             "token_removal": {"saved": True, "present_after_removal": False,
                               "loaded_after_removal": False},
             "clipboard_sequence_unchanged": True,
+            "outside": {"new": {"model_cache": [], "LocalLow": []}, "unexplained": [],
+                        "unreadable": []},
             "dumps": {"dumps": 0, "crash_files": 6}}))
 
     def setUp(self):
@@ -1799,11 +1827,27 @@ class CrashVerdictTests(unittest.TestCase):
                 with_(("import_crash", "state", "meetings"), 1),
                 with_(("import_crash", "state", "blockers"), ["media"]),
                 with_(("import_crash", "found"), {"window_4": ["import/Unminute/x"]}),
-                with_(("import_crash", "control_missed"), ["window_4"])],
+                with_(("import_crash", "control_missed"), ["window_4"]),
+                # Shown directly, not from the app's own folder removal.
+                with_(("import_crash", "partial_left"), 1),
+                with_(("import_crash", "partial_left"), None),
+                with_(("import_crash", "unexpected_files"), ["workspace/media/x/a.uma"])],
+            "nothing left in TEMP, APPDATA or the user folder": [
+                with_(("final_cleanup_crash", "residue", "left_unexplained"),
+                      ["TEMP/tmp1.bin"]),
+                with_(("hold_race", "residue", "left_unexplained"), ["APPDATA/x"]),
+                with_(("hold_race", "residue", "temp_files"), None),
+                with_(("import_crash", "left_unexplained"), ["TEMP/tmp2.bin"])],
+            "nothing new outside the base unexplained": [
+                with_(("outside", "unexplained"), ["LocalLow/SomeApp/x.dat"]),
+                with_(("outside", "unreadable"), ["model_cache/gpu/"]),
+                with_(("outside", "new"), None)],
             "recording kept after a crash, nothing plain left": [
                 with_(("recording_crash", "kept", "recovered"), False),
                 with_(("recording_crash", "kept", "seconds"), 2.0),
                 with_(("recording_crash", "kept", "key_after_import"), "opens"),
+                # "missing" means something only if the key opened before Keep.
+                with_(("recording_crash", "kept", "key_before_keep"), "missing"),
                 with_(("recording_crash", "state", "blockers"), ["meetings", "recordings"]),
                 with_(("recording_crash", "found"), {"window_1": ["recording/Unminute/x"]}),
                 with_(("recording_crash", "partial_chunks_left"), 1)],
@@ -1821,6 +1865,11 @@ class CrashVerdictTests(unittest.TestCase):
         self.assertEqual(["every kill landed on a live process",
                           "every cleanup landing consistent, then finished"],
                          self.tool.verdict(r))
+
+    def test_the_recording_chunks_counted_are_the_recordings_folder_s_only(self):
+        source = Path(self.tool.__file__).read_text(encoding="utf-8")
+        self.assertIn('"Unminute" / "workspace" / RECORDINGS', source)
+        self.assertNotIn('"profile"].rglob("*.tmp")', source)
 
     def test_the_import_kill_waits_until_every_scan_window_is_written(self):
         # The kill size follows the encrypted audio's layout, and the blocks
@@ -1863,6 +1912,86 @@ class CrashVerdictTests(unittest.TestCase):
                     crash_state(audio_key="damaged"), crash_state(audio_key=None)):
             with self.subTest(state=bad):
                 self.assertEqual("inconsistent", landing(bad))
+
+
+class EvidenceChildrenTests(unittest.TestCase):
+    """The packaged checks' children (review of #335): the throwaway
+    workspace sits where the app's own would, so each passes an audit
+    mirror that drops the Windows Event Log copy; and error text copied
+    into a report has the base path, the home folder and the user name
+    replaced (P3)."""
+
+    def scripts(self):
+        import packaged_check
+        import packaged_crash_check
+        return {"LIFECYCLE": packaged_check.LIFECYCLE, "CHILD": packaged_crash_check.CHILD}
+
+    def test_every_workspace_a_child_opens_has_a_file_only_audit_mirror(self):
+        import ast
+        for name, source in self.scripts().items():
+            tree = ast.parse(source)
+            calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                     and isinstance(n.func, ast.Name) and n.func.id == "Workspace"]
+            with self.subTest(script=name):
+                self.assertTrue(calls)
+                for call in calls:
+                    mirror = {k.arg: k.value for k in call.keywords}.get("audit_mirror")
+                    self.assertIsInstance(mirror, ast.Call)
+                    self.assertEqual("FileOnlyMirror", mirror.func.id)
+
+    def test_the_file_only_mirror_reports_nothing(self):
+        import ast
+        for name, source in self.scripts().items():
+            tree = ast.parse(source)
+            node = next(n for n in tree.body
+                        if isinstance(n, ast.ClassDef) and n.name == "FileOnlyMirror")
+            space = {}
+            exec(compile(ast.Module([node], []), name, "exec"), space)
+            mirror = space["FileOnlyMirror"]()
+            with self.subTest(script=name), \
+                    mock.patch("ctypes.WinDLL", side_effect=AssertionError("Windows called"),
+                               create=True):
+                self.assertIsNone(mirror.report(1900, 4, "app_start"))
+            # An audit log with it writes its own file and gives the mirror
+            # each record, which goes nowhere.
+            from workspace import audit
+            with tempfile.TemporaryDirectory() as tmp:
+                log = audit.AuditLog(Path(tmp) / "audit", mirror=mirror, new_workspace=True)
+                log.record("app_start", schema=2, version=None)
+                log.close()
+                self.assertTrue(list((Path(tmp) / "audit").iterdir()))
+                self.assertEqual(0, log.stats["unmirrored"])
+
+    def test_error_tails_copied_into_reports_are_redacted(self):
+        import packaged_check
+        import packaged_crash_check
+        import perf_check
+        sources = {tool.__name__: Path(tool.__file__).read_text(encoding="utf-8")
+                   for tool in (packaged_check, packaged_crash_check, perf_check)}
+        # No raw tail of a child's error output goes into a report.
+        for tool, raw in (("packaged_check", "(r.stderr or r.stdout)[-2000:]}"),
+                          ("packaged_check", '+ "".join(err)[-2000:]}'),
+                          ("packaged_crash_check", '"".join(self.err)[-1500:])'),
+                          ("packaged_crash_check", '"".join(c.err)[-1500:])'),
+                          ("packaged_crash_check", '+ r.stderr[-1500:])'),
+                          ("perf_check", '{r.stderr[-800:]}")')):
+            with self.subTest(tool=tool, raw=raw):
+                self.assertNotIn(raw, sources[tool])
+        self.assertIn("residue.redact((r.stderr or r.stdout)[-2000:], base)",
+                      sources["packaged_check"])
+        self.assertIn("residue.redact(r.stderr[-800:], workdir)", sources["perf_check"])
+
+    def test_a_child_s_failure_reaches_the_report_without_the_user_s_paths(self):
+        import packaged_crash_check
+        env = {"USERPROFILE": "C:\\Users\\Pat.Example", "USERNAME": "Pat.Example"}
+        child = packaged_crash_check.Child.__new__(packaged_crash_check.Child)
+        child.base = env["USERPROFILE"] + "\\Temp\\umcrash-ab12"
+        child.err = [f"Traceback\n  File \"{child.base}\\child.py\", line 9\n",
+                     "PermissionError: C:\\Users\\Pat.Example\\x\n"]
+        with mock.patch.dict(os.environ, env):
+            text = child.errors()
+        self.assertNotIn("pat.example", text.lower())
+        self.assertIn("<base>\\child.py", text)
 
 
 if __name__ == "__main__":

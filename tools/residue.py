@@ -12,6 +12,13 @@
 #   - unexpected(): files left after final cleanup that are not on the list of
 #     the workspace's own files, built from the app's constants (names()), so
 #     a rename in the app moves the list with it.
+#   - listing() and new_or_changed(): what a run added or changed in a
+#     folder outside the profile (names, sizes and times only, never
+#     opened), and explain(): whether each such file is one the run is
+#     known to leave there (EXPLAINED), with why it holds no content.
+#   - redact(): an error tail copied into a report without the throwaway
+#     base, the home folder or the Windows user name (P3: the reports are
+#     published with a release).
 #   - dumps(): crash dumps under the throwaway base, counted by name and
 #     size (os.walk and stat only): no dump is ever opened, copied or
 #     printed. system_dumps() counts the signed-in user's own dump folders,
@@ -38,13 +45,26 @@ DUMP_PROGRAMS = ("python.exe", "pythonw.exe", "msedgewebview2.exe")
 
 # -- finding patterns -----------------------------------------------------------------
 
-def _files(roots):
+def _rel(path, base):
+    return Path(os.path.relpath(path, base)).as_posix()
+
+
+def _files(roots, unreadable, base):
+    """Every file under roots. A folder that cannot be listed (access
+    denied, a path too long) is added to unreadable, relative to base with a
+    trailing "/", never skipped in silence: what is in it cannot be shown
+    free of anything (review of #335). A root that does not exist holds
+    nothing."""
+    def refused(error):
+        unreadable.append(_rel(error.filename or "?", base) + "/")
     for root in roots:
         root = Path(root)
         if root.is_file():
             yield root
             continue
-        for folder, _dirs, names in os.walk(root):
+        if not os.path.lexists(root):
+            continue
+        for folder, _dirs, names in os.walk(root, onerror=refused):
             for name in sorted(names):
                 yield Path(folder) / name
 
@@ -52,15 +72,16 @@ def _files(roots):
 def find(roots, patterns, base):
     """Which files under roots hold which patterns ({label: bytes}).
     Returns {"hits": {label: [file]}, "unreadable": [file], "scanned": [file]},
-    each file relative to base (POSIX form). A file that cannot be read cannot
-    be shown free of the patterns: the caller fails on it. Reads in CHUNK
+    each file relative to base (POSIX form). A file that cannot be read, or a
+    folder that cannot be listed (with a trailing "/"), cannot be shown free
+    of the patterns: the caller fails on it. Reads in CHUNK
     pieces that overlap by the longest pattern, so a large file costs bounded
     memory and a pattern across a boundary is still found."""
     patterns = {label: bytes(p) for label, p in patterns.items() if p}
     overlap = max((len(p) for p in patterns.values()), default=1) - 1
     hits, unreadable, scanned = {label: [] for label in patterns}, [], []
-    for path in _files(roots):
-        name = Path(os.path.relpath(path, base)).as_posix()
+    for path in _files(roots, unreadable, base):
+        name = _rel(path, base)
         found = set()
         try:
             with open(path, "rb") as f:
@@ -130,15 +151,24 @@ def names():
     """The workspace's own file names and patterns, from the app's constants
     (workspace/diag.py and the others named here; import the app first:
     evidence.add_app). Folders are relative to the
-    workspace folder (%LOCALAPPDATA%\\Unminute\\workspace)."""
-    from workspace import audit, diag, handoff, power, store
+    workspace folder (%LOCALAPPDATA%\\Unminute\\workspace). They include
+    what only the real start writes (the workspace lock, the launcher's
+    record) and the download queue with its temporary file: today's checks
+    write none of them before the scan after final cleanup, and a later step
+    that did must not fail "only the workspace's own files" (review of
+    #335). The window's WebView2 profile (workspace\\webview) is not on
+    the list: no check opens the window with content yet (T7)."""
+    from workspace import asr_engines, audit, diag, handoff, instance, power, setup, store
+    queue = Path(setup.QUEUE_FILE)
     return {
         "db": diag.DB_FILE,
         "files": (diag.DB_FILE, diag.DB_FILE + "-wal", diag.DB_FILE + "-shm",
                   diag.SETTINGS_FILE, diag.SETTINGS_UNREADABLE_FILE, handoff.TEMPLATES_FILE,
-                  power.RESTORE_FILE, store.compaction_marker(diag.DB_FILE).name),
+                  power.RESTORE_FILE, store.compaction_marker(diag.DB_FILE).name,
+                  instance.NAME, queue.name, queue.with_suffix(".tmp").name),
         "logs": diag.LOGS_FOLDER,
-        "log_files": (diag.INTEGRITY_FILE, diag.KEYS_FILE),
+        "log_files": (diag.INTEGRITY_FILE, diag.KEYS_FILE, diag.LAUNCH_FILE),
+        "verified_marker": asr_engines.VERIFIED_MARKER,
         "log_stem": diag.LOG_NAME.pattern,
         "log_suffixes": (diag.LOG_SUFFIX, diag.RUNNING_SUFFIX),
         "crash_suffix": diag.CRASH_SUFFIX,
@@ -172,14 +202,169 @@ def allowed(rel, n):
 def unexpected(profile, workspace, n):
     """Files under profile (the throwaway Unminute folder) that are not the
     workspace's own: anything outside the workspace folder, and anything in it
-    that allowed() does not name. POSIX paths relative to profile."""
+    that allowed() does not name, and any folder that cannot be listed
+    (with a trailing "/"). POSIX paths relative to profile."""
     out = []
-    for path in _files([profile]):
-        rel = Path(os.path.relpath(path, profile)).as_posix()
-        inside = Path(os.path.relpath(path, workspace)).as_posix()
+    for path in _files([profile], out, profile):
+        rel = _rel(path, profile)
+        inside = _rel(path, workspace)
         if inside.startswith("../") or not allowed(inside, n):
             out.append(rel)
     return out
+
+
+# -- outside the profile: what a run added or changed ---------------------------------------
+
+# New or changed files a run may leave outside the profile, by place and a
+# pattern of the name (relative to that place, POSIX form), each with why it
+# holds no meeting content. Anything else a run leaves there fails the
+# check. "{verified_marker}" stands for asr_engines.VERIFIED_MARKER (names()).
+# The redirected places (the child's TEMP, APPDATA and user folder) explain
+# nothing: no file is expected there.
+EXPLAINED = {
+    "LocalLow": (
+        (r"Microsoft/CryptnetUrlCache/.+",
+         "Windows' cache of downloaded certificate data, shared by every program"),),
+    "model_cache": (
+        (r"(.+/)?{verified_marker}",
+         "a model's verification record: its revision, file sizes and times (I1)"),
+        (r"[^/]+/\.verified/[^/]+\.json",
+         "a model's verification record, kept beside the models (I1)"),),
+}
+
+
+def listing(root, unreadable, base=None):
+    """{name: (size, modified ns)} of every file under root, the name
+    relative to root (POSIX form), from stat only: nothing is ever opened,
+    so a folder of the signed-in user's own files can be compared before
+    and after a run (P2). A folder that cannot be listed, or a file that
+    cannot be read by stat, goes into unreadable (relative to base, or root)."""
+    out = {}
+    root = Path(root)
+    for path in _files([root], unreadable, base or root):
+        try:
+            st = os.stat(path)
+        except OSError:
+            unreadable.append(_rel(path, base or root))
+            continue
+        out[_rel(path, root)] = (st.st_size, st.st_mtime_ns)
+    return out
+
+
+def new_or_changed(before, after):
+    """Names in the after listing that are new, or whose size or time changed."""
+    return sorted(name for name, stat in after.items() if before.get(name) != stat)
+
+
+def real_places(cache, environ=None):
+    """The real folders outside the throwaway base that a run is compared in,
+    before and after, by name only: {place: folder}. The model cache is used
+    as given; LocalLow has no variable of its own and is not redirected (it
+    sits in the real profile, beside %LOCALAPPDATA%). The children's APPDATA
+    and USERPROFILE are redirected into the base instead, and scanned."""
+    environ = os.environ if environ is None else environ
+    out = {"model_cache": Path(cache)}
+    profile = environ.get("USERPROFILE")
+    if profile:
+        out["LocalLow"] = Path(profile) / "AppData" / "LocalLow"
+    return out
+
+
+def snapshot(places):
+    """{place: listing()} of each place, and the folders that could not be
+    listed, as "place/name/"."""
+    out, unreadable = {}, []
+    for place, root in places.items():
+        refused = []
+        out[place] = listing(root, refused)
+        unreadable += [f"{place}/{name}" for name in refused]
+    return out, unreadable
+
+
+def compare(before, places, n=None, earlier=None):
+    """What a run added or changed in places since the before snapshot (a
+    (listing, unreadable) pair from snapshot()), by name only, with the
+    names nothing explains and the folders that could not be listed then or
+    now. earlier: a result of this function to add to (a file the run made
+    and removed again is still named)."""
+    then, refused = before
+    now, unreadable = snapshot(places)
+    new = {place: new_or_changed(then.get(place, {}), now[place]) for place in places}
+    for place, names in ((earlier or {}).get("new") or {}).items():
+        new[place] = sorted(set(new.get(place, [])) | set(names))
+    unreadable = sorted(set(refused) | set(unreadable)
+                        | set((earlier or {}).get("unreadable") or []))
+    return {"new": new, "unexplained": unexplained(new, n), "unreadable": unreadable}
+
+
+def left_in(places, base):
+    """Every file in the redirected places (all of them made by the run),
+    by name: {"files": {place: [name]}, "unexplained": [...], "unreadable":
+    [...]}, the unreadable folders relative to base."""
+    files, unreadable = {}, []
+    for place, root in places.items():
+        files[place] = sorted(_rel(p, root) for p in _files([root], unreadable, base))
+    return {"files": files, "unexplained": unexplained(files), "unreadable": unreadable}
+
+
+def explain(place, name, n=None):
+    """Why a new or changed file at place (an EXPLAINED key) holds no
+    content, or None when nothing explains it (the check fails then)."""
+    marker = re.escape((n or {}).get("verified_marker", ".verified.json"))
+    for pattern, why in EXPLAINED.get(place, ()):
+        if re.fullmatch(pattern.replace("{verified_marker}", marker), name):
+            return why
+    return None
+
+
+def unexplained(new, n=None):
+    """{place: [name]} -> the names nothing explains, as "place/name"."""
+    return sorted(f"{place}/{name}" for place, found in new.items() for name in found
+                  if explain(place, name, n) is None)
+
+
+# -- error text copied into a report ---------------------------------------------------------
+
+def _short(path):
+    """The Windows short (8.3) form of an existing path, or the path."""
+    if os.name != "nt":
+        return str(path)
+    import ctypes
+    try:
+        buf = ctypes.create_unicode_buffer(32768)
+        if ctypes.windll.kernel32.GetShortPathNameW(str(path), buf, len(buf)):
+            return buf.value
+    except (OSError, AttributeError, ValueError):
+        pass
+    return str(path)
+
+
+def redact(text, base=None, environ=None):
+    """text with the throwaway base folder written as <base>, the home folder
+    as <home> and then the Windows user name as <user>, in each form an error
+    can carry (long and short names, either slash, the doubled backslashes
+    of repr and JSON), case ignored. Error tails copied into a report go
+    through this: the reports are published with a release, and these paths
+    name the user (P3; review of #335)."""
+    if not text:
+        return text
+    environ = os.environ if environ is None else environ
+    forms = []
+    for placeholder, path in (("<base>", base), ("<home>", environ.get("USERPROFILE"))):
+        if not path:
+            continue
+        for p in {str(path), os.path.realpath(path), _short(path)}:
+            p = p.rstrip("\\/")
+            if len(p) < 4:                     # never a bare drive
+                continue
+            for form in {p, p.replace("\\", "/"), p.replace("\\", "\\\\")}:
+                forms.append((form, placeholder))
+    for form, placeholder in sorted(forms, key=lambda f: -len(f[0])):
+        text = re.sub(re.escape(form), placeholder, text, flags=re.IGNORECASE)
+    user = environ.get("USERNAME")
+    if user and len(user) >= 3:
+        text = re.sub(re.escape(user), "<user>", text, flags=re.IGNORECASE)
+    return text
 
 
 def logs_scanned(scanned, n, prefix):
@@ -237,17 +422,29 @@ def _named_after_runtime(name):
     return any(p in low for p in DUMP_PROGRAMS)
 
 
+def _folder_label(path):
+    """A dump folder named without the user's profile (P3): its last parts."""
+    parts = Path(path).parts
+    return "/".join(parts[-3:]) if len(parts) > 3 else Path(path).as_posix()
+
+
 def system_dumps(since, folders=None):
     """Files in the user's dump folders named after the runtime's or the
     window's executables, changed since `since` (time.time()), counted by
     name and time only (a report folder counts once). Run only when a person
     asks: the agent guard refuses listing these folders, and dumps of other
-    Python programs on the machine count too."""
-    count = 0
+    Python programs on the machine count too. A folder that does not exist
+    holds none ("missing"); one that cannot be listed is named under
+    "unreadable", so 0 is never read as "none" (review of #335)."""
+    count, missing, unreadable = 0, [], []
     for root in (system_dump_folders() if folders is None else folders):
         try:
             entries = list(os.scandir(root))
+        except FileNotFoundError:
+            missing.append(_folder_label(root))
+            continue
         except OSError:
+            unreadable.append(_folder_label(root))
             continue
         for entry in entries:
             if not _named_after_runtime(entry.name):
@@ -257,6 +454,8 @@ def system_dumps(since, folders=None):
                     count += 1
             except OSError:
                 continue
-    return {"new_files": count, "folders": len(folders if folders is not None
-                                               else system_dump_folders()),
+    tried = len(folders if folders is not None else system_dump_folders())
+    return {"new_files": count, "folders": tried,
+            "folders_read": tried - len(missing) - len(unreadable),
+            "missing": missing, "unreadable": unreadable,
             "since": time.strftime("%Y-%m-%d %H:%M", time.localtime(since))}

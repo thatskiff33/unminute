@@ -1570,6 +1570,26 @@ class StoreStepTests(unittest.TestCase):
         result = OneRunTests.run_child(self, child, held=60.0)
         self.assertEqual(0.31, result["startup"]["workspace_s"])
 
+    def test_only_workspace_s_may_be_missing_from_the_start_up_figures(self):
+        # An older package's child sends no workspace_s; a child that stops
+        # sending any other start-up figure stops the run, as it did before
+        # #111 C7 (review of #335).
+        child = FakeChild(dict(OneRunTests.READY),
+                          lambda c: {"state": "recording", "seconds": 61.0})
+        result = OneRunTests.run_child(self, child, held=60.0)
+        self.assertNotIn("workspace_s", result["startup"])
+        for missing in ("imports_s", "window_to_interactive_s", "startup_s"):
+            ready = {k: v for k, v in OneRunTests.READY.items() if k != missing}
+            child = FakeChild(dict(ready, workspace_s=0.3),
+                              lambda c: {"state": "recording", "seconds": 61.0})
+            with self.subTest(missing=missing), self.assertRaises(KeyError):
+                OneRunTests.run_child(self, child, held=60.0)
+
+    def test_the_help_says_what_workspace_s_times(self):
+        text = perf_check.HELP
+        self.assertIn("the time to create the run's new workspace", " ".join(text.split()))
+        self.assertIn("open_0_meetings_s does", " ".join(text.split()))
+
 
 @unittest.skipUnless(all(__import__("importlib").util.find_spec(m) for m in ("numpy", "av")),
                      "numpy/av not installed")
@@ -1585,6 +1605,28 @@ class MeasureStoreTests(unittest.TestCase):
         self.assertEqual([], perf_check.store_problems(out))
         self.assertEqual((2, 30), (out["meetings"], out["passages"]))
         self.assertGreater(out["database_5000_passages_mb"], 0)
+
+    def test_a_workspace_with_the_wrong_number_of_meetings_stops_the_step(self):
+        # The meetings figure is counted, not the number asked for, so the
+        # 500-meeting figures cannot come from a smaller workspace (review
+        # of #335).
+        import tempfile
+
+        import keyprotect
+        from workspace.app import Workspace
+        real = Workspace._import_one
+        seen = []
+
+        def only_the_first(ws, path):
+            seen.append(path)
+            if len(seen) == 1:
+                return real(ws, path)
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(Workspace, "_import_one", only_the_first), \
+                self.assertRaises(RuntimeError) as caught:
+            perf_check.measure_store(tmp, protector=keyprotect.TestProtector(),
+                                     meetings=2, passages=30, opens=1, reads=1)
+        self.assertIn("lists 1 meetings, not 2", str(caught.exception))
 
 
 class CompareTests(unittest.TestCase):

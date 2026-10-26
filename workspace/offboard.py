@@ -38,7 +38,7 @@ import time
 import uuid
 from pathlib import Path
 
-from workspace import diag, update
+from workspace import diag, instance, update
 
 OK, FAILED, ACCOUNT, RUNNING, OTHERS_LEFT, BLOCKED, REFUSED = 0, 1, 2, 3, 4, 5, 6
 TOKENS = ("Unminute/HuggingFaceToken",)              # credentials.TARGET (K1)
@@ -217,7 +217,7 @@ def _blockers(ws):
     return found
 
 
-LOCK = "instance.lock"           # B5's workspace lock (#111 B5-10, instance.NAME): its first byte
+LOCK = instance.NAME             # B5's workspace lock (#111 B5-10): its first byte
 
 
 def _try_lock(fd):

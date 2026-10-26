@@ -62,6 +62,34 @@ class FindTests(TempDir):
         self.assertEqual(["profile/locked.db"], out["unreadable"])
         self.assertEqual({}, out["hits"])
 
+    def test_a_folder_that_cannot_be_listed_is_reported_not_skipped(self):
+        # os.walk skips such a folder in silence unless told otherwise; what
+        # is in it cannot be shown free of the patterns (review of #335).
+        self.put("profile/a.bin", b"nothing")
+        self.put("profile/denied/b.bin", b"zebra")
+        refused = self.root / "profile" / "denied"
+        real_scandir = os.scandir
+
+        def scandir(path=".", *a, **k):
+            if Path(os.fspath(path)) == refused:
+                raise PermissionError(13, "Access is denied", os.fspath(path))
+            return real_scandir(path, *a, **k)
+        unreadable = []
+        with mock.patch.object(os, "scandir", scandir):
+            out = residue.find([self.root / "profile"], {"m": b"zebra"}, self.root)
+            listed = residue.listing(self.root / "profile", unreadable, self.root)
+            stray = residue.unexpected(self.root / "profile", self.root / "profile",
+                                       residue.names())
+        self.assertEqual(["profile/denied/"], out["unreadable"])
+        self.assertEqual({}, out["hits"])
+        self.assertEqual(["a.bin"], sorted(listed))
+        self.assertEqual(["profile/denied/"], unreadable)
+        self.assertIn("denied/", stray)
+
+    def test_a_missing_root_holds_nothing(self):
+        out = residue.find([self.root / "nowhere"], {"m": b"zebra"}, self.root)
+        self.assertEqual(([], []), (out["scanned"], out["unreadable"]))
+
     def test_text_is_looked_for_as_utf8_and_utf16(self):
         pats = residue.text_patterns("quokka")
         self.assertEqual({b"quokka", "quokka".encode("utf-16-le")}, set(pats.values()))
@@ -85,6 +113,35 @@ class ControlTests(TempDir):
                                                               finder=blind))
         # The same finder is asked, over the control file only, outside any profile.
         self.assertEqual([self.root / residue.CONTROL_FOLDER], blind.call_args[0][0])
+
+    def test_the_first_pattern_straddles_a_read_boundary(self):
+        # So a finder that reads in pieces without overlap fails the control.
+        seen = {}
+
+        def reading(roots, patterns, base):
+            path = next(Path(roots[0]).iterdir())
+            data = path.read_bytes()
+            first = next(iter(patterns.values()))
+            seen["at"], seen["size"] = data.index(first), len(first)
+            return residue.find(roots, patterns, base)
+        with mock.patch.object(residue, "CHUNK", 4096):
+            self.assertEqual([], residue.control(self.root, self.PATTERNS, finder=reading))
+        self.assertLess(seen["at"], 4096)
+        self.assertGreater(seen["at"] + seen["size"], 4096)
+
+    def test_a_finder_without_overlap_fails_the_control(self):
+        def no_overlap(roots, patterns, base):
+            hits = {}
+            for path in Path(roots[0]).iterdir():
+                data = path.read_bytes()
+                for i in range(0, len(data), residue.CHUNK):
+                    for label, p in patterns.items():
+                        if p in data[i:i + residue.CHUNK]:
+                            hits[label] = [path.name]
+            return {"hits": hits, "unreadable": [], "scanned": []}
+        with mock.patch.object(residue, "CHUNK", 4096):
+            missed = residue.control(self.root, self.PATTERNS, finder=no_overlap)
+        self.assertIn("marker", missed)        # the first, placed across the boundary
 
     def test_a_finder_that_misses_one_names_it(self):
         def partial(roots, patterns, base):
@@ -110,6 +167,37 @@ class AllowedFilesTests(TempDir):
                     "audit/audit-1000000.jsonl"):
             with self.subTest(rel=rel):
                 self.assertTrue(residue.allowed(rel, self.n))
+
+    def test_the_real_start_s_files_and_the_download_queue_are_allowed(self):
+        # The workspace lock, the launcher's record and the download queue
+        # with its temporary file (review of #335), from their constants.
+        for rel in ("instance.lock", "logs/launch.json", "download_queue.json",
+                    "download_queue.tmp"):
+            with self.subTest(rel=rel):
+                self.assertTrue(residue.allowed(rel, self.n))
+        from workspace import diag, instance, setup
+        with mock.patch.object(instance, "NAME", "held.lock"), \
+                mock.patch.object(diag, "LAUNCH_FILE", "start.json"), \
+                mock.patch.object(setup, "QUEUE_FILE", "queue.json"):
+            n = residue.names()
+        for rel, ok in (("held.lock", True), ("instance.lock", False),
+                        ("logs/start.json", True), ("logs/launch.json", False),
+                        ("queue.json", True), ("queue.tmp", True),
+                        ("download_queue.json", False)):
+            with self.subTest(rel=rel):
+                self.assertEqual(ok, residue.allowed(rel, n))
+
+    def test_a_real_workspace_lock_leaves_only_allowed_files(self):
+        # The lock the app's own start takes (instance.acquire) is one of
+        # the workspace's own files.
+        from workspace import instance
+        ws = self.root / "Unminute" / "workspace"
+        ws.mkdir(parents=True)
+        held = instance.acquire(ws)
+        try:
+            self.assertEqual([], residue.unexpected(self.root / "Unminute", ws, self.n))
+        finally:
+            held.release()
 
     def test_anything_else_is_not(self):
         for rel in ("stray.bin", "templates.json", "logs/stray.log", "logs/app.10.log",
@@ -141,9 +229,11 @@ class AllowedFilesTests(TempDir):
         # window; the durable-core check; and the places that collect a
         # worker's or the download process's crash file (rebase onto main,
         # 26 Oct 2026: a search of the whole tree, review round 3 of #335).
+        # The workspace lock and the launcher's record too, now on the list
+        # (review of #335; offboarding named the lock).
         literals = ('"settings.json"', '"settings.unreadable.json"', '"power_restore.json"',
                     '/ "logs"', '/ "audit"', '"workspace.db', '"app.running"', '"app.log"',
-                    '.crash"')
+                    '.crash"', '"instance.lock"', '"launch.json"')
         for rel in ("workspace/app.py", "workspace/__main__.py", "workspace/offboard.py",
                     "workspace/launch.py", "workspace/worker.py", "workspace/drafts.py",
                     "workspace/setup.py", "tools/packaged_check.py",
@@ -260,11 +350,138 @@ class DumpTests(TempDir):
         self.assertEqual(3, out["new_files"])
         self.assertEqual(3, out["folders"])
 
+    def test_a_dump_folder_that_cannot_be_read_is_named_not_counted_as_none(self):
+        (self.root / "WER").mkdir()
+        refused = self.root / "WER"
+        real_scandir = os.scandir
+
+        def scandir(path=".", *a, **k):
+            if Path(os.fspath(path)) == refused:
+                raise PermissionError(13, "Access is denied", os.fspath(path))
+            return real_scandir(path, *a, **k)
+        with mock.patch.object(os, "scandir", scandir):
+            out = residue.system_dumps(time.time() - 60,
+                                       folders=[refused, self.root / "missing"])
+        self.assertEqual(0, out["new_files"])
+        self.assertEqual(2, out["folders"])
+        self.assertEqual(0, out["folders_read"])
+        self.assertEqual(1, len(out["unreadable"]))
+        self.assertTrue(out["unreadable"][0].endswith("/WER"))
+        self.assertEqual(1, len(out["missing"]))
+        # The label never holds the whole path (the user's profile).
+        self.assertNotIn(self.root.as_posix(), out["unreadable"][0])
+
     def test_the_system_folders_come_from_the_real_profile(self):
         folders = residue.system_dump_folders({"LOCALAPPDATA": r"C:\Users\u\AppData\Local",
                                                "ProgramData": r"C:\ProgramData"})
         self.assertIn(Path(r"C:\Users\u\AppData\Local") / "CrashDumps", folders)
         self.assertEqual(5, len(folders))
+
+
+class OutsideTests(TempDir):
+    """Folders outside the throwaway profile (review of #335; the owner's
+    decision, 26 Oct 2026): the real ones compared by name, size and time
+    only, never opened; anything new that nothing explains fails."""
+
+    def test_listing_reads_names_sizes_and_times_never_contents(self):
+        self.put("cache/a.bin", b"abc")
+        self.put("cache/sub/b.bin", b"de")
+        with mock.patch("builtins.open", side_effect=AssertionError("opened")), \
+                mock.patch("io.open", side_effect=AssertionError("opened")):
+            out = residue.listing(self.root / "cache", [])
+        self.assertEqual({"a.bin", "sub/b.bin"}, set(out))
+        self.assertEqual(3, out["a.bin"][0])
+
+    def test_new_and_changed_files_are_named(self):
+        places = {"model_cache": self.root / "cache", "LocalLow": self.root / "low"}
+        self.put("cache/kept.bin", b"same")
+        changed = self.put("cache/changed.bin", b"one")
+        self.put("low/old.dat", b"x")
+        before = residue.snapshot(places)
+        changed.write_bytes(b"two!")
+        self.put("cache/new.bin")
+        self.put("low/Microsoft/CryptnetUrlCache/Content/ABC", b"cert")
+        self.put("low/SomeApp/new.dat")
+        out = residue.compare(before, places, residue.names())
+        self.assertEqual({"model_cache": ["changed.bin", "new.bin"],
+                          "LocalLow": ["Microsoft/CryptnetUrlCache/Content/ABC",
+                                       "SomeApp/new.dat"]}, out["new"])
+        self.assertEqual(["LocalLow/SomeApp/new.dat", "model_cache/changed.bin",
+                          "model_cache/new.bin"], out["unexplained"])
+        self.assertEqual([], out["unreadable"])
+        # An earlier comparison's names are kept (made, then removed again).
+        later = residue.compare(before, places, residue.names(),
+                                earlier={"new": {"LocalLow": ["Gone/x.dat"]},
+                                         "unreadable": []})
+        self.assertIn("Gone/x.dat", later["new"]["LocalLow"])
+        self.assertIn("LocalLow/Gone/x.dat", later["unexplained"])
+
+    def test_model_verification_records_are_explained(self):
+        from workspace import asr_engines
+        n = residue.names()
+        for name in (f"whisper/small/{asr_engines.VERIFIED_MARKER}",
+                     asr_engines.VERIFIED_MARKER, "pyannote/.verified/seg-abc.json"):
+            with self.subTest(name=name):
+                self.assertIsNotNone(residue.explain("model_cache", name, n))
+        for name in ("whisper/small/model.bin", "pyannote/.verified/seg.bin",
+                     "notes.txt"):
+            with self.subTest(name=name):
+                self.assertIsNone(residue.explain("model_cache", name, n))
+        # Nothing is expected in the redirected folders.
+        for place in ("TEMP", "APPDATA", "USERPROFILE"):
+            self.assertIsNone(residue.explain(place, "x.tmp", n))
+
+    def test_left_in_names_every_file_in_the_redirected_folders(self):
+        places = {"TEMP": self.root / "temp", "APPDATA": self.root / "roaming",
+                  "USERPROFILE": self.root / "home"}
+        for folder in places.values():
+            folder.mkdir()
+        self.put("temp/tmpab12.wav")
+        self.put("home/.cache/lib/x.bin")
+        out = residue.left_in(places, self.root)
+        self.assertEqual({"TEMP": ["tmpab12.wav"], "APPDATA": [],
+                          "USERPROFILE": [".cache/lib/x.bin"]}, out["files"])
+        self.assertEqual(["TEMP/tmpab12.wav", "USERPROFILE/.cache/lib/x.bin"],
+                         out["unexplained"])
+
+    def test_the_real_places_are_locallow_and_the_model_cache(self):
+        places = residue.real_places("models", {"USERPROFILE": "profile"})
+        self.assertEqual({"model_cache": Path("models"),
+                          "LocalLow": Path("profile") / "AppData" / "LocalLow"}, places)
+
+
+class RedactTests(TempDir):
+    HOME = "C:\\Users\\Pat.Example"
+    ENV = {"USERPROFILE": HOME, "USERNAME": "Pat.Example"}
+
+    def test_the_base_the_home_folder_and_the_user_name_are_replaced(self):
+        base = self.HOME + "\\Temp\\umpkg-1x2y"
+        text = "\n".join([
+            f'File "{base}\\lifecycle.py", line 3',
+            base.replace("\\", "/") + "/temp/a.wav",
+            repr(base + "\\x"),
+            "c:\\users\\pat.example\\Downloads\\clip.wav",
+            "account pat.example refused"])
+        out = residue.redact(text, base, self.ENV)
+        self.assertNotIn("pat.example", out.lower())
+        self.assertNotIn("umpkg-1x2y", out)
+        self.assertIn("<base>\\lifecycle.py", out)
+        self.assertIn("<base>/temp/a.wav", out)
+        self.assertIn("'<base>\\\\x'", out)
+        self.assertIn("<home>\\Downloads\\clip.wav", out)
+        self.assertIn("account <user> refused", out)
+
+    def test_nothing_to_replace_is_left_as_it_is(self):
+        self.assertEqual("plain error", residue.redact("plain error", None, {}))
+        self.assertEqual("", residue.redact("", "x", self.ENV))
+        self.assertIsNone(residue.redact(None, "x", self.ENV))
+
+    def test_the_short_form_is_replaced_too(self):
+        short = "C:\\Users\\PATEXA~1"
+        with mock.patch.object(residue, "_short",
+                               lambda p: short if str(p) == self.HOME else str(p)):
+            out = residue.redact(short + "\\Temp\\x", None, {"USERPROFILE": self.HOME})
+        self.assertEqual("<home>\\Temp\\x", out)
 
 
 class ToolsUseTheSameFinderTests(unittest.TestCase):
@@ -277,6 +494,9 @@ class ToolsUseTheSameFinderTests(unittest.TestCase):
                 self.assertIn("residue.unexpected(", source)
                 self.assertIn("residue.dumps(", source)
                 self.assertNotIn("read_bytes() in", source)    # no second, plainer scanner
+                # No listing that skips a folder it cannot read (review of #335).
+                for listing in ("profile.rglob(", "temp.rglob(", '"profile"].rglob('):
+                    self.assertNotIn(listing, source)
 
 
 if __name__ == "__main__":

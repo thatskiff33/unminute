@@ -44,9 +44,10 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-# evidence.py and windows_powershell.py, also under -I; after the stdlib
+# evidence.py, residue.py and windows_powershell.py, also under -I; after the stdlib
 sys.path.append(str(ROOT / "tools"))
 import evidence  # noqa: E402
+import residue  # noqa: E402
 import windows_powershell  # noqa: E402
 
 BUDGETS = ROOT / "docs" / "perf-budgets.json"
@@ -136,8 +137,11 @@ Before the first state it times start-up to interactive (imports, with the
 window's backend that the app loads alongside them, then window creation until
 the meeting list has rendered; interpreter start and opening the workspace are
 left out) and waits for the worker to unload. It also reports "workspace_s" in
-"startup": opening the run's new workspace (Windows Data Protection and the
-keys; measured, no budget yet). With
+"startup": the time to create the run's new workspace, which includes making
+its database schema and its root key, protected by Windows Data Protection
+(CryptProtectData). It does not time unlocking an existing workspace's key;
+the store step's open_0_meetings_s does. Both are measured, with no budget
+yet. With
 --leak-minutes it holds the Meetings view that long, once, in the last run,
 after the idle states and before any recording, and reports the growth. The
 leak budget is for 30 minutes, so a shorter hold is reported but not compared:
@@ -1330,8 +1334,12 @@ def one_run(args, settle, window, leak_minutes=0, display=None, refresh_hz=None)
             raise Unmeasurable(f"could not set up the measuring job: {exc}") from exc
         threading.Thread(target=pump, daemon=True).start()
         ready = read(READY_TIMEOUT_S)
+        # Every start-up figure is required except workspace_s, which a child
+        # of an older package does not send (review of #335).
         result["startup"] = {k: ready[k] for k in ("imports_s", "window_to_interactive_s",
-                                                   "startup_s", "workspace_s") if k in ready}
+                                                   "startup_s")}
+        if "workspace_s" in ready:
+            result["startup"]["workspace_s"] = ready["workspace_s"]
         # Idle means after the worker has unloaded. Waiting for it also measures
         # the standard's "gone within its idle time plus 5 s" (section 3). A
         # worker that does not unload is recorded at the wait limit, so it fails
@@ -1549,8 +1557,9 @@ def store_step(args):
         found = [json.loads(line[len(PREFIX):]) for line in r.stdout.splitlines()
                  if line.startswith(PREFIX)]
         if r.returncode or not found:
+            # The report is published: no throwaway path, home folder or user name (P3).
             raise RuntimeError(f"the store step failed (exit {r.returncode}): "
-                               f"{r.stderr[-800:]}")
+                               f"{residue.redact(r.stderr[-800:], workdir)}")
         return found[-1]
     finally:
         for _ in range(10):
@@ -1577,7 +1586,11 @@ def measure_store(root, protector=None, meetings=STORE_MEETINGS, passages=STORE_
     of 1,000 and a search (median of `reads`), and that database's size.
     Seeded through the app's import (synthetic noise) and the store (synthetic
     text). protector: tests only; the app's own (Windows Data Protection)
-    otherwise. Returns figures only."""
+    otherwise. Returns figures only, with the number of meetings the
+    workspace timed for the `meetings` figures actually listed; a count that
+    is not `meetings` (or an empty one that is not empty) stops the step, so
+    the 500-meeting figure cannot come from a smaller workspace (review of
+    #335)."""
     import types
     import wave
 
@@ -1601,14 +1614,27 @@ def measure_store(root, protector=None, meetings=STORE_MEETINGS, passages=STORE_
         return Workspace(folder, models, start=False, battery=False, protector=protector)
 
     def open_time(folder):
+        """The median open time, and how many meetings the folder's
+        workspace lists (counted after the timing, so it costs nothing)."""
         def once():
             workspace(folder).close()
-        return _median(once, opens)
+        median = _median(once, opens)
+        ws = workspace(folder)
+        try:
+            return median, len(ws.meetings())
+        finally:
+            ws.close()
+
+    def counted(what, found, wanted):
+        if found != wanted:
+            raise RuntimeError(f"the store step's {what} lists {found} meetings, "
+                               f"not {wanted}")
 
     out = {}
     empty = root / "empty"
     workspace(empty).close()                  # made (and its key) before timing
-    out["open_0_meetings_s"] = open_time(empty)
+    out["open_0_meetings_s"], found = open_time(empty)
+    counted("empty workspace", found, 0)
 
     many = root / "many"
     ws = workspace(many)
@@ -1618,10 +1644,12 @@ def measure_store(root, protector=None, meetings=STORE_MEETINGS, passages=STORE_
             synthetic(path, 1)
             ws._import_one(path)
             path.unlink()
+        counted("listing", len(ws.meetings()), meetings)
         out["listing_500_meetings_s"] = _median(ws.meetings, reads)
     finally:
         ws.close()
-    out["open_500_meetings_s"] = open_time(many)
+    out["open_500_meetings_s"], found = open_time(many)
+    counted("opened workspace", found, meetings)
 
     long = root / "long"
     ws = workspace(long)
@@ -1645,7 +1673,7 @@ def measure_store(root, protector=None, meetings=STORE_MEETINGS, passages=STORE_
         ws.close()
     size = sum(p.stat().st_size for p in long.glob(DB_FILE + "*") if p.is_file())
     out["database_5000_passages_mb"] = round(size / 2**20, 2)
-    out["meetings"], out["passages"] = meetings, passages
+    out["meetings"], out["passages"] = found, passages      # the count measured above
     return out
 
 

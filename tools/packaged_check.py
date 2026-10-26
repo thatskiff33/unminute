@@ -10,8 +10,13 @@
 # With --zip the report is release evidence (tools/evidence.py): it names the
 # zip and says whether the version folder still holds exactly its files.
 #
-# It uses a throwaway base folder for LOCALAPPDATA, TEMP and TMP, so no real
-# workspace is touched, and checks:
+# It uses a throwaway base folder for LOCALAPPDATA, TEMP and TMP, and for the
+# children's APPDATA and USERPROFILE (so a library's cache under ~\.cache or
+# %APPDATA% lands there too), so no real workspace is touched. The children
+# that open the workspace keep its audit log in its file only: they pass a
+# mirror that drops the Windows Event Log copy, so a run adds no entries
+# under the app's source (the idle window, started as the app is, still
+# does). It checks:
 #   - self-test (dependencies, network guard) from the packaged runtime;
 #   - offline processing with cached models and no Hugging Face token present;
 #   - the full lifecycle (import, transcribe, speakers, review, cleanup);
@@ -32,8 +37,18 @@
 #         empty write-ahead log (byte absence of a wrapped key stays a unit
 #         test: tests/test_cleanup.py);
 #       * after final cleanup, only the workspace's own files remain (a list
-#         built from the app's constants), logs included and listed;
+#         built from the app's constants), logs included and listed; TEMP
+#         and the redirected APPDATA and user folder hold nothing (their
+#         files are named, and scanned with the rest);
+#       * outside the throwaway base, the real LocalLow and the model cache
+#         are listed before and after (names, sizes and times only, never
+#         opened): every file the run added or changed there must be one
+#         residue.EXPLAINED names;
 #       * no crash dump, and no crash file with anything in it, under the base;
+#   - not covered yet (the owner's decision, 26 Oct 2026): the window with
+#     content. No step shows a meeting in the real window, so the WebView2
+#     profile (workspace\webview) and the real start's own files are not
+#     shown free of content (docs/SECURITY_MODEL.md T7);
 #   - idle CPU and memory of the open app window, and peak memory of the
 #     worker during a long transcription.
 # Measurements, not promises: compare them on the lowest-supported laptop. The
@@ -155,11 +170,18 @@ def check(version_dir, cache, wav, report, system_dumps=False):
     env = dict(os.environ)
     env.pop("HF_TOKEN", None)                         # cached processing needs no token
     base = Path(tempfile.mkdtemp(prefix="umpkg-"))
-    temp = base / "temp"                              # the child's TEMP and TMP
-    temp.mkdir()
+    # The child's TEMP and TMP, APPDATA and user folder, all in the base:
+    # whatever the app or a library leaves there is named and scanned.
+    redirected = {"TEMP": base / "temp", "APPDATA": base / "roaming",
+                  "USERPROFILE": base / "home"}
+    for folder in redirected.values():
+        folder.mkdir()
+    temp = redirected["TEMP"]
     env["LOCALAPPDATA"] = str(base)
     env["TEMP"] = env["TMP"] = str(temp)
+    env["APPDATA"], env["USERPROFILE"] = str(redirected["APPDATA"]), str(redirected["USERPROFILE"])
     profile = base / "Unminute"
+    roots = [profile, *redirected.values()]           # every scan covers all of these
     py = str(runtime / "python.exe")
     flags = ["-I", "-B", "-X", "disable-remote-debug"]    # as the Start menu shortcut starts it
     tools = str(Path(__file__).resolve().parent)
@@ -168,6 +190,9 @@ def check(version_dir, cache, wav, report, system_dumps=False):
     names = residue.names()
     workspace = profile / "workspace"
     ws_prefix = Path(os.path.relpath(workspace, base)).as_posix()
+    # The real LocalLow and model cache, by name, size and time only (P2).
+    places = residue.real_places(cache)
+    before = residue.snapshot(places)
 
     r = subprocess.run([py, *flags, "-m", "workspace", "--self-test"], capture_output=True,
                        text=True,
@@ -185,10 +210,12 @@ def check(version_dir, cache, wav, report, system_dumps=False):
                                env=env, cwd=app, timeout=timeout)
         except subprocess.TimeoutExpired:
             return {"error": f"the {mode} step exceeded {timeout:,} s"}
+        # What the child says goes into the report without the base path,
+        # the home folder or the user name (P3).
         try:
-            return last_json(r.stdout)
+            return last_json(residue.redact(r.stdout, base))
         except (ValueError, IndexError):
-            return {"error": (r.stderr or r.stdout)[-2000:]}
+            return {"error": residue.redact((r.stderr or r.stdout)[-2000:], base)}
 
     # 1. Import, transcribe and identify speakers; the marker goes into the
     #    title, an edit, a speaker's name and a hold reason; the child writes
@@ -202,7 +229,8 @@ def check(version_dir, cache, wav, report, system_dumps=False):
                if windows_file.exists() else {})
     patterns = {**residue.text_patterns(MARKER), **windows}
     report["control"] = {"patterns": len(patterns), "missed": residue.control(base, patterns)}
-    at_rest = scan(base, [profile, temp], patterns)
+    at_rest = scan(base, roots, patterns)
+    outside = residue.compare(before, places, names)
     r = subprocess.run([py, *flags, "-m", "workspace", "--verify-audit"], capture_output=True,
                        text=True, env=env, cwd=app)
     try:
@@ -218,7 +246,7 @@ def check(version_dir, cache, wav, report, system_dumps=False):
 
     # 3. A microphone recording through the shipped confirmation (#111 C3b).
     #    The child pauses while recording, so the files are scanned then.
-    report["recording"] = record(command, rest, env, app, base, profile, temp)
+    report["recording"] = record(command, rest, env, app, base, roots)
 
     # 4. Audio cleanup, then final cleanup, with erase evidence from the store.
     report["cleanup"] = child("cleanup", timeout=1800)
@@ -230,15 +258,27 @@ def check(version_dir, cache, wav, report, system_dumps=False):
         patterns.update({f"recording_{k}": v for k, v in residue.split_windows(
             rec_file.read_bytes(), RECORDING_WINDOW_BYTES).items()})
     report["control"]["after_cleanup_missed"] = residue.control(base, patterns)
-    after = scan(base, [profile, temp], patterns)
-    files = sorted(Path(os.path.relpath(p, base)).as_posix()
-                   for p in profile.rglob("*") if p.is_file()) if profile.exists() else []
+    after = scan(base, roots, patterns)
+    # Listed through residue, which names a folder it cannot list rather
+    # than skipping it (review of #335).
+    in_base = Path(os.path.relpath(profile, base)).as_posix()
+    files = sorted(f"{in_base}/{name}"
+                   for name in residue.listing(profile, after["unreadable"], base))
+    left = residue.left_in(redirected, base)
+    outside = residue.compare(before, places, names, earlier=outside)
     report["residual"] = {"files_after_cleanup": files, "found": after["hits"],
-                          "unreadable": after["unreadable"],
+                          "unreadable": sorted(set(after["unreadable"]) | set(left["unreadable"])),
                           "unexpected_files": residue.unexpected(profile, workspace, names),
                           "logs_scanned": residue.logs_scanned(after["scanned"], names,
                                                                ws_prefix),
-                          "temp_files_left": len([p for p in temp.rglob("*") if p.is_file()]),
+                          # TEMP, APPDATA and the user folder: every file, by name.
+                          "temp_files_left": left["files"]["TEMP"],
+                          "redirected_files_left": left["files"],
+                          "left_unexplained": left["unexplained"],
+                          # LocalLow and the model cache: new or changed files, by name.
+                          "outside_new": outside["new"],
+                          "outside_unexplained": outside["unexplained"],
+                          "outside_unreadable": outside["unreadable"],
                           "content_backups": [n for n in files if n.endswith(
                               (".bak", ".backup", ".old", ".copy")) or "backup" in n.lower()]}
 
@@ -276,9 +316,10 @@ def check(version_dir, cache, wav, report, system_dumps=False):
     report["profile_removed"] = not base.exists()
 
 
-def record(command, rest, env, app, base, profile, temp, timeout=1800):
+def record(command, rest, env, app, base, roots, timeout=1800):
     """The recording step: the child records synthetic audio, says when, and
-    waits; the profile and TEMP are scanned for that audio; then the child
+    waits; the profile and the redirected folders (roots) are scanned for
+    that audio; then the child
     imports it, records and discards a second one, and reports. A child that
     takes longer than timeout is killed (a watchdog: reading its output
     would otherwise wait for ever)."""
@@ -302,7 +343,7 @@ def record(command, rest, env, app, base, profile, temp, timeout=1800):
                                                   RECORDING_WINDOW_BYTES)
                             if rec_file.exists() else {})
                 missed = residue.control(base, patterns) if patterns else ["no patterns"]
-                found = scan(base, [profile, temp], patterns)
+                found = scan(base, roots, patterns)
                 during = {"seconds": msg.get("seconds"), "windows": len(patterns),
                           "control_missed": missed, "found": found["hits"],
                           "unreadable": found["unreadable"],
@@ -310,7 +351,7 @@ def record(command, rest, env, app, base, profile, temp, timeout=1800):
                 proc.stdin.write("go\n")
                 proc.stdin.flush()
             elif "result" in msg:
-                out = msg["result"]
+                out = json.loads(residue.redact(json.dumps(msg["result"]), base))
         proc.wait(60)
     finally:
         watchdog.cancel()
@@ -318,7 +359,7 @@ def record(command, rest, env, app, base, profile, temp, timeout=1800):
             proc.kill()
     if out is None:
         out = {"error": "the recording step ended without a result: "
-                        + "".join(err)[-2000:]}
+                        + residue.redact("".join(err)[-2000:], base)}
     out["during"] = during
     return out
 
@@ -351,6 +392,17 @@ WINDOW_SAMPLES, WINDOWS, RECORDING_WINDOW_BYTES = 4096, 8, 2048
 
 def say(**kw):
     print(json.dumps(kw), flush=True)
+
+
+class FileOnlyMirror:
+    """The audit log's Windows Event Log copy, dropped: this throwaway
+    workspace sits where the app's own would (LOCALAPPDATA is redirected),
+    so without it every run would add entries under the app's source, with
+    the user's SID, for chains nobody keeps (review of #335). The records
+    still go to the workspace's audit folder, which the check verifies."""
+
+    def report(self, event_id, level, text):
+        pass
 
 
 def worker_peak(pid):
@@ -536,6 +588,8 @@ def record(ws, pc, base):
         return out
     rid2 = ws._recording.folder.name
     wait_seconds(ws, 2)
+    # Its key opens first, so "missing" after the discard is about this id.
+    out["key_before_discard"] = key_state(ws.store.recording_key, rid2)
     out["discarded"] = bool(bridge.discard_recording().get("ok"))
     out["key_after_discard"] = key_state(ws.store.recording_key, rid2)
     ws.wait_idle(120)
@@ -609,7 +663,7 @@ def main():
         def never(*a, **k):
             raise RuntimeError("the packaged check never changes the power scheme")
         power._PowrProf.write = power._PowrProf.apply = never
-    ws = Workspace(cache_dir=cache, start=False, battery=False)
+    ws = Workspace(cache_dir=cache, start=False, battery=False, audit_mirror=FileOnlyMirror())
     if pc is not None:
         blocks = pc.synthetic_blocks()
         ws.open_stream = lambda device, rate, callback, finished: pc.PacedStream(
@@ -676,6 +730,7 @@ def verdict(r):
             and rec.get("consent") in ("asked and recorded", "off by policy")
             and rec.get("key_while_recording") == "opens" and rec.get("stopped") is True
             and rec.get("imported") == 1 and rec.get("key_after_import") == "missing"
+            and rec.get("key_before_discard") == "opens"
             and rec.get("discarded") is True and rec.get("key_after_discard") == "missing"
             and rec.get("recordings_waiting") == 0 and rec.get("other_questions") == [],
         "audio key erased, text key kept": len(erased) == meetings >= 1 and all(
@@ -687,6 +742,16 @@ def verdict(r):
         "no content left behind": res.get("found") == {}
             and res.get("unreadable") == [] and res.get("content_backups") == [],
         "only the workspace's own files left": res.get("unexpected_files") == [],
+        # Every file left in the child's TEMP, APPDATA or user folder, all in
+        # the base, is named; none is expected (residue.EXPLAINED).
+        "nothing left in TEMP, APPDATA or the user folder":
+            isinstance(res.get("temp_files_left"), list)
+            and isinstance(res.get("redirected_files_left"), dict)
+            and res.get("left_unexplained") == [],
+        # The real LocalLow and model cache, by name only (P2).
+        "nothing new outside the base unexplained":
+            isinstance(res.get("outside_new"), dict) and res.get("outside_unexplained") == []
+            and res.get("outside_unreadable") == [],
         "logs scanned": bool(res.get("logs_scanned")),
         "no crash dumps": dumps.get("dumps") == 0 and dumps.get("crash_files") == 0,
         "idle window measured": idle.get("window_running") is True
@@ -716,7 +781,7 @@ def main():
         check(args.version_dir, args.cache, args.wav, report,
               system_dumps=args.report_system_dumps)
     except Exception as exc:
-        report["error"] = f"{type(exc).__name__}: {exc}"
+        report["error"] = residue.redact(f"{type(exc).__name__}: {exc}")
     report["failed"] = verdict(report)
     report["pass"] = not report["failed"]
     Path(args.out).write_text(json.dumps(report, indent=2), encoding="utf-8")

@@ -28,8 +28,15 @@
 # this check kills the app on purpose.
 #
 # Uses throwaway LOCALAPPDATA profiles ("crash", "reference", "landing",
-# "import" and "recording"), each with its own TEMP, in one base folder deleted
-# at the end; no real workspace or saved token is touched. The model cache is
+# "import" and "recording"), each with its own TEMP, APPDATA and USERPROFILE,
+# in one base folder deleted at the end; no real workspace or saved token is
+# touched. Every file left in those redirected folders is named and fails the
+# check unless residue.EXPLAINED names it, and the real LocalLow and model
+# cache are compared before and after (names, sizes and times only). The
+# children keep the audit log in its file only (a mirror that drops the
+# Windows Event Log copy), so a run adds no Event Log entries. Error text in
+# the report has the base path, the home folder and the user name replaced
+# (P3). The model cache is
 # used as given: pass a copy if it must stay untouched. Synthetic audio only.
 # The report ends with "pass" and the list of criteria that failed; exit code 1
 # if any did.
@@ -71,6 +78,8 @@ AUDIO_DATA_START = 64 + 16
 AUDIO_BLOCK_BYTES = 16384 * 4 + 16
 IMPORT_KILL_BYTES = AUDIO_DATA_START + IMPORT_KILL_BLOCKS * AUDIO_BLOCK_BYTES
 RECORDING_SAVED_S = 12              # recorded before the kill: at least two 5 s chunks
+PARTIAL = "audio.partial"           # an import's audio while it is written (workspace/media.py)
+RECORDINGS = "recordings"           # the workspace's recordings folder (Workspace.recordings)
 LANDINGS = (0, 0.05)                # seconds after the review confirmation
 
 
@@ -116,7 +125,8 @@ def windows_of(ctx, wav, out):
                         str(wav), str(out)],
                        capture_output=True, text=True, env=ctx["env"], cwd=ctx["app"])
     if r.returncode or not Path(out).exists():
-        raise RuntimeError("the audio windows could not be made: " + r.stderr[-1500:])
+        raise RuntimeError("the audio windows could not be made: "
+                           + residue.redact(r.stderr[-1500:], ctx["base"]))
 
 
 class Child:
@@ -126,12 +136,18 @@ class Child:
         # taskkill by its full path in the system folder, never by name (#253);
         # found first, so a missing one stops the check before the child starts.
         self.taskkill = windows_powershell.system_program("taskkill.exe")
+        self.base = ctx["base"]
         self.p = subprocess.Popen([ctx["py"], *FLAGS, str(ctx["script"]), *map(str, args)],
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                   env=ctx["env"], cwd=ctx["app"])
         self.lines, self.err = queue.Queue(), []
         threading.Thread(target=self._read, daemon=True).start()
         threading.Thread(target=lambda: self.err.extend(self.p.stderr), daemon=True).start()
+
+    def errors(self):
+        """The child's last error lines, without the base path, the home
+        folder or the user name (P3: the report is published)."""
+        return residue.redact("".join(self.err)[-1500:], self.base)
 
     def _read(self):
         for line in self.p.stdout:
@@ -151,7 +167,7 @@ class Child:
                 continue
             if s is None:
                 if self.p.wait(60):
-                    raise RuntimeError("child failed: " + "".join(self.err)[-1500:])
+                    raise RuntimeError("child failed: " + self.errors())
                 return None
             if test(s):
                 return s
@@ -174,7 +190,7 @@ class Child:
             last = s
         self.p.wait(60)
         if self.p.returncode:
-            raise RuntimeError("child failed: " + "".join(self.err)[-1500:])
+            raise RuntimeError("child failed: " + self.errors())
         return last
 
 
@@ -190,7 +206,7 @@ def act(ctx, action, kill_after=None):
     c = Child(ctx, "act", ctx["cache"], action, MARKER)
     s = c.until(lambda s: "acted" in s, 600)
     if s is None:
-        raise RuntimeError("action failed: " + "".join(c.err)[-1500:])
+        raise RuntimeError("action failed: " + c.errors())
     if kill_after is None:
         c.finish(600)
         return {"result": s["acted"], "killed": False}
@@ -220,16 +236,21 @@ def landing(state):
 
 def leftovers(base, ctx, names, patterns):
     """After final cleanup: files in the profile, any holding the marker or
-    the audio windows (with the scanner's positive control), and any that
-    are not the workspace's own."""
+    the audio windows (with the scanner's positive control), any that are
+    not the workspace's own, and every file left in the redirected TEMP,
+    APPDATA and user folder, by name (none is expected). A folder that
+    cannot be listed is unreadable, never skipped (review of #335)."""
     profile = ctx["profile"] / "Unminute"
-    files = sorted(p.relative_to(ctx["profile"]).as_posix()
-                   for p in profile.rglob("*") if p.is_file()) if profile.exists() else []
-    found = residue.find([profile, ctx["temp"]], patterns, base)
+    found = residue.find([profile, *ctx["redirected"].values()], patterns, base)
+    files = sorted(f"Unminute/{name}"
+                   for name in residue.listing(profile, found["unreadable"], base))
+    left = residue.left_in(ctx["redirected"], base)
     prefix = Path(os.path.relpath(profile / "workspace", base)).as_posix()
-    return {"files": files, "found": found["hits"], "unreadable": found["unreadable"],
+    return {"files": files, "found": found["hits"],
+            "unreadable": sorted(set(found["unreadable"]) | set(left["unreadable"])),
             "control_missed": residue.control(base, patterns),
             "unexpected_files": residue.unexpected(profile, profile / "workspace", names),
+            "temp_files": left["files"]["TEMP"], "left_unexplained": left["unexplained"],
             "logs_scanned": len(residue.logs_scanned(found["scanned"], names, prefix))}
 
 
@@ -247,17 +268,26 @@ def check(version_dir, cache, wav, report, seconds):
     tools = str(Path(__file__).resolve().parent)
     evidence.add_app(app)                 # the workspace's own file names, from the package
     names = residue.names()
+    # The real LocalLow and model cache, by name, size and time only (P2).
+    places = residue.real_places(cache)
+    before = residue.snapshot(places)
 
     def ctx(name):
         env = dict(os.environ)
         env.pop("HF_TOKEN", None)
         env["LOCALAPPDATA"] = str(base / name)
-        temp = base / name / "temp"       # TEMP and TMP in the throwaway profile
-        temp.mkdir(parents=True, exist_ok=True)
-        env["TEMP"] = env["TMP"] = str(temp)
+        # TEMP and TMP, APPDATA and the user folder, in the throwaway profile.
+        redirected = {"TEMP": base / name / "temp", "APPDATA": base / name / "roaming",
+                      "USERPROFILE": base / name / "home"}
+        for folder in redirected.values():
+            folder.mkdir(parents=True, exist_ok=True)
+        env["TEMP"] = env["TMP"] = str(redirected["TEMP"])
+        env["APPDATA"] = str(redirected["APPDATA"])
+        env["USERPROFILE"] = str(redirected["USERPROFILE"])
         return {"py": str(runtime / "python.exe"), "script": script, "env": env,
-                "app": app, "cache": str(cache), "profile": base / name, "temp": temp,
-                "tools": tools}
+                "app": app, "cache": str(cache), "profile": base / name,
+                "temp": redirected["TEMP"], "redirected": redirected, "tools": tools,
+                "base": base}
 
     crash, ref = ctx("crash"), ctx("reference")
     clip0 = clipboard_sequence()
@@ -346,18 +376,32 @@ def check(version_dir, cache, wav, report, seconds):
     clip(long_wav, IMPORT_WINDOWS_S, start)   # its first seconds decode the same way
     windows_of(imp, start, base / "import-windows.bin")
     c = Child(imp, "run", imp["cache"], long_wav)
-    size = watch_for(imp["profile"], "audio.partial", c.p, 600, IMPORT_KILL_BYTES)
+    size = watch_for(imp["profile"], PARTIAL, c.p, 600, IMPORT_KILL_BYTES)
     killed = c.kill()
     run_to_idle(imp)
     long_wav.unlink()
     import_patterns = residue.split_windows((base / "import-windows.bin").read_bytes(),
                                             WINDOW_BYTES)
     found = residue.find([imp["profile"]], import_patterns, base)
+    imp_profile = imp["profile"] / "Unminute"
+    left = residue.left_in(imp["redirected"], base)
+    # Nothing of it left, shown directly rather than from the app's own
+    # folder removal (review of #335): no audio.partial anywhere in the
+    # profile, and only the workspace's own files.
+    partial_left = [n for n in residue.listing(imp["profile"], found["unreadable"], base)
+                    if Path(n).name == PARTIAL]
     report["import_crash"] = {"partial_seen": size is not None, "partial_bytes": size,
                               "killed": killed,
                               "state": inspect(imp), "windows": len(import_patterns),
                               "control_missed": residue.control(base, import_patterns),
-                              "found": found["hits"], "unreadable": found["unreadable"]}
+                              "found": found["hits"],
+                              "unreadable": sorted(set(found["unreadable"])
+                                                   | set(left["unreadable"])),
+                              "partial_left": len(partial_left),
+                              "unexpected_files": residue.unexpected(
+                                  imp_profile, imp_profile / "workspace", names),
+                              "temp_files": left["files"]["TEMP"],
+                              "left_unexplained": left["unexplained"]}
 
     # 7. Kill while recording synthetic audio once enough is saved; at the
     #    next start the recording waits for Keep, and keeping it makes one
@@ -371,19 +415,26 @@ def check(version_dir, cache, wav, report, seconds):
     rec_patterns = (residue.split_windows(rec_file.read_bytes(), RECORDING_WINDOW_BYTES)
                     if rec_file.exists() else {})
     found = residue.find([rec["profile"]], rec_patterns, base)
+    # A chunk still being written ends in .tmp; only the recordings folder
+    # is counted, so a library's temporary file elsewhere is not one.
+    chunks = rec["profile"] / "Unminute" / "workspace" / RECORDINGS
     report["recording_crash"] = {
         "seconds_at_kill": (s or {}).get("recording_seconds"), "killed": killed,
         "kept": kept, "state": inspect(rec), "windows": len(rec_patterns),
         "control_missed": residue.control(base, rec_patterns) if rec_patterns else ["none"],
         "found": found["hits"], "unreadable": found["unreadable"],
-        "partial_chunks_left": len(list(rec["profile"].rglob("*.tmp")))}
+        "partial_chunks_left": sum(1 for n in residue.listing(chunks, found["unreadable"],
+                                                              base) if n.endswith(".tmp"))}
 
-    # 6. Token removal with a test-only credential name.
+    # 8. Token removal with a test-only credential name.
     r = subprocess.run([crash["py"], *FLAGS, str(script), "token", "-", "-", MARKER],
                        capture_output=True, text=True, env=crash["env"], cwd=app)
     report["token_removal"] = json.loads(r.stdout.strip().splitlines()[-1])
 
     report["clipboard_sequence_unchanged"] = clipboard_sequence() == clip0
+    # 9. The real LocalLow and model cache: what the run added or changed
+    #    there, by name only, and whether residue.EXPLAINED names each.
+    report["outside"] = residue.compare(before, places, names)
     # Crash files, by name and size only: dumps fail; the app's own crash
     # files are expected here (the check kills the app) and only counted.
     report["dumps"] = residue.dumps(base)
@@ -404,6 +455,11 @@ def verdict(r):
              and st["wal_bytes"] == 0 and st["blockers"] == [])
     own_files = (lambda res: res["unexpected_files"] == [] and res["control_missed"] == []
                  and res["logs_scanned"] > 0)
+    # Every file left in a redirected TEMP, APPDATA or user folder is named,
+    # and none is expected (residue.EXPLAINED).
+    nothing_left = (lambda res: isinstance(res.get("temp_files"), list)
+                    and res.get("left_unexplained") == [])
+    outside = r.get("outside") or {}
     landings = rv.get("landings") or []
     kept = rec.get("kept") or {}
     checks = {
@@ -441,9 +497,15 @@ def verdict(r):
             and (imp.get("partial_bytes") or 0) >= IMPORT_KILL_BYTES
             and imp["state"]["meetings"] == 0 and imp["state"]["audio_files"] == 0
             and imp["state"]["blockers"] == [] and imp["windows"] == 8
-            and imp["control_missed"] == [] and not imp["found"] and not imp["unreadable"],
+            and imp["control_missed"] == [] and not imp["found"] and not imp["unreadable"]
+            and imp.get("partial_left") == 0 and imp.get("unexpected_files") == [],
+        "nothing left in TEMP, APPDATA or the user folder": nothing_left(fin["residue"])
+            and nothing_left(h["residue"]) and nothing_left(imp),
+        "nothing new outside the base unexplained": isinstance(outside.get("new"), dict)
+            and outside.get("unexplained") == [] and outside.get("unreadable") == [],
         "recording kept after a crash, nothing plain left": kept.get("recovered") is True
             and (kept.get("seconds") or 0) >= 5 and kept.get("imported") == 1
+            and kept.get("key_before_keep") == "opens"
             and kept.get("key_after_import") == "missing"
             and rec["state"]["meetings"] == 1 and "recordings" not in rec["state"]["blockers"]
             and rec["windows"] == 8 and rec["control_missed"] == []
@@ -468,6 +530,30 @@ offline_guard.disable_telemetry(); offline_guard.install()
 
 def say(**kw):
     print(json.dumps(kw), flush=True)
+
+
+class FileOnlyMirror:
+    """The audit log's Windows Event Log copy, dropped: this throwaway
+    workspace sits where the app's own would (LOCALAPPDATA is redirected),
+    so without it every run would add entries under the app's source, with
+    the user's SID, for chains nobody keeps (review of #335). The records
+    still go to the workspace's audit folder."""
+
+    def report(self, event_id, level, text):
+        pass
+
+
+def key_state(get, *args):
+    """"opens", "missing" (KeyMissing) or "damaged": never the key itself."""
+    from workspace.store import KeyMissing
+    try:
+        key = get(*args)
+    except KeyMissing:
+        return "missing"
+    except Exception:
+        return "damaged"
+    del key
+    return "opens"
 
 
 def status(ws):
@@ -656,8 +742,8 @@ def record(ws, pc, base):
 
 def keep(ws):
     """After the crash: the recording waits for Keep; keep it (as the page's
-    Keep does) and wait for its meeting. Key bytes are never read out."""
-    from workspace.store import KeyMissing
+    Keep does) and wait for its meeting. Key bytes are never read out. The
+    key opens before Keep, so "missing" after it is about this recording."""
     t = time.time()
     report = None
     while time.time() - t < 120 and report is None:
@@ -668,19 +754,14 @@ def keep(ws):
         say(recovered=False)
         return
     rid = report["pending"]
+    key_before = key_state(ws.store.recording_key, rid)
     ws.retry_recording_import(report["id"])
     t = time.time()
     while time.time() - t < 1500 and not (ws.meetings() and ws.wait_idle(5)):
         time.sleep(1)
-    try:
-        ws.store.recording_key(rid)
-        key = "opens"
-    except KeyMissing:
-        key = "missing"
-    except Exception:
-        key = "damaged"
     say(recovered=True, seconds=report.get("seconds"), imported=len(ws.meetings()),
-        key_after_import=key)
+        key_before_keep=key_before,
+        key_after_import=key_state(ws.store.recording_key, rid))
 
 
 def token(marker):
@@ -706,7 +787,7 @@ def main():
         windows(arg, rest[0])
         return
     pc = synthetic_input(arg) if mode in ("record", "keep") else None
-    ws = Workspace(cache_dir=cache, start=False, battery=False)
+    ws = Workspace(cache_dir=cache, start=False, battery=False, audit_mirror=FileOnlyMirror())
     if pc is not None:
         blocks = pc.synthetic_blocks()
         ws.open_stream = lambda device, rate, callback, finished: pc.PacedStream(
@@ -750,7 +831,7 @@ def main():
     try:
         check(args.version_dir, args.cache, args.wav, report, args.seconds)
     except Exception as exc:
-        report["error"] = f"{type(exc).__name__}: {exc}"
+        report["error"] = residue.redact(f"{type(exc).__name__}: {exc}")
         report["failed"] = [f"the check stopped ({type(exc).__name__})"]
         report["pass"] = False
     passed = report.get("pass") is True and not report.get("error")

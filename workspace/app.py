@@ -370,8 +370,9 @@ class Workspace:
         import, scan, recording and the start-up upkeep waits.
         opener: tests and the UI check tools only; called with the assistant's
         address instead of asking Windows to open it (copy_and_open_assistant).
-        audit_mirror: tests only; receives the audit log's Event Log copies
-        instead of Windows (#111 C5).
+        audit_mirror: tests and the packaged checks only; receives the audit
+        log's Event Log copies instead of Windows (#111 C5). The packaged
+        checks pass one that drops them (review of #335).
         instance_lock: the app's own start (#111 B5): hold the workspace lock
         (workspace/instance.py) for this Workspace's life, so another Windows
         session of the same user cannot open the workspace at the same time.
@@ -526,8 +527,13 @@ class Workspace:
         handled, each written after its action has committed, and never
         blocking it. Only the workspace in its own place with the app's key
         protector copies records to the Windows Event Log: a workspace opened
-        elsewhere (tests and the check tools) keeps its file only, so test
-        runs add nothing under the app's source. A record that breaks its
+        elsewhere (tests, and check tools that name their own folder) keeps
+        its file only, so test runs add nothing under the app's source. The
+        packaged checks (tools/packaged_check.py, tools/packaged_crash_check.py)
+        redirect LOCALAPPDATA, so their throwaway workspace is in its own
+        place: they pass an audit_mirror that drops the copies instead. The
+        idle window of tools/packaged_check.py starts as the app does and
+        still writes its entries. A record that breaks its
         rules is refused, counted and logged by type; it never raises, in
         tests too (their fakes need not use the app's ids), so the app tests
         check that nothing was refused. Opened once Workspace.locked is
