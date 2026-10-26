@@ -287,12 +287,39 @@ Describe "install.ps1 -Machine" {
             $script:Named = 0
             Mock New-RandomName { $script:Named++; if ($script:Named -eq 1) { "1" * 32 } else { "0" * 32 } }
             Mock Remove-StagingLeftover { }
+            # The message, so the test tells this refusal from the run's temporary
+            # folder's, which also stops with exit 1 (#406).
+            Mock Stop-Install { throw "STOP $Code $Message" }
             [void][IO.Directory]::CreateDirectory($script:Root)
             $taken = [IO.Directory]::CreateDirectory((Join-Path $script:Root ("staging-" + ("0" * 32)))).FullName
             [IO.File]::WriteAllText((Join-Path $taken "sentinel.txt"), "someone's")
-            { Invoke-TestInstall (New-TestZip "1.0.0") } | Should -Throw "STOP 1"
+            { Invoke-TestInstall (New-TestZip "1.0.0") } |
+                Should -Throw -ExpectedMessage "STOP 1 The temporary folder for extracting the package already exists, so nothing was installed. Run this again."
+            $script:Named | Should -Be 2
             [IO.File]::ReadAllText((Join-Path $taken "sentinel.txt")) | Should -BeExactly "someone's"
             [IO.Directory]::Exists((Join-Path $script:Root "versions\1.0.0")) | Should -BeFalse
+        }
+
+        It "does not use a temporary folder for the run that already exists (exit 1), and leaves it as it is (#406)" {
+            # The first name is the run's temporary folder (Enter-MachineTemp): taken, so
+            # the run stops there, before the package is opened.
+            $script:Named = 0
+            Mock New-RandomName { $script:Named++; "1" * 32 }
+            Mock Remove-StagingLeftover { }
+            Mock Stop-Install { throw "STOP $Code $Message" }
+            [void][IO.Directory]::CreateDirectory($script:Root)
+            $taken = [IO.Directory]::CreateDirectory((Join-Path $script:Root ("staging-" + ("1" * 32)))).FullName
+            [IO.File]::WriteAllText((Join-Path $taken "sentinel.txt"), "someone's")
+            $saved = @($env:TMP, $env:TEMP)
+            { Invoke-TestInstall (New-TestZip "1.0.0") } |
+                Should -Throw -ExpectedMessage "STOP 1 The temporary folder for this run already exists, so nothing was installed. Run this again."
+            $script:Named | Should -Be 1
+            # TMP and TEMP never pointed at it, and it is left as it was.
+            @($env:TMP, $env:TEMP) -join "|" | Should -BeExactly ($saved -join "|")
+            [IO.File]::ReadAllText((Join-Path $taken "sentinel.txt")) | Should -BeExactly "someone's"
+            @([IO.DirectoryInfo]::new($script:Root).GetDirectories("staging-*") | ForEach-Object Name) -join "," |
+                Should -BeExactly ("staging-" + ("1" * 32))
+            [IO.Directory]::Exists((Join-Path $script:Root "versions")) | Should -BeFalse
         }
 
         It "checks and unpacks the zip through one handle, so nobody can change it in between (review of a3ab563, L3)" {
