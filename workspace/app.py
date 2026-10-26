@@ -437,6 +437,7 @@ class Workspace:
         self._drafts = None               # drafts.DraftSession for the open recording
         self._draft_gen = 0               # each session's number (late results are dropped)
         self._drafts_ended = None         # the recording whose drafts ended for good
+        self._drafts_ended_why = None     # and why, the note it keeps (#384)
         self._draft_why = "off"           # why drafts are not running, for the page
         self.draft_model = drafts.DRAFT_MODEL     # tests: a "test:" engine
         # Downloads replace model files: the draft worker and the inference
@@ -1301,15 +1302,25 @@ class Workspace:
             if not reason:
                 self._draft_mix(rec, session)
             return
-        if reason or self._drafts_ended == rec.journal["id"]:
-            self._draft_why = reason or self._draft_why
+        with self._lock:                  # the mark and its note, set together
+            ended, ended_why = self._drafts_ended == rec.journal["id"], self._drafts_ended_why
+        if ended:
+            # Ended for this recording: its note stays (#384). A later battery
+            # or policy reason does not replace it, as drafts will not come
+            # back for this recording; the switch turned off hides it.
+            self._draft_why = "off" if reason == "off" else ended_why
+            return
+        if reason:
+            self._draft_why = reason
             return
         if self.downloads.busy() or self._removing:
             self._draft_why = "busy"          # model files may be changing: not yet
             return
         if not self._draft_model_ready():
             self._draft_why = "unavailable"   # Parakeet v2 is not downloaded or is damaged
-            self._drafts_ended = rec.journal["id"]
+            with self._lock:
+                self._drafts_ended = rec.journal["id"]
+                self._drafts_ended_why = "unavailable"
             return
         self._start_drafts(rec)
 
@@ -1356,6 +1367,7 @@ class Workspace:
                 if target is not None:
                     self._drafts_ended = target
                     self._draft_why = why
+                    self._drafts_ended_why = self._draft_why
         if session is None:
             return
         for r in (rec, self._recording):
