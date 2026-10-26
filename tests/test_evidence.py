@@ -1760,7 +1760,9 @@ class CrashVerdictTests(unittest.TestCase):
                 "same_text_as_reference": True, "same_segment_count": True},
             "review_cleanup_crash": {"kill": k, "state": self.REVIEWED, "landings": [
                 {"after_s": 0, "kill": k, "landed": "before", "state": self.REVIEWED},
-                {"after_s": 0.05, "kill": k, "landed": "after", "state": self.REVIEWED}]},
+                {"after_s": 0.05, "kill": k, "landed": "after", "state": self.REVIEWED}],
+                "landing_residue": {"control_missed": [], "found": {}, "unreadable": [],
+                                    "temp_files": [], "left_unexplained": []}},
             "final_cleanup_crash": {"kill": k, "state": self.GONE, "residue": clean},
             "hold_race": {"crash": k, "after_restart": crash_state(active_holds=1),
                           "release": {"result": [], "killed": False},
@@ -1781,7 +1783,8 @@ class CrashVerdictTests(unittest.TestCase):
                                          "key_before_keep": "opens",
                                          "key_after_import": "missing"},
                                 "state": crash_state(), "windows": 8, "control_missed": [],
-                                "found": {}, "unreadable": [], "partial_chunks_left": 0},
+                                "found": {}, "unreadable": [], "temp_files": [],
+                                "left_unexplained": [], "partial_chunks_left": 0},
             "token_removal": {"saved": True, "present_after_removal": False,
                               "loaded_after_removal": False},
             "clipboard_sequence_unchanged": True,
@@ -1837,7 +1840,19 @@ class CrashVerdictTests(unittest.TestCase):
                       ["TEMP/tmp1.bin"]),
                 with_(("hold_race", "residue", "left_unexplained"), ["APPDATA/x"]),
                 with_(("hold_race", "residue", "temp_files"), None),
-                with_(("import_crash", "left_unexplained"), ["TEMP/tmp2.bin"])],
+                with_(("import_crash", "left_unexplained"), ["TEMP/tmp2.bin"]),
+                # The landing and recording profiles too (review of #335).
+                with_(("review_cleanup_crash", "landing_residue", "left_unexplained"),
+                      ["TEMP/tmp3.bin"]),
+                with_(("recording_crash", "left_unexplained"), ["USERPROFILE/x.bin"]),
+                with_(("recording_crash", "temp_files"), None)],
+            "nothing plain in the landing profile": [
+                with_(("review_cleanup_crash", "landing_residue", "found"),
+                      {"marker": ["landing/Unminute/workspace/x"]}),
+                with_(("review_cleanup_crash", "landing_residue", "control_missed"),
+                      ["window_2"]),
+                with_(("review_cleanup_crash", "landing_residue", "unreadable"),
+                      ["landing/home/locked/"])],
             "nothing new outside the base unexplained": [
                 with_(("outside", "unexplained"), ["LocalLow/SomeApp/x.dat"]),
                 with_(("outside", "unreadable"), ["model_cache/gpu/"]),
@@ -1980,6 +1995,13 @@ class EvidenceChildrenTests(unittest.TestCase):
         self.assertIn("residue.redact((r.stderr or r.stdout)[-2000:], base)",
                       sources["packaged_check"])
         self.assertIn("residue.redact(r.stderr[-800:], workdir)", sources["perf_check"])
+        # A child's result is redacted once decoded: JSON escapes a name that
+        # is not ASCII, and the escaped form would get through (review of #335).
+        self.assertIn("return residue.redact_json(result, base)", sources["packaged_check"])
+        self.assertIn('out = residue.redact_json(msg["result"], base)',
+                      sources["packaged_check"])
+        self.assertNotIn("residue.redact(r.stdout", sources["packaged_check"])
+        self.assertNotIn("residue.redact(json.dumps(", sources["packaged_check"])
 
     def test_a_child_s_failure_reaches_the_report_without_the_user_s_paths(self):
         import packaged_crash_check

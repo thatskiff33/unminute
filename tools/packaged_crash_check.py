@@ -23,14 +23,17 @@
 # never the key gone while the audio shows as available) and while recording
 # synthetic audio (once enough is saved). After final cleanup the profile
 # holds only the workspace's own files and none of the content
-# (tools/residue.py, with its positive control). Crash dumps under the base
+# (tools/residue.py, with its positive control), and the landing profile,
+# whose meeting is kept with its audio removed, holds none of it either.
+# Crash dumps under the base
 # fail the report; the app's own crash files are counted, not failed, because
 # this check kills the app on purpose.
 #
 # Uses throwaway LOCALAPPDATA profiles ("crash", "reference", "landing",
 # "import" and "recording"), each with its own TEMP, APPDATA and USERPROFILE,
 # in one base folder deleted at the end; no real workspace or saved token is
-# touched. Every file left in those redirected folders is named and fails the
+# touched. Every file left in each profile's redirected folders, listed after
+# that profile's last meeting step, is named and fails the
 # check unless residue.EXPLAINED names it, and the real LocalLow and model
 # cache are compared before and after (names, sizes and times only). The
 # children keep the audit log in its file only (a mirror that drops the
@@ -251,6 +254,7 @@ def leftovers(base, ctx, names, patterns):
             "control_missed": residue.control(base, patterns),
             "unexpected_files": residue.unexpected(profile, profile / "workspace", names),
             "temp_files": left["files"]["TEMP"], "left_unexplained": left["unexplained"],
+            "left_explained": left["explained"],
             "logs_scanned": len(residue.logs_scanned(found["scanned"], names, prefix))}
 
 
@@ -338,8 +342,21 @@ def check(version_dir, cache, wav, report, seconds):
         run_to_idle(profile)
         landings.append({"after_s": after, "kill": k, "landed": landing(killed_state),
                          "state": inspect(profile)})
+    # The landing profile, its meeting kept with its audio removed: none of
+    # the content in it or its redirected folders, and every file left in
+    # those folders named (review of #335).
+    found = residue.find([land["profile"]], patterns, base)
+    left = residue.left_in(land["redirected"], base)
     report["review_cleanup_crash"] = {"kill": landings[0]["kill"],
-                                      "state": landings[0]["state"], "landings": landings}
+                                      "state": landings[0]["state"], "landings": landings,
+                                      "landing_residue": {
+                                          "control_missed": residue.control(base, patterns),
+                                          "found": found["hits"],
+                                          "unreadable": sorted(set(found["unreadable"])
+                                                               | set(left["unreadable"])),
+                                          "temp_files": left["files"]["TEMP"],
+                                          "left_unexplained": left["unexplained"],
+                                          "left_explained": left["explained"]}}
 
     # 4. Crash just after the final confirmation (transcript cleanup), restart.
     k = act(crash, "final", kill_after=0.05)
@@ -401,7 +418,8 @@ def check(version_dir, cache, wav, report, seconds):
                               "unexpected_files": residue.unexpected(
                                   imp_profile, imp_profile / "workspace", names),
                               "temp_files": left["files"]["TEMP"],
-                              "left_unexplained": left["unexplained"]}
+                              "left_unexplained": left["unexplained"],
+                              "left_explained": left["explained"]}
 
     # 7. Kill while recording synthetic audio once enough is saved; at the
     #    next start the recording waits for Keep, and keeping it makes one
@@ -415,16 +433,21 @@ def check(version_dir, cache, wav, report, seconds):
     rec_patterns = (residue.split_windows(rec_file.read_bytes(), RECORDING_WINDOW_BYTES)
                     if rec_file.exists() else {})
     found = residue.find([rec["profile"]], rec_patterns, base)
+    left = residue.left_in(rec["redirected"], base)
     # A chunk still being written ends in .tmp; only the recordings folder
     # is counted, so a library's temporary file elsewhere is not one.
     chunks = rec["profile"] / "Unminute" / "workspace" / RECORDINGS
+    partial_chunks = sum(1 for n in residue.listing(chunks, found["unreadable"], base)
+                         if n.endswith(".tmp"))
     report["recording_crash"] = {
         "seconds_at_kill": (s or {}).get("recording_seconds"), "killed": killed,
         "kept": kept, "state": inspect(rec), "windows": len(rec_patterns),
         "control_missed": residue.control(base, rec_patterns) if rec_patterns else ["none"],
-        "found": found["hits"], "unreadable": found["unreadable"],
-        "partial_chunks_left": sum(1 for n in residue.listing(chunks, found["unreadable"],
-                                                              base) if n.endswith(".tmp"))}
+        "found": found["hits"],
+        "unreadable": sorted(set(found["unreadable"]) | set(left["unreadable"])),
+        "temp_files": left["files"]["TEMP"], "left_unexplained": left["unexplained"],
+        "left_explained": left["explained"],
+        "partial_chunks_left": partial_chunks}
 
     # 8. Token removal with a test-only credential name.
     r = subprocess.run([crash["py"], *FLAGS, str(script), "token", "-", "-", MARKER],
@@ -461,6 +484,7 @@ def verdict(r):
                     and res.get("left_unexplained") == [])
     outside = r.get("outside") or {}
     landings = rv.get("landings") or []
+    land_res = rv.get("landing_residue") or {}
     kept = rec.get("kept") or {}
     checks = {
         "reference transcribed with speakers": ref["segments"] > 0
@@ -499,8 +523,11 @@ def verdict(r):
             and imp["state"]["blockers"] == [] and imp["windows"] == 8
             and imp["control_missed"] == [] and not imp["found"] and not imp["unreadable"]
             and imp.get("partial_left") == 0 and imp.get("unexpected_files") == [],
+        "nothing plain in the landing profile": land_res.get("control_missed") == []
+            and land_res.get("found") == {} and land_res.get("unreadable") == [],
         "nothing left in TEMP, APPDATA or the user folder": nothing_left(fin["residue"])
-            and nothing_left(h["residue"]) and nothing_left(imp),
+            and nothing_left(h["residue"]) and nothing_left(imp)
+            and nothing_left(land_res) and nothing_left(rec),
         "nothing new outside the base unexplained": isinstance(outside.get("new"), dict)
             and outside.get("unexplained") == [] and outside.get("unreadable") == [],
         "recording kept after a crash, nothing plain left": kept.get("recovered") is True

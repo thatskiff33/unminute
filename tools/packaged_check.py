@@ -15,8 +15,10 @@
 # %APPDATA% lands there too), so no real workspace is touched. The children
 # that open the workspace keep its audit log in its file only: they pass a
 # mirror that drops the Windows Event Log copy, so a run adds no entries
-# under the app's source (the idle window, started as the app is, still
-# does). It checks:
+# under the app's source. The idle window (step 6), started as the app is,
+# still writes its own content-free entries, so it is tested exactly as
+# shipped; it runs after the last scan and comparison, so what it writes is
+# not compared (the owner's decision, 26 Oct 2026; #418). It checks:
 #   - self-test (dependencies, network guard) from the packaged runtime;
 #   - offline processing with cached models and no Hugging Face token present;
 #   - the full lifecycle (import, transcribe, speakers, review, cleanup);
@@ -211,11 +213,13 @@ def check(version_dir, cache, wav, report, system_dumps=False):
         except subprocess.TimeoutExpired:
             return {"error": f"the {mode} step exceeded {timeout:,} s"}
         # What the child says goes into the report without the base path,
-        # the home folder or the user name (P3).
+        # the home folder or the user name (P3), redacted once decoded:
+        # JSON escapes a name that is not ASCII (review of #335).
         try:
-            return last_json(residue.redact(r.stdout, base))
+            result = last_json(r.stdout)
         except (ValueError, IndexError):
             return {"error": residue.redact((r.stderr or r.stdout)[-2000:], base)}
+        return residue.redact_json(result, base)
 
     # 1. Import, transcribe and identify speakers; the marker goes into the
     #    title, an edit, a speaker's name and a hold reason; the child writes
@@ -275,9 +279,12 @@ def check(version_dir, cache, wav, report, system_dumps=False):
                           "temp_files_left": left["files"]["TEMP"],
                           "redirected_files_left": left["files"],
                           "left_unexplained": left["unexplained"],
+                          "left_explained": left["explained"],
                           # LocalLow and the model cache: new or changed files, by name.
                           "outside_new": outside["new"],
                           "outside_unexplained": outside["unexplained"],
+                          # Each residue.EXPLAINED entry relied on, by name.
+                          "outside_explained": outside["explained"],
                           "outside_unreadable": outside["unreadable"],
                           "content_backups": [n for n in files if n.endswith(
                               (".bak", ".backup", ".old", ".copy")) or "backup" in n.lower()]}
@@ -351,7 +358,7 @@ def record(command, rest, env, app, base, roots, timeout=1800):
                 proc.stdin.write("go\n")
                 proc.stdin.flush()
             elif "result" in msg:
-                out = json.loads(residue.redact(json.dumps(msg["result"]), base))
+                out = residue.redact_json(msg["result"], base)     # decoded (P3)
         proc.wait(60)
     finally:
         watchdog.cancel()

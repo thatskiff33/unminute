@@ -5,6 +5,7 @@
 # dump count, which reads names and sizes only and nothing outside its base
 # unless a person asks. Synthetic files only.
 
+import json
 import os
 import sys
 import tempfile
@@ -408,6 +409,9 @@ class OutsideTests(TempDir):
                                        "SomeApp/new.dat"]}, out["new"])
         self.assertEqual(["LocalLow/SomeApp/new.dat", "model_cache/changed.bin",
                           "model_cache/new.bin"], out["unexplained"])
+        # The report names each EXPLAINED entry it relied on (the owner's
+        # decision, 26 Oct 2026).
+        self.assertEqual({"LocalLow: Microsoft/CryptnetUrlCache/.+": 1}, out["explained"])
         self.assertEqual([], out["unreadable"])
         # An earlier comparison's names are kept (made, then removed again).
         later = residue.compare(before, places, residue.names(),
@@ -431,6 +435,45 @@ class OutsideTests(TempDir):
         for place in ("TEMP", "APPDATA", "USERPROFILE"):
             self.assertIsNone(residue.explain(place, "x.tmp", n))
 
+    def test_the_explained_records_are_where_the_app_writes_them(self):
+        # Tied to workspace/asr_engines.py's own paths, not a copy of their
+        # layout (review of #335): a managed model's marker, and the record
+        # kept for a Hugging Face copy outside the cache's own folders.
+        from workspace import asr_engines
+        n, cache = residue.names(), self.root / "models"
+        for name, spec in asr_engines.MANAGED_MODELS.items():
+            paths = [asr_engines.model_dir(spec, cache) / asr_engines.VERIFIED_MARKER]
+            if spec.hub_repos:
+                paths.append(asr_engines._marker_for(spec, cache, self.root / "hub" / name))
+            for path in paths:
+                rel = path.relative_to(cache).as_posix()
+                with self.subTest(model=name, record=rel):
+                    self.assertIsNotNone(residue.explain("model_cache", rel, n))
+
+    def test_a_folder_unreadable_before_the_run_is_still_reported(self):
+        # Named even when it can be listed again afterwards (review of #335).
+        places = {"LocalLow": self.root / "low"}
+        self.put("low/a.dat")
+        before = (residue.snapshot(places)[0], ["LocalLow/Locked/"])
+        out = residue.compare(before, places)
+        self.assertEqual(["LocalLow/Locked/"], out["unreadable"])
+        self.assertEqual({"LocalLow": []}, out["new"])
+
+    def test_a_file_stat_cannot_read_is_reported_not_skipped(self):
+        self.put("cache/a.bin")
+        self.put("cache/sub/locked.bin")
+        real_stat = os.stat
+
+        def stat(path, *a, **k):
+            if os.fspath(path).endswith("locked.bin"):
+                raise PermissionError(13, "Access is denied", os.fspath(path))
+            return real_stat(path, *a, **k)
+        unreadable = []
+        with mock.patch.object(residue.os, "stat", stat):
+            out = residue.listing(self.root / "cache", unreadable, self.root)
+        self.assertEqual({"a.bin"}, set(out))
+        self.assertEqual(["cache/sub/locked.bin"], unreadable)
+
     def test_left_in_names_every_file_in_the_redirected_folders(self):
         places = {"TEMP": self.root / "temp", "APPDATA": self.root / "roaming",
                   "USERPROFILE": self.root / "home"}
@@ -443,6 +486,7 @@ class OutsideTests(TempDir):
                           "USERPROFILE": [".cache/lib/x.bin"]}, out["files"])
         self.assertEqual(["TEMP/tmpab12.wav", "USERPROFILE/.cache/lib/x.bin"],
                          out["unexplained"])
+        self.assertEqual({}, out["explained"])
 
     def test_the_real_places_are_locallow_and_the_model_cache(self):
         places = residue.real_places("models", {"USERPROFILE": "profile"})
@@ -475,6 +519,41 @@ class RedactTests(TempDir):
         self.assertEqual("plain error", residue.redact("plain error", None, {}))
         self.assertEqual("", residue.redact("", "x", self.ENV))
         self.assertIsNone(residue.redact(None, "x", self.ENV))
+
+    def test_a_macronised_name_is_replaced_however_it_is_written(self):
+        # Synthetic name. JSON escapes it (T\u0101ne) and a pipe that cannot
+        # hold it backslash-escapes it; both used to get through (review of
+        # #335).
+        home = "C:\\Users\\Tāne.Example"
+        env = {"USERPROFILE": home, "USERNAME": "Tāne.Example"}
+        base = home + "\\AppData\\Local\\Temp\\umpkg-9z"
+        result = {"error": f"PermissionError: {home}\\Downloads\\a.wav; user Tāne.Example",
+                  "opened": f"{base}\\Unminute\\x", "share": "D:\\Shares\\Tāne.Example\\y"}
+        as_json = json.dumps(result)
+        self.assertIn("\\u0101", as_json)
+        piped = (f"{home}\\x\nfor TĀNE.EXAMPLE".encode("ascii", "backslashreplace")
+                 .decode("ascii"))
+        for text in (as_json, piped, f"{home}\\x tāne.example"):
+            with self.subTest(text=text):
+                out = residue.redact(text, base, env)
+                self.assertNotIn("example", out.lower())
+                self.assertNotIn("tāne", out.lower())
+        decoded = residue.redact_json(json.loads(as_json), base, env)
+        self.assertEqual({"error": "PermissionError: <home>\\Downloads\\a.wav; user <user>",
+                          "opened": "<base>\\Unminute\\x",
+                          "share": "D:\\Shares\\<user>\\y"}, decoded)
+
+    def test_a_short_user_name_is_replaced_only_in_a_path_or_an_error(self):
+        env = {"USERPROFILE": "C:\\Users\\ope", "USERNAME": "ope"}
+        result = {"opens": "opens", "note": "rope ope", "files": ["D:\\Shares\\ope\\x.wav"],
+                  "key_error": "user ope refused; scope", "D:/ope/k": 1}
+        out = residue.redact_json(result, None, env)
+        self.assertEqual({"opens": "opens", "note": "rope ope",
+                          "files": ["D:\\Shares\\<user>\\x.wav"],
+                          "key_error": "user <user> refused; scope", "D:/<user>/k": 1}, out)
+        # Error text: the name as a word, never inside one.
+        self.assertEqual("<user> opens a scope",
+                         residue.redact("ope opens a scope", None, env))
 
     def test_the_short_form_is_replaced_too(self):
         short = "C:\\Users\\PATEXA~1"

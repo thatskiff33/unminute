@@ -533,7 +533,8 @@ class Workspace:
         redirect LOCALAPPDATA, so their throwaway workspace is in its own
         place: they pass an audit_mirror that drops the copies instead. The
         idle window of tools/packaged_check.py starts as the app does and
-        still writes its entries. A record that breaks its
+        still writes its entries (the owner's decision, 26 Oct 2026, #418).
+        A record that breaks its
         rules is refused, counted and logged by type; it never raises, in
         tests too (their fakes need not use the app's ids), so the app tests
         check that nothing was refused. Opened once Workspace.locked is

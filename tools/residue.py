@@ -16,9 +16,10 @@
 #     folder outside the profile (names, sizes and times only, never
 #     opened), and explain(): whether each such file is one the run is
 #     known to leave there (EXPLAINED), with why it holds no content.
-#   - redact(): an error tail copied into a report without the throwaway
-#     base, the home folder or the Windows user name (P3: the reports are
-#     published with a release).
+#   - redact() and redact_json(): an error tail, or a child's decoded
+#     result, copied into a report without the throwaway base, the home
+#     folder or the Windows user name (P3: the reports are published with a
+#     release).
 #   - dumps(): crash dumps under the throwaway base, counted by name and
 #     size (os.walk and stat only): no dump is ever opened, copied or
 #     printed. system_dumps() counts the signed-in user's own dump folders,
@@ -27,6 +28,7 @@
 #
 # Standard library only: the checks run it in the package's own runtime.
 
+import json
 import os
 import re
 import secrets
@@ -220,7 +222,16 @@ def unexpected(profile, workspace, n):
 # holds no meeting content. Anything else a run leaves there fails the
 # check. "{verified_marker}" stands for asr_engines.VERIFIED_MARKER (names()).
 # The redirected places (the child's TEMP, APPDATA and user folder) explain
-# nothing: no file is expected there.
+# nothing: no file is expected there. The model-cache patterns follow
+# workspace/asr_engines.py (VERIFIED_MARKER in a model's folder, and
+# _marker_for()'s <family>/.verified/<folder>-<key>.json for a Hugging Face
+# copy); tests/test_residue.py ties them to the app's own paths.
+#
+# Adding an entry widens what a run may leave (AGENTS.md E2). The owner's
+# decision, 26 Oct 2026 (#335): the agent running the release evidence may
+# add an entry for a content-free library cache that run found, with why it
+# holds no content, provided each entry is reviewed independently and named
+# in the evidence report (docs/RELEASING.md, "Release evidence").
 EXPLAINED = {
     "LocalLow": (
         (r"Microsoft/CryptnetUrlCache/.+",
@@ -294,33 +305,56 @@ def compare(before, places, n=None, earlier=None):
         new[place] = sorted(set(new.get(place, [])) | set(names))
     unreadable = sorted(set(refused) | set(unreadable)
                         | set((earlier or {}).get("unreadable") or []))
-    return {"new": new, "unexplained": unexplained(new, n), "unreadable": unreadable}
+    return {"new": new, "unexplained": unexplained(new, n), "explained": explained(new, n),
+            "unreadable": unreadable}
 
 
 def left_in(places, base):
     """Every file in the redirected places (all of them made by the run),
-    by name: {"files": {place: [name]}, "unexplained": [...], "unreadable":
-    [...]}, the unreadable folders relative to base."""
+    by name: {"files": {place: [name]}, "unexplained": [...], "explained":
+    {...} (explained()), "unreadable": [...]}, the unreadable folders
+    relative to base."""
     files, unreadable = {}, []
     for place, root in places.items():
         files[place] = sorted(_rel(p, root) for p in _files([root], unreadable, base))
-    return {"files": files, "unexplained": unexplained(files), "unreadable": unreadable}
+    return {"files": files, "unexplained": unexplained(files), "explained": explained(files),
+            "unreadable": unreadable}
+
+
+def _entry(place, name, n=None):
+    """The EXPLAINED entry (pattern, why) that explains a file, or None."""
+    marker = re.escape((n or {}).get("verified_marker", ".verified.json"))
+    for pattern, why in EXPLAINED.get(place, ()):
+        if re.fullmatch(pattern.replace("{verified_marker}", marker), name):
+            return pattern, why
+    return None
 
 
 def explain(place, name, n=None):
     """Why a new or changed file at place (an EXPLAINED key) holds no
     content, or None when nothing explains it (the check fails then)."""
-    marker = re.escape((n or {}).get("verified_marker", ".verified.json"))
-    for pattern, why in EXPLAINED.get(place, ()):
-        if re.fullmatch(pattern.replace("{verified_marker}", marker), name):
-            return why
-    return None
+    entry = _entry(place, name, n)
+    return entry[1] if entry else None
 
 
 def unexplained(new, n=None):
     """{place: [name]} -> the names nothing explains, as "place/name"."""
     return sorted(f"{place}/{name}" for place, found in new.items() for name in found
                   if explain(place, name, n) is None)
+
+
+def explained(new, n=None):
+    """{place: [name]} -> how many of the names each EXPLAINED entry
+    explains, as {"place: pattern": count}, so a report names every entry
+    it relied on (the owner's decision, 26 Oct 2026, #335)."""
+    out = {}
+    for place, found in new.items():
+        for name in found:
+            entry = _entry(place, name, n)
+            if entry:
+                key = f"{place}: {entry[0]}"
+                out[key] = out.get(key, 0) + 1
+    return dict(sorted(out.items()))
 
 
 # -- error text copied into a report ---------------------------------------------------------
@@ -339,13 +373,32 @@ def _short(path):
     return str(path)
 
 
-def redact(text, base=None, environ=None):
+def _escaped(form):
+    """form as text can carry it: as written, as JSON writes it (backslashes
+    doubled, anything not ASCII as \\uXXXX) and as Python writes it to a pipe
+    whose encoding cannot hold it (backslashreplace: \\xNN, \\uXXXX). A
+    macronised name such as Tāne reaches a report in these forms (review
+    of #335). An escape carries no case, so the escaped forms are made from
+    the name as written, in lower case and in capitals."""
+    out = {form}
+    for f in (form, form.lower(), form.upper()):
+        out |= {json.dumps(f)[1:-1], f.encode("ascii", "backslashreplace").decode("ascii")}
+    return out
+
+
+def redact(text, base=None, environ=None, error=True):
     """text with the throwaway base folder written as <base>, the home folder
     as <home> and then the Windows user name as <user>, in each form an error
     can carry (long and short names, either slash, the doubled backslashes
-    of repr and JSON), case ignored. Error tails copied into a report go
-    through this: the reports are published with a release, and these paths
-    name the user (P3; review of #335)."""
+    of repr and JSON, escaped non-ASCII: _escaped()), case ignored. Error
+    tails copied into a report go through this: the reports are published
+    with a release, and these paths name the user (P3; review of #335).
+
+    The user name is replaced only as a whole word: in error text (error)
+    wherever it stands, otherwise (a key or value of a child's result,
+    redact_json()) only as a folder in a path, after a slash or backslash.
+    So a short user name never changes a key or value that merely holds its
+    letters (review of #335)."""
     if not text:
         return text
     environ = os.environ if environ is None else environ
@@ -358,13 +411,33 @@ def redact(text, base=None, environ=None):
             if len(p) < 4:                     # never a bare drive
                 continue
             for form in {p, p.replace("\\", "/"), p.replace("\\", "\\\\")}:
-                forms.append((form, placeholder))
+                forms += [(f, placeholder) for f in _escaped(form)]
     for form, placeholder in sorted(forms, key=lambda f: -len(f[0])):
         text = re.sub(re.escape(form), placeholder, text, flags=re.IGNORECASE)
     user = environ.get("USERNAME")
     if user and len(user) >= 3:
-        text = re.sub(re.escape(user), "<user>", text, flags=re.IGNORECASE)
+        before = r"(?<!\w)" if error else r"(?<=[\\/])"
+        for form in sorted(_escaped(user), key=len, reverse=True):
+            text = re.sub(before + re.escape(form) + r"(?!\w)", "<user>", text,
+                          flags=re.IGNORECASE)
     return text
+
+
+def redact_json(value, base=None, environ=None, error=False):
+    """A child's decoded JSON result with redact() applied to every string in
+    it, keys included: a value under a key that names an error ("error",
+    "..._error") as error text, the rest by path only. Redacted after
+    decoding, so a name that JSON escaped (\\u0101 for ā) is matched as
+    written (review of #335)."""
+    if isinstance(value, str):
+        return redact(value, base, environ, error)
+    if isinstance(value, list):
+        return [redact_json(v, base, environ, error) for v in value]
+    if isinstance(value, dict):
+        return {redact(k, base, environ, False):
+                redact_json(v, base, environ, error or "error" in k.lower())
+                for k, v in value.items()}
+    return value
 
 
 def logs_scanned(scanned, n, prefix):
