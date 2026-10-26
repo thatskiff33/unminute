@@ -347,6 +347,10 @@ real time, and remove it when the cause is fixed.
   real. Do not raise the 2.0 s or the work limits to make a run pass (AGENTS.md E2); a
   deliberate change to the guard's work needs the shapes measured again, with the reason in
   the PR.
+- **A cancelled CI run on a pull request** usually means a newer push superseded it (#395):
+  each workflow cancels a pull request's older run when a new one starts. Its checks,
+  including a failed "Unit tests (Windows)", belong to the old head; look at the newest
+  head's run instead. A run on `main` is never cancelled this way.
 - **`tests/test_recorder.py`** `test_a_recovered_recording_can_be_deleted_instead` failed once on
   the Windows runner and passed on rerun (#148).
 

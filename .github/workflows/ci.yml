@@ -24,6 +24,16 @@ on:
 
 permissions: {}
 
+# Superseded runs (#395): a new push to a pull request cancels that pull
+# request's older run, so it stops holding runners; the required checks report
+# on the new head from its own run. Every other run (a push to main) is in a
+# group of its own, by run id, so it is never cancelled or queued behind
+# another. In a cancelled run the "Unit tests (Windows)" job still runs, as
+# always() asks, and fails on the old head, which is expected.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   check:
     name: Syntax check

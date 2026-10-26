@@ -13,6 +13,12 @@ on:
 
 permissions: {}
 
+# A newer push or label change cancels the pull request's older run, so the
+# newest event's run reports (see ci.yml, #395).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   entry:
     name: Changelog entry
