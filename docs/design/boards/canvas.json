@@ -63,7 +63,7 @@
     "Main.dc.html", "Today-Inbox.dc.html", "Today-Meeting.dc.html",
     "Home.dc.html", "Recording.dc.html", "Home-Empty.dc.html", "Home-Drop.dc.html", "Home-States.dc.html", "Recording-States.dc.html", "Home-Retention.dc.html",
     "Recording-Drafts.dc.html", "Recording-Drafts-Dark.dc.html", "Recording-Drafts-States.dc.html",
-    "Meeting.dc.html", "Meeting-Transcribing.dc.html", "Meeting-Edit.dc.html", "Meeting-Reviewed.dc.html", "Meeting-Earlier.dc.html", "Meeting-Panels.dc.html",
+    "Meeting.dc.html", "Meeting-Transcribing.dc.html", "Meeting-Edit.dc.html", "Meeting-Reviewed.dc.html", "Meeting-Earlier.dc.html", "Meeting-Panels.dc.html", "Meeting-Versions.dc.html",
     "Names.dc.html", "Confirm.dc.html", "Handoff.dc.html", "Handoff-Template.dc.html",
     "Setup-1.dc.html", "Setup.dc.html", "Setup-3.dc.html", "Setup-4.dc.html", "Setup-5.dc.html",
     "Settings.dc.html", "Models.dc.html", "Help.dc.html", "Models-Queued.dc.html", "Models-Queued-Dark.dc.html", "Models-Resumed.dc.html", "Locked.dc.html",
@@ -74,7 +74,7 @@
   "notes": {
     "row1": {"x": 0, "y": -260, "text": "1. Brand system, and the app today", "kind": "title1", "maxW": 3460},
     "row2": {"x": 0, "y": 880, "text": "2. Meetings page", "kind": "title1", "maxW": 11720},
-    "row3": {"x": 0, "y": 2440, "text": "3. Reviewing a meeting", "kind": "title1", "maxW": 7240},
+    "row3": {"x": 0, "y": 2440, "text": "3. Reviewing a meeting", "kind": "title1", "maxW": 8420},
     "row4": {"x": 0, "y": 3580, "text": "4. Name speakers, confirm and hand off", "kind": "title1", "maxW": 4640},
     "row5": {"x": 0, "y": 4720, "text": "5. First-run setup", "kind": "title1", "maxW": 5820},
     "row6": {"x": 0, "y": 5860, "text": "6. Settings, help and the locked screen", "kind": "title1", "maxW": 8180},
