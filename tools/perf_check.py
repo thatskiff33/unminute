@@ -193,9 +193,11 @@ stops the run before it starts (exit 2).
 
 Exit codes: 0 within budget (or no budgets file yet); 1 a figure is over its
 budget (a worker that did not unload counts as over), or a budgeted figure was
-not measured; 2 the window could not be measured (it did not start, did not
-respond, lost its recording, was not drawn in a visible state, or left
-processes outside the measuring job).
+not measured, or the report would have carried the Windows user name (then
+the report written says only where, tools/residue.py guarded()); 2 the window
+could not be measured (it did not start, did not respond, lost its recording,
+was not drawn in a visible state, or left processes outside the measuring
+job).
 
 Store step (#111 C7): before the windowed runs, once and with no window, in
 its own throwaway folder with the app's own key protection, the sealed store
@@ -1478,8 +1480,9 @@ def parent(args):
             results.append(one_run(args, settle, window, args.leak_minutes if last else 0,
                                    display=display, refresh_hz=hz or before))
     except Exception as exc:          # anything that stops a run means "not measured"
-        report["each_run"], report["error"] = results, str(exc)
-        Path(args.report).write_text(json.dumps(report, indent=2), encoding="utf-8")
+        # Without the home folder or the user name; then the name guard (P3).
+        report["each_run"], report["error"] = results, residue.redact(str(exc))
+        residue.write_guarded(args.report, report)
         print(f"COULD NOT MEASURE: {exc}")
         return 2
     finally:
@@ -1509,7 +1512,11 @@ def parent(args):
     report["proposed_budgets_plus_20_percent"] = propose(figures)
     if getattr(args, "compare", None):
         report["comparison"] = compare_reports(report, earlier_report(args.compare))
-    Path(args.report).write_text(json.dumps(report, indent=2), encoding="utf-8")
+    # Last: a report that would carry the Windows user name is written as a
+    # failing report naming only where (P3; review of 78f17ee, #419).
+    named = residue.write_guarded(args.report, report) is not report
+    if named:
+        print(f"FAILED: {residue.CARRIES_USER_NAME}")
     print(json.dumps(report["median"], indent=2))
     for s, m, v, b in over:
         print(f"OVER BUDGET: {s} {m} {v} > {b}")
@@ -1532,9 +1539,9 @@ def parent(args):
               + ", ".join(comparison["machines_differ_in"]))
     if not budgets:
         print("NO BUDGETS YET")
-    elif not over and not missing:
+    elif not over and not missing and not named:
         print("WITHIN BUDGET")
-    return 1 if over or missing else 0
+    return 1 if over or missing or named else 0
 
 
 def earlier_report(path):

@@ -469,16 +469,30 @@ def stamp(report, kind, zpath, version_dir, passed, before=None, run=None):
     return ev
 
 
-def stamp_file(report_path, kind, zpath, version_dir, passed, before=None, run=None):
-    """Stamp a report already written to report_path, in place."""
+def stamp_file(report_path, kind, zpath, version_dir, passed, before=None, run=None,
+               environ=None):
+    """Stamp a report already written to report_path, in place. The stamped
+    report goes through the name guard last (residue.guarded(); review of
+    78f17ee, #419): the stamp is added after each check's own guard, and it
+    lists the names of files added to the version folder, which can carry
+    the Windows user name (torchinductor_<name>). A stamped report that
+    would carry it is written as the guard's failing report, with an
+    evidence block of its kind that fails, and the evidence returned fails."""
+    import residue           # tools/, on the path of every check that stamps (not of "check")
     path = Path(report_path)
     report = json.loads(path.read_text(encoding="utf-8"))
     ev = stamp(report, kind, zpath, version_dir, passed, before, run)
-    path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    written = residue.guarded(report, environ)
+    named = written is not report
+    if named:
+        ev = {**ev, "pass": False}
+        written["evidence"] = {"kind": kind, "check_passed": False, "pass": False}
+    path.write_text(json.dumps(written, indent=2), encoding="utf-8")
     print(f"EVIDENCE {kind}: {'PASS' if ev['pass'] else 'FAIL'} for {ev['package']} "
           f"(SHA-256 {ev['package_sha256']})"
           + ("" if ev["folder_matches_package"]
-             else f"; the folder differs from the package in {ev['folder_differences']} places"))
+             else f"; the folder differs from the package in {ev['folder_differences']} places")
+          + (f"; {residue.CARRIES_USER_NAME}" if named else ""))
     return ev
 
 

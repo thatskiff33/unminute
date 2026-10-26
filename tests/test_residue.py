@@ -648,6 +648,111 @@ class GuardTests(unittest.TestCase):
         # Too short to look for, as redact() does.
         self.assertEqual([], residue.user_name_at({"a": "jo"}, {"USERNAME": "jo"}))
 
+    def test_a_name_inside_a_hash_or_a_commit_id_is_not_the_name(self):
+        # Synthetic names made only of the letters a to f, which turn up
+        # inside a SHA-256, a commit id or a model's verification key between
+        # two digits (review of 78f17ee, #419).
+        for name in ("Dee", "Abe"):
+            low = name.lower()
+            env = {"USERPROFILE": f"C:\\Users\\{name}", "USERNAME": name}
+            core = f"1{low}2"
+            sha, commit, key = ((core + "0" * 64)[:64], ("9" * 20 + core + "9" * 40)[:40],
+                                ("3" + core + "3" * 16)[:16])
+            report = {"evidence": {"package_sha256": sha, "commit": commit,
+                                   "folder_differences_listed": [f"changed: app/{sha.upper()}"]},
+                      "outside_new": {"model_cache": [f"m/.verified/large-v3-{key}.json"]}}
+            with self.subTest(name=name):
+                self.assertEqual([], residue.user_name_at(report, env))
+                self.assertIs(report, residue.guarded(report, env))
+            # The name beside a hash, in a short commit id, or in a run that
+            # is not all hex digits (one more letter, or mixed case) is
+            # still the name.
+            for text in (f"C:/Users/{name}/x", f"{low}_{sha}", f"{sha}/{low}", f"{sha} {name}",
+                         f"commit 7{low}3a9", f"x{sha}", sha.replace(low, name),
+                         f"{key}{low}"[:-1] + "g"):
+                with self.subTest(name=name, text=text):
+                    self.assertEqual([["t"]], residue.user_name_at({"t": text}, env))
+
+    def test_the_profile_folder_s_short_name_counts_too(self):
+        # Synthetic. A path can carry the 8.3 form of the profile folder's
+        # name in place of the long one (review of 78f17ee, #419).
+        env = {"USERPROFILE": "C:\\Users\\Pat.Example", "USERNAME": "Pat.Example"}
+        short = "C:\\Users\\PATEXA~1"
+        with mock.patch.object(residue, "_short",
+                               lambda p: short if str(p) == env["USERPROFILE"] else str(p)):
+            self.assertEqual({"Pat.Example", "PATEXA~1"}, residue.user_names(env))
+            for text in (short + "\\AppData\\Local\\Temp\\x", "c:/users/patexa~1/x",
+                         json.dumps(short)):
+                with self.subTest(text=text):
+                    self.assertEqual([["t"]], residue.user_name_at({"t": text}, env))
+                    self.assertFalse(residue.guarded({"t": text}, env)["pass"])
+            self.assertEqual([], residue.user_name_at({"t": "XPATEXA~1 or PATEXA~2"}, env))
+
+    def test_a_decomposed_or_url_encoded_name_fails_the_report(self):
+        # Synthetic. A macron as a letter and a combining mark (NFD), and a
+        # file:// address, used to get through (review of 78f17ee, #419).
+        import unicodedata
+        from urllib.parse import quote
+        nfd = unicodedata.normalize("NFD", self.NAME)
+        self.assertNotEqual(nfd, self.NAME)
+        forms = {"nfd": f"temp/torchinductor_{nfd}/x.py",
+                 "nfd capitals": f"cache-{nfd.upper()}.bin",
+                 "nfd json": "tail " + json.dumps(nfd)[1:-1],
+                 "nfd backslashreplace": nfd.encode("ascii", "backslashreplace").decode(),
+                 "url": "file:///C:/Users/T%C4%81ne.Example/AppData/x",
+                 "url small letters": "file:///c:/users/t%c4%81ne.example/x",
+                 "url nfd": "file:///C:/Users/" + quote(nfd) + "/x"}
+        for label, text in forms.items():
+            with self.subTest(form=label):
+                self.assertEqual([["t"]], residue.user_name_at({"t": text}, self.ENV))
+        # The environment's name decomposed finds the composed one too.
+        self.assertEqual([["t"]], residue.user_name_at({"t": f"x/{self.NAME}/y"},
+                                                       {"USERNAME": nfd}))
+        # A name with a space, as an address writes it.
+        env = {"USERPROFILE": "C:\\Users\\Pat Example", "USERNAME": "Pat Example"}
+        for text in ("file:///C:/Users/Pat%20Example/x", "q=Pat+Example&x=1"):
+            with self.subTest(text=text):
+                self.assertEqual([["t"]], residue.user_name_at({"t": text}, env))
+        # redact() replaces these forms in error text too.
+        self.assertEqual("denied for <user> at <user>",
+                         residue.redact(f"denied for {nfd} at T%C4%81ne.Example", None,
+                                        self.ENV))
+
+    def test_write_guarded_writes_the_report_or_its_failing_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.json"
+            clean = {"when": "w", "views": {"meetings": {"ok": True}}}
+            self.assertIs(clean, residue.write_guarded(path, clean, self.ENV))
+            self.assertEqual(clean, json.loads(path.read_text(encoding="utf-8")))
+            named = {"when": "w", "error": f"denied for {self.NAME}"}
+            written = residue.write_guarded(path, named, self.ENV)
+            self.assertIsNot(named, written)
+            text = path.read_text(encoding="utf-8")
+            self.assertEqual(written, json.loads(text))
+            self.assertEqual([residue.CARRIES_USER_NAME], written["failed"])
+            self.assertNotIn("tāne", text.lower())
+            self.assertNotIn("\\u0101ne", text.lower())
+
+
+class EveryReportIsGuardedTests(unittest.TestCase):
+    """The performance, UI and accessibility reports go through the same name
+    guard as the packaged checks' reports, and their errors lose the home
+    folder and the user name first (review of 78f17ee, #419)."""
+
+    def test_the_three_window_checks_write_through_the_guard(self):
+        for tool, verdict in (("perf_check.py", "named = residue.write_guarded("),
+                              ("workspace_ui_check.py", "bad.append(residue.CARRIES_USER_NAME)"),
+                              ("accessibility_check.py",
+                               "problems.append(residue.CARRIES_USER_NAME)")):
+            source = (ROOT / "tools" / tool).read_text(encoding="utf-8")
+            with self.subTest(tool=tool):
+                self.assertIn("residue.write_guarded(", source)
+                self.assertIn(verdict, source)
+                # No report written past the guard, and no error copied raw.
+                self.assertNotRegex(source, r"write_text\(json\.dumps\((report|written)")
+                self.assertNotIn('report["error"] = f"', source)
+                self.assertNotIn('report["error"] = results, str(exc)', source)
+
 
 class ToolsUseTheSameFinderTests(unittest.TestCase):
     def test_both_packaged_checks_scan_with_residue(self):
