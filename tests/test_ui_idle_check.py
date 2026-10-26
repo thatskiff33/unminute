@@ -193,6 +193,17 @@ class RecordingTests(unittest.TestCase):
         for mode, limits in data["ui_idle"]["ratchets"].items():
             self.assertEqual(0, limits["live_region_changes_per_minute"], mode)
 
+    def test_the_failing_bridge_run_must_make_its_failing_calls(self):
+        # #404: the run tests nothing if the page never made the calls that fail
+        # (a renamed scenario falls back to an empty one in fixtures.js).
+        name, methods = ui_idle_check.FAILING_SCENARIO
+        self.assertIn(name, ui_idle_check.LIVE_SCENARIOS)
+        made = {name: {"calls_per_minute": {m: 3 for m in methods}}}
+        self.assertEqual([], ui_idle_check.failing_problems(made))
+        self.assertEqual(len(methods), len(ui_idle_check.failing_problems(
+            {name: {"calls_per_minute": {"status": 30}}})))
+        self.assertEqual(len(methods), len(ui_idle_check.failing_problems({})))
+
     def test_a_steady_recording_that_changes_a_live_region_fails(self):
         # A screen reader may read a live region again at each change, even to
         # the same text: Narrator stuttered "Rec... Rec..." when the card's

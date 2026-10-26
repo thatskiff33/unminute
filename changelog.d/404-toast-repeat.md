@@ -1,0 +1,1 @@
+- **A lasting error is announced once.** When something the app checks in the background kept failing, its message was shown again, and could be read out again by Narrator, every few seconds. It is now shown once; a new or different error still shows at once (#404).

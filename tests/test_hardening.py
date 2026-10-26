@@ -195,7 +195,8 @@ class NavigationTests(unittest.TestCase):
         body = re.search(r"\nasync function refresh\(\) \{\n(.*?)\n\}\n", script, re.S)
         self.assertIsNotNone(body, "refresh not found")
         before_list = body.group(1).split("await renderLists(", 1)[0]
-        own_catch = r"try \{\s*reminders = await call\(\"reminders\"\);\s*\}\s*catch \(err\) \{"
+        own_catch = (r"try \{\s*reminders = await call\(\"reminders\"\);\s*"
+                     r"pollOk\(\"reminders\"\);\s*\}\s*catch \(err\) \{")
         self.assertRegex(before_list, own_catch,
                          "the reminders call must have its own catch before renderLists")
         self.assertNotRegex(script, r"async function renderReminders\(")
@@ -222,10 +223,13 @@ def page_functions(*names):
 # A failed reminders call, or a reminders banner that cannot be drawn, must
 # still let refresh draw the meeting list and report the error once, with no
 # unhandled rejection (#111 C6 review round 2: run the page's own refresh and
-# renderReminders rather than checking the shape of the source). Everything
-# else refresh touches is a stub.
+# renderReminders rather than checking the shape of the source). The same error
+# at the next poll is not reported again; a changed one is, and so is the same
+# one after a poll that succeeded (#404). Everything else refresh touches is a
+# stub. The cases run in order, one poll each.
 REFRESH_CASES = r"""
 const window = { pywebview: {} };
+const pollErrors = {};
 const LIST_REFRESH_POLLS = 6;
 let refreshing = false, refreshAgain = false, pollTimer = null, pollTimerDelay = 0;
 const pollDelay = () => 0;
@@ -252,8 +256,12 @@ const good = { retention: [], recordings_waiting: [], thresholds,
                holds_due: [], awaiting_confirmation: [] };
 const cases = {
   call_fails: () => { throw new Error("reminders failed"); },
+  call_fails_again: () => { throw new Error("reminders failed"); },
+  call_fails_changed: () => { throw new Error("reminders failed differently"); },
   draw_fails: () => ({ ...good, holds_due: null }),       // renderReminders throws a TypeError
+  draw_fails_again: () => ({ ...good, holds_due: null }),
   ok: () => good,
+  call_fails_after_ok: () => { throw new Error("reminders failed"); },
 };
 (async () => {
   const out = {};
@@ -263,7 +271,7 @@ const cases = {
     state.changes += 1;                                    // a change: the lists are fetched
     await refresh();
     await new Promise((done) => setTimeout(done, 50));     // let any unhandled rejection surface
-    out[name] = { said: said.length, listed, shown, unhandled: unhandled.length };
+    out[name] = { said: said.length, text: said, listed, shown, unhandled: unhandled.length };
   }
   console.log(JSON.stringify(out));
 })();
@@ -274,7 +282,7 @@ class ReminderFailureTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.source = page_functions("refresh", "renderReminders", "oneOrMany",
-                                    "retentionBanner") + REFRESH_CASES
+                                    "retentionBanner", "pollError", "pollOk") + REFRESH_CASES
         cls.node = shutil.which("node")
 
     def run_cases(self):
@@ -302,8 +310,85 @@ class ReminderFailureTests(unittest.TestCase):
 
     def test_reminders_with_nothing_due_hide_the_banner(self):
         out = self.run_cases()["ok"]
-        self.assertEqual(out, {"said": 0, "listed": ["reminders"],
+        self.assertEqual(out, {"said": 0, "text": [], "listed": ["reminders"],
                                "shown": {"lines": 0, "hidden": True}, "unhandled": 0})
+
+    def test_an_error_that_persists_across_polls_is_reported_once(self):
+        # #404: a bridge call that keeps failing was toasted, and may be read
+        # out, at every poll (2 s while active, 10 s otherwise).
+        out = self.run_cases()
+        self.assertEqual(out["call_fails"]["text"], ["reminders failed"])
+        self.assertEqual(out["call_fails_again"]["text"], [], "the reminders error repeated")
+        self.assertEqual(out["draw_fails_again"]["text"], [], "refresh's error repeated")
+        self.assertEqual(out["draw_fails_again"]["listed"], ["reminders"])
+
+    def test_a_new_or_changed_error_is_still_reported_at_once(self):
+        out = self.run_cases()
+        self.assertEqual(out["call_fails_changed"]["text"], ["reminders failed differently"])
+        self.assertEqual(out["draw_fails"]["said"], 1)
+        self.assertEqual(out["call_fails_after_ok"]["text"], ["reminders failed"],
+                         "the same error after a poll that succeeded is new again")
+
+
+# The toast (#status, a live region): the same message again leaves its text
+# alone, as #346's putText does for the other live regions, and starts the
+# timer again so the toast still clears that long after the last time it was
+# said; a different message, or clearing it, changes it (#404). The page's own
+# say and putText run in Node.js against a fake #status that records each
+# change to its text.
+SAY_CASES = r"""
+let writes = 0, timers = 0, cleared = 0;
+const node = { _text: "", dataset: {}, classList: { toggle() {} },
+               get textContent() { return this._text; },
+               set textContent(v) { writes += 1; this._text = String(v); } };
+const $ = () => node;
+const state = { statusLine: "" };
+const OK_MESSAGE = /^(Saved)/;
+let toastTimer = null;
+const setTimeout = () => { timers += 1; return timers; };
+const clearTimeout = (id) => { if (id) cleared += 1; };
+const step = (message, opts) => {
+  writes = 0; timers = 0; cleared = 0;
+  say(message, opts);
+  return { writes, timers, cleared, text: node.textContent };
+};
+console.log(JSON.stringify({
+  first: step("The recorder could not be reached."),
+  same: step("The recorder could not be reached."),
+  changed: step("The reminders could not be read."),
+  cleared: step(""),
+  cleared_again: step(""),
+}));
+"""
+
+
+class ToastRepeatTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = page_functions("say", "putText") + SAY_CASES
+        cls.node = shutil.which("node")
+
+    def run_cases(self):
+        if not self.node:
+            self.skipTest("Node.js not installed")
+        done = subprocess.run([self.node, "-"], input=self.source, capture_output=True,
+                              text=True, timeout=60, check=False)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)
+
+    def test_the_same_message_again_leaves_the_live_region_alone(self):
+        out = self.run_cases()
+        self.assertEqual(out["first"]["writes"], 1)
+        self.assertEqual(out["same"]["writes"], 0, "#status was set again to the same text")
+        self.assertEqual((out["same"]["cleared"], out["same"]["timers"]), (1, 1),
+                         "the toast's timer must start again, so it still clears")
+
+    def test_a_different_message_or_clearing_changes_it(self):
+        out = self.run_cases()
+        self.assertEqual((out["changed"]["writes"], out["changed"]["text"]),
+                         (1, "The reminders could not be read."))
+        self.assertEqual((out["cleared"]["writes"], out["cleared"]["text"]), (1, ""))
+        self.assertEqual((out["cleared_again"]["writes"], out["cleared_again"]["timers"]), (0, 0))
 
 
 # The retention banner's wording (#111 C6). The owner's decision of 22 October
