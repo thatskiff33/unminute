@@ -7,7 +7,7 @@ description: Take an Unminute pull request from finished code to merged, followi
 
 The rules are in `AGENTS.md` ("Checks", "Delivery", "Authority") and `.github/pull_request_template.md`. This is the order to apply them in, not a second copy.
 
-1. Run the checks that "Checks" names for what changed. For a Python change, run `python tools/run_tests.py --strict-skips` and `ruff check .`, plus the UI checks for a UI change. Wait for any heavy-run lock another session holds.
+1. Run the checks that "Checks" names for what changed. For a Python change, run the tests it touches with `python tools/run_tests.py --strict-skips --only <modules>` and `ruff check .`, plus the UI checks for a UI change; CI runs the full suite on every push. Heavy runs take the heavy-run lock for at most about 15 minutes at a time, as "Checks" describes.
 2. Read the final diff with `git diff origin/main...HEAD`. Look for unrelated edits, private material (P1) and invisible characters.
 3. Push, then open or update the PR from the template, with a `changelog.d/` fragment or the `no-changelog` label. Under "Checks run", list only the checks you actually ran, and say plainly what was not verified (E1).
 4. As soon as the head is pushed, while CI runs, get an independent review of that fixed commit. The reviewer must not have written or directed the change, and must work in a separate checkout detached at that exact commit. Give the reviewer the code and the rules, not your conclusions. Ask for a security review when anything is under "Stop and ask".

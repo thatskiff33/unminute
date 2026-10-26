@@ -200,8 +200,16 @@ changes; or GitHub owner settings.
 
 ## Checks
 
-- Every Python change: `python tools/run_tests.py` (with `--strict-skips` on Windows, as CI
-  does) and `ruff check .`. Run tests only through `tools/run_tests.py`.
+- Every Python change: run the tests it touches with `python tools/run_tests.py --only <modules>`
+  (with `--strict-skips` on Windows) and `ruff check .`. Run tests only through
+  `tools/run_tests.py`. The full suite runs on CI on every push, in parts, and is required
+  before merge; do not run it on the shared laptop (the user's decision, 26 October 2026).
+- The shared laptop is for what CI cannot do: real windows, timings, real audio and installer
+  runs, plus quick targeted tests. A heavy run (headless Edge batches, real windows, Pester,
+  performance) holds `%USERPROFILE%\.umv\heavy.lock` (created with CreateNew, labelled,
+  deleted only by its holder) for at most about 15 minutes at a time, releasing it between
+  batches. While the laptop is unlocked, screen and timing work goes first. Long repeat runs
+  go to CI, not the laptop.
 - For PowerShell, dependency and workflow changes, run the matching job's commands from
   `.github/workflows/` rather than a copy kept here. The required checks are in `docs/RELEASING.md`.
   Installer changes also run the Pester tests in `tests/powershell` with
