@@ -121,7 +121,7 @@ jobs:
             -r "$env:RUNNER_TEMP/test-requirements.txt"
           if ($LASTEXITCODE -ne 0) { exit 1 }
       # Windows PowerShell's module analysis cache for the installer tests (#389):
-      # filling it took 45 to 60 s in each chunk with installer tests, so it is
+      # filling it took 41 to 50 s in each chunk with installer tests, so it is
       # kept between runs, keyed by the runner image and the Windows PowerShell
       # version. A miss, or a stale or empty file, only costs that time again
       # (module_cache in tests/test_hardening.py). It holds module paths and the

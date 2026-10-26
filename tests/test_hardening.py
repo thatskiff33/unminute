@@ -1790,7 +1790,7 @@ def check_scratch_run(script, install_dir, scratch, env, where):
 # process, filled once by a run that waits until PowerShell has written it. The cache holds
 # only module paths and the command names they export; the scripts, their arguments, every
 # check before and after a run, and every assertion are unchanged.
-# CI (#389): the filling run itself took 45 to 60 s in each CI chunk with installer tests.
+# CI (#389): the filling run itself took 41 to 50 s in each CI chunk with installer tests.
 # The chunk job restores the file from an earlier run on the same runner image and Windows
 # PowerShell version (actions/cache) and names it in UNMINUTE_PSMODULE_CACHE: a file found
 # there is used as it is. A missing or empty one is filled there as before, for the job to
