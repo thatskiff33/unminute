@@ -11,12 +11,14 @@
 #
 #   python tools/dev_status.py                     # the whole picture
 #   python tools/dev_status.py --files a.py b.md   # which open PRs change these files
-#   python tools/dev_status.py --pr 363            # what still stops this PR (exit 1 if anything)
+#   python tools/dev_status.py --pr 363            # what stops arming this PR (exit 1 if any)
 #
 # --pr reads what the repository shows. It does not read a review's verdict,
 # unresolved review threads, code-scanning alerts or open owner decisions, and it
 # takes a recorded range-diff as written; it says so each time, and AGENTS.md
-# "Authority" decides.
+# "Authority" decides. Required checks still running do not stop it: the PR is
+# marked ready and auto-merge armed on the reviewed head, and GitHub waits for them
+# (AGENTS.md "Delivery").
 
 import argparse
 import json
@@ -29,7 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BASE = "main"
 PR_FIELDS = "number,title,headRefName,isDraft,mergeStateStatus,files,statusCheckRollup"
 VIEW_FIELDS = ("number,state,isDraft,mergeStateStatus,headRefOid,statusCheckRollup,"
-               "comments,reviews")
+               "comments,reviews,autoMergeRequest")
 GH_FILE_LIMIT = 100          # gh returns at most this many files per pull request
 PASSED = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 WAITING = {"", "PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED", "WAITING", "REQUESTED"}
@@ -206,20 +208,24 @@ def reviews_of(head, notes):
 
 def assess(pr, required, notes):
     """(blockers, notes) for one PR. Blockers are what the repository shows still
-    stops marking it ready and merging under AGENTS.md "Authority". Notes need a
-    look before merging (a failing check that is not required needs its reason
-    on the PR) but not before `gh pr ready`."""
+    stops marking it ready and arming auto-merge under AGENTS.md "Authority" and
+    "Delivery". Required checks still running are notes: GitHub waits for them
+    once auto-merge is armed. Notes need a look before arming (a failing check
+    that is not required needs its reason on the PR first)."""
     blockers, info = [], []
     state = pr.get("state", "OPEN")
     if state != "OPEN":
         return [f"the PR is {state.lower()}"], info
     if pr.get("isDraft"):
-        info.append("draft: run gh pr ready once nothing blocks it, then run --pr again")
+        info.append("draft: once nothing blocks it, run gh pr ready and arm auto-merge on "
+                    "the reviewed head")
     failing, waiting, missing = check_summary(pr.get("statusCheckRollup"), required)
     blockers += [f"required check failing: {n}" for n in failing if n in required]
-    blockers += [f"required check still running: {n}" for n in waiting if n in required]
+    info += [f"required check still running: {n} (GitHub waits for it once armed)"
+             for n in waiting if n in required]
     blockers += [f"required check not reported: {n}" for n in missing]
-    info += [f"check failing, not required: {n} (record the reason on the PR)"
+    info += [f"check failing, not required: {n} (record the reason on the PR before "
+             "arming: with the required checks green, arming merges at once)"
              for n in failing if n not in required]
     oid = pr.get("headRefOid") or ""
     head = oid[:7]
@@ -237,9 +243,17 @@ def assess(pr, required, notes):
                         "review only if git range-diff shows every commit '=')")
     elif merge == "UNKNOWN":
         blockers.append("merge state not worked out yet by GitHub: run --pr again shortly")
-    elif merge == "BLOCKED" and not blockers and not pr.get("isDraft"):
+    elif (merge == "BLOCKED" and not blockers and not pr.get("isDraft")
+          and not any(n in required for n in waiting)):
         blockers.append("GitHub still blocks the merge for a reason not read here, for "
                         "example unresolved review threads or a code-scanning alert")
+    armed = pr.get("autoMergeRequest")
+    if armed:
+        info.append("auto-merge is armed: disarm (gh pr merge --disable-auto) before any "
+                    "push, and re-arm only on a reviewed head")
+    elif oid and not blockers:
+        info.append(f"auto-merge not armed: gh pr merge {pr.get('number', '<n>')} --auto "
+                    f"--squash --match-head-commit {oid}")
     return blockers, info
 
 

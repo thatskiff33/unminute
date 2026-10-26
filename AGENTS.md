@@ -166,8 +166,8 @@ repository settings:
   needs that change reviewed;
 - no decision that is the user's (under "Stop and ask" or raised by a review) is still open.
 
-Arming auto-merge pinned to the reviewed head, once the other conditions hold, is merging
-under these conditions: GitHub holds it until the required checks pass. Never push to `main`
+Arming auto-merge pinned to the reviewed head, once every condition but the required checks
+holds, is merging under these conditions: GitHub holds it until they pass. Never push to `main`
 or force-push a branch another agent works on. An agent may comment on
 the issues its work belongs to (decisions, progress) and close an issue once the PRs that
 resolve it have merged and every acceptance criterion is met, saying which PRs did it.
@@ -242,13 +242,18 @@ changes; or GitHub owner settings.
   on the PR. Inspect the final diff for unrelated edits, private material and invisible characters.
 - A PR may be a draft while work continues. Keep it moving (the user's decision, 26 October
   2026): start the independent review as soon as the head is pushed, while CI runs. Once that
-  review approves the exact head and no user decision is open, the agent that owns the PR
-  records the review, runs `gh pr ready <n>` and arms auto-merge pinned to that commit:
+  review approves the exact head (or a rebase of it with an identical range-diff recorded) and
+  no user decision is open, the agent that owns the PR records the review, runs
+  `gh pr ready <n>` and arms auto-merge pinned to that commit:
   `gh pr merge <n> --auto --squash --match-head-commit <sha>`. GitHub then merges when the
-  required checks pass and deletes the branch. Disarm (`gh pr merge <n> --disable-auto`) before
-  pushing again, and while a check that is not required fails without its reason on the PR.
-  A green, reviewed PR left in draft or unarmed is a fault to fix at once. Watch PRs by events
-  (a monitor on their checks), not timed polls. Never call a draft "ready to merge": check
+  required checks pass and deletes the branch. GitHub waits only for required checks: do not
+  arm while a check that is not required fails without its reason on the PR (with the
+  required checks green, arming merges at once), and disarm (`gh pr merge <n> --disable-auto`)
+  if one fails after arming; one that fails after the merge is fixed forward on `main`.
+  Disarm before pushing again; after any push to the PR, confirm auto-merge is off unless the
+  new head is reviewed, and re-arm on it once it is. A green, reviewed PR left in draft or
+  unarmed is a fault to fix at once. Watch PRs by events (`gh pr checks <n> --watch`, or a
+  monitor on their checks), not timed polls. Never call a draft "ready to merge": check
   `gh pr view <n> --json isDraft,mergeStateStatus,autoMergeRequest` first.
 
 ## Several agents or sessions
