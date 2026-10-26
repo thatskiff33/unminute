@@ -1080,11 +1080,16 @@ class MixdownTests(unittest.TestCase):
                 reads.append(b - a)
                 return super().read(a, b)
 
+        window = int(mixdown.LEVEL_WINDOW_S * RATE)
         for seconds in (100, 300):
             reads.clear()
-            mixdown.track_level_db(Counting(tone(seconds * RATE, RATE, 220, amp=2000)), RATE)
+            seen = []
+            with mock.patch.object(mixdown, "gated_level_db",
+                                   lambda p, gate, seen=seen: seen.append(len(p)) or -20.0):
+                mixdown.track_level_db(Counting(tone(seconds * RATE, RATE, 220, amp=2000)), RATE)
             self.assertEqual(sum(reads), seconds * RATE)          # all of it, once
             self.assertLessEqual(max(reads), mixdown.LEVEL_BLOCK_S * RATE)
+            self.assertEqual(seen, [seconds * RATE // window])    # every whole window
 
     def test_a_long_call_is_matched_end_to_end(self):
         seconds = 150                                             # past the old 120 s whole read

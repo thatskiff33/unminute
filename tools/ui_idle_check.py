@@ -61,11 +61,12 @@ GROW_SCENARIO = "meeting-transcribing-long"   # a long meeting open while transc
 GROW_PAGE_MS = 90000         # its steps (12 x 4 s) after start-up, with room to spare
 RECORDING_SCENARIO = "recording"   # the Meetings view with a recording going
 # More views whose live regions must not change while nothing changes (#346):
-# a recording with computer audio, one with draft text, a reviewed meeting (its
-# banner), a meeting whose transcription stopped (the assertive #m-error) and
-# Setup's speaker step during its download. Visible, LIVE_MS of page time each.
-LIVE_SCENARIOS = ("recording-computer", "recording-drafts", "meeting-reviewed",
-                  "meeting-error", "setup-3-downloading")
+# a recording with computer audio, the same with its "no sound from the
+# computer" hint shown, one with draft text, a reviewed meeting (its banner), a
+# meeting whose transcription stopped (the assertive #m-error) and Setup's
+# speaker step during its download. Visible, LIVE_MS of page time each.
+LIVE_SCENARIOS = ("recording-computer", "recording-computer-quiet", "recording-drafts",
+                  "meeting-reviewed", "meeting-error", "setup-3-downloading")
 LIVE_MS = 20000
 DISPLAY_HZ = 120             # the simulated display: the meter draws every 2nd frame
 # The level meter's draws a second may be this share either side of METER_HZ.

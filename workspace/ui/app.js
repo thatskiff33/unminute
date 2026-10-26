@@ -2936,10 +2936,12 @@ function toggleDraft() {
 
 let recReading = false;
 async function renderRecorder(tick = false) {
+  if (state.locked) { stopRecTimer(); return; }     // only the locked screen (#111 C4b, #346)
   if (tick && recReading) return;                   // the previous read is still on its way
   recReading = true;
   let r;
   try { r = await call("recording_status"); } finally { recReading = false; }
+  if (state.locked) { stopRecTimer(); return; }     // locked while the read was on its way
   const sel = $("rec-device");
   // While recording (or saving) the list is not asked for (#369): it can wait,
   // and is asked for once the recording has ended (its microphone may be gone).

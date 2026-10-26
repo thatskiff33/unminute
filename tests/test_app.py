@@ -1740,6 +1740,17 @@ class LockedPageTests(unittest.TestCase):
         # And the locked screen stops any poll already scheduled.
         self.assertIn("clearTimeout(pollTimer)", self.function("renderLocked"))
 
+    def test_the_recording_card_does_not_render_or_poll_while_locked(self):
+        # #346 with #318: the recording card (its clock, level meters and
+        # computer audio bar) neither renders nor starts its 100 ms timer once
+        # the page is locked, even if a read was already on its way.
+        body = self.function("renderRecorder")
+        first = body.strip().splitlines()[0]
+        self.assertRegex(first, r"^if \(.*state\.locked.*\)")
+        after_read = body[body.index('call("recording_status")'):]
+        self.assertIn("if (state.locked)", after_read.split("\n", 1)[1][:400])
+        self.assertIn("stopRecTimer()", self.function("renderLocked"))
+
     def test_the_locked_screen_is_text_only_and_hides_everything_else(self):
         body = self.function("renderLocked")
         for html in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"):

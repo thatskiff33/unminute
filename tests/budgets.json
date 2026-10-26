@@ -34,9 +34,10 @@
     }
   },
   "ui_live_regions": {
-    "note": "Changes to the text of live regions (polite or assertive, or role status, alert or log) per minute of page time while nothing changes, in more views than the idle and recording runs (tools/ui_idle_check.py LIVE_SCENARIOS, visible, 20 s of page time each; tools/design_check/fixtures.js perf mode). A screen reader may read a live region again at each change, even to the same text: Narrator stuttered on the recording card's state line (#346, the owner's check of 26 Oct 2026). Added by #346 on 26 Oct 2026 after its delta review (F2) at 0 for each view. Before the fix the reviewed meeting's banner (#m-banner) changed 12 times a minute, and the stopped meeting's #m-error (an assertive alert) and Setup's #su-speaker-status during a download were set at every poll too.",
+    "note": "Changes to the text of live regions (polite or assertive, or role status, alert or log) per minute of page time while nothing changes, in more views than the idle and recording runs, the computer audio hint shown among them (#346 review of 3c058a6, G1: with its guard removed it changed 630 times a minute) (tools/ui_idle_check.py LIVE_SCENARIOS, visible, 20 s of page time each; tools/design_check/fixtures.js perf mode). A screen reader may read a live region again at each change, even to the same text: Narrator stuttered on the recording card's state line (#346, the owner's check of 26 Oct 2026). Added by #346 on 26 Oct 2026 after its delta review (F2) at 0 for each view. Before the fix the reviewed meeting's banner (#m-banner) changed 12 times a minute, and the stopped meeting's #m-error (an assertive alert) and Setup's #su-speaker-status during a download were set at every poll too.",
     "ratchets": {
       "recording-computer": {"live_region_changes_per_minute": 0},
+      "recording-computer-quiet": {"live_region_changes_per_minute": 0},
       "recording-drafts": {"live_region_changes_per_minute": 0},
       "meeting-reviewed": {"live_region_changes_per_minute": 0},
       "meeting-error": {"live_region_changes_per_minute": 0},
