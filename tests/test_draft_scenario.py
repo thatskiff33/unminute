@@ -681,34 +681,41 @@ class HeadlessTests(WorkspaceCase):
         self.feed.end()
 
     def test_the_accessibility_points_pass_in_light_and_dark(self):
-        # The page's first draft text arrives DRAFT_LATE_S late, longer than
-        # the view's 1.5 s settle, as on a loaded CI runner (#393): the view
-        # must wait for the box with its text before the audit runs. Before
-        # the fix the audit ran on a hidden, empty box, at random on CI.
+        # One of the page's first answers arrives DRAFT_LATE_S late, longer
+        # than the view's 1.5 s settle, as on a loaded CI runner (#393): the
+        # view must wait for the box with its text before the audit runs.
+        # Before the fix the audit ran too early, at random on CI. Each mode
+        # delays a different answer, so both early states are covered at no
+        # extra time (#400):
+        #   light: recording_status, so the draft area is still hidden, as on
+        #          CI (4 problems against the old view);
+        #   dark:  recording_draft, so the box is shown with no lines yet.
         import accessibility_check
-        for dark in (False, True):
-            with self.subTest(dark=dark):
-                window = self.page(dark=dark, late={"recording_draft": DRAFT_LATE_S})
+        for dark, late in ((False, "recording_status"), (True, "recording_draft")):
+            with self.subTest(dark=dark, late=late):
+                window = self.page(dark=dark, late={late: DRAFT_LATE_S})
                 self.feed.begin(drafts.RUNNING)
-                self.feed.say(draft_scenario.FOLLOW_LINES)
-                evaluate(window, "const wait = (ms) => new Promise(r => setTimeout(r, ms));"
-                         + accessibility_check.VIEWS[draft_scenario.DRAFT_VIEW]
-                         + "return true;")
-                mode = evaluate(window, accessibility_check.COLOUR_MODE)
-                self.assertEqual(mode, "dark" if dark else "light")
-                audit = evaluate(window, accessibility_check.AUDIT)
-                audit["colour_mode"] = mode
-                audit["draft"] = evaluate(window, draft_scenario.DRAFT_A11Y)
-                self.assertEqual(draft_scenario.draft_a11y_problems(audit["draft"]), [],
-                                 audit["draft"])
-                report = {"zoomable": True, "keyboard_zoom": {"before": 1, "zoomed": 1.1,
-                                                              "reset": 1},
-                          "page": {"lang": "en-NZ", "title": "x", "live_status": "polite"},
-                          "views": {"recording draft": audit},
-                          "draft_announcements": draft_scenario.draft_announcements(
-                              window, self.feed, evaluate)}
-                self.assertEqual(accessibility_check.findings(report), [], report)
-                self.feed.end()
+                try:                       # a failed mode never leaves the next one a recording
+                    self.feed.say(draft_scenario.FOLLOW_LINES)
+                    evaluate(window, "const wait = (ms) => new Promise(r => setTimeout(r, ms));"
+                             + accessibility_check.VIEWS[draft_scenario.DRAFT_VIEW]
+                             + "return true;")
+                    mode = evaluate(window, accessibility_check.COLOUR_MODE)
+                    self.assertEqual(mode, "dark" if dark else "light")
+                    audit = evaluate(window, accessibility_check.AUDIT)
+                    audit["colour_mode"] = mode
+                    audit["draft"] = evaluate(window, draft_scenario.DRAFT_A11Y)
+                    self.assertEqual(draft_scenario.draft_a11y_problems(audit["draft"]), [],
+                                     audit["draft"])
+                    report = {"zoomable": True, "keyboard_zoom": {"before": 1, "zoomed": 1.1,
+                                                                  "reset": 1},
+                              "page": {"lang": "en-NZ", "title": "x", "live_status": "polite"},
+                              "views": {"recording draft": audit},
+                              "draft_announcements": draft_scenario.draft_announcements(
+                                  window, self.feed, evaluate)}
+                    self.assertEqual(accessibility_check.findings(report), [], report)
+                finally:
+                    self.feed.end()
 
 
 if __name__ == "__main__":
