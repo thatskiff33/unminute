@@ -354,6 +354,14 @@ real time, and remove it when the cause is fixed.
   answers one of the page's first calls 2 s late, so a fixed wait fails it every time: in light,
   `recording_status` (the area still hidden, as on CI); in dark, `recording_draft` (the box
   shown with no lines yet) (#400).
+- **`test_draft_scenario`'s headless page timed out on a script that does not wait (#405).**
+  The test drives the page over a local server: the page asks for a script, runs it and posts
+  the answer back. One lost request stopped that for good, and every later script timed out
+  (main CI, 26 October 2026, on `return said().length;`). A script sent but never received is
+  now sent again, and an answer is posted again until Python has it, so each runs once. The
+  scenario test loses one of each on purpose. On a timeout the error now says whether Edge
+  still runs, when the page last asked for a script and how many bridge calls it made, which
+  tells a dead page from a stopped driver.
 - **`tools/accessibility_check.py` lists "OWNER EXCEPTIONS"** before its findings: field
   boundaries in the brand `--control-line` colour and the meeting title at rest (#298, the
   owner's decision of 25 October 2026). They are expected and do not fail the run. Each is

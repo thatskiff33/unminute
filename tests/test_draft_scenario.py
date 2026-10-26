@@ -457,22 +457,40 @@ SHIM = r"""
   window.pywebview = { api };
   window.addEventListener("load", () => {
     window.dispatchEvent(new Event("pywebviewready"));
-    (async () => {                        // the check's evaluate_js, over the server
+    // The check's evaluate_js, over the server. One request lost on the way
+    // (a dropped connection on a busy machine) must not stop it (#405): a
+    // script sent but never received is sent again (Python's side), and an
+    // answer is posted again until Python has it. So it runs once, and the
+    // next script is asked for only once Python has this one's answer.
+    const pause = () => new Promise((ok) => setTimeout(ok, 200));
+    (async () => {
       for (;;) {
         let job;
         try {
           const r = await fetch("/driver/next");
           if (r.status !== 200) continue;
           job = await r.json();
-        } catch (e) { await new Promise((ok) => setTimeout(ok, 200)); continue; }
+        } catch (e) { await pause(); continue; }
         let value = null, error = null;
+        window.__driverRuns = (window.__driverRuns || 0) + 1;     // each script runs once
         try { value = await (0, eval)(job.js); } catch (e) { error = String(e && e.stack || e); }
-        await post("/driver/done", {id: job.id, value: value === undefined ? null : value, error});
+        let body;
+        if (value === undefined) value = null;
+        try { body = JSON.stringify({id: job.id, value, error}); }
+        catch (e) { body = JSON.stringify({id: job.id, value: null, error: "not JSON: " + e}); }
+        for (;;) {
+          try { if ((await fetch("/driver/done", {method: "POST", body})).ok) break; } catch (e) {}
+          await pause();
+        }
       }
     })();
   });
 })();
 """
+# The driver requests a test can lose (Harness.lose): a script on its way to
+# the page; an answer on its way back, before Python has it; and the reply to
+# an answer Python has.
+LOSE = ("script", "answer", "reply")
 
 
 class Harness:
@@ -485,12 +503,25 @@ class Harness:
         (headless Edge draws no window narrower than about 480 px, as
         tools/design_check.py's frame.html works round); None: the window's.
         late: {bridge method: seconds}, to answer that method's first call
-        that much later, as on a busy machine."""
+        that much later, as on a busy machine.
+        lose: {LOSE kind: n}, set once the page has started, to lose the next
+        n such driver requests, as a dropped connection does (#405)."""
         self.bridge, self.dark, self.width = bridge, dark, width
         self.late = dict(late or {})
+        self.lose = {}
         self.jobs, self.results, self.seq = queue.Queue(), {}, 0
-        self.done = threading.Condition()
+        self.done = threading.Condition()       # guards results, finished, sent and lose
+        self.finished = set()                   # ids whose answer Python has had
+        self.sent = None                        # the script sent and not yet answered
+        self.asked = None                       # when the page last asked for a script
         self.calls, self.answered = [], []
+
+    def lost(self, kind):
+        """Whether to lose this driver request (see lose); the caller holds done."""
+        if self.lose.get(kind, 0) > 0:
+            self.lose[kind] -= 1
+            return True
+        return False
 
     def start(self):
         harness = self
@@ -502,10 +533,22 @@ class Harness:
             def do_GET(self):
                 path = unquote(urlsplit(self.path).path).lstrip("/")
                 if path == "driver/next":
-                    try:
-                        job = harness.jobs.get(timeout=2)
-                    except queue.Empty:
-                        return self.send_response_only(204) or self.end_headers()
+                    # The page asks for the next script only once Python has
+                    # the last one's answer, so a script sent and not answered
+                    # never reached it: send that one again (#405).
+                    with harness.done:
+                        harness.asked = time.monotonic()
+                        job = harness.sent
+                    if job is None:
+                        try:
+                            job = harness.jobs.get(timeout=2)
+                        except queue.Empty:
+                            return self.send_response_only(204) or self.end_headers()
+                    with harness.done:
+                        harness.sent = job
+                        if harness.lost("script"):
+                            self.close_connection = True     # no answer: a dropped connection
+                            return None
                     return self.send(json.dumps(job).encode(), "application/json")
                 if path == "frame.html":
                     body = ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
@@ -545,8 +588,18 @@ class Harness:
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])) or b"null")
                 if path == "driver/done":
                     with harness.done:
-                        harness.results[body["id"]] = body
+                        if harness.lost("answer"):              # lost before Python has it
+                            self.close_connection = True
+                            return None
+                        if body["id"] not in harness.finished:  # an answer posted again counts once
+                            harness.finished.add(body["id"])
+                            harness.results[body["id"]] = body
+                        if harness.sent is not None and harness.sent["id"] == body["id"]:
+                            harness.sent = None
                         harness.done.notify_all()
+                        if harness.lost("reply"):               # Python has it; the reply is lost
+                            self.close_connection = True
+                            return None
                     return self.send(b"{}", "application/json")
                 name = path.removeprefix("bridge/")
                 if not path.startswith("bridge/") or name not in api.API_METHODS:
@@ -615,13 +668,14 @@ class Harness:
         return it). A script error fails the test."""
         self.seq += 1
         job = {"id": self.seq, "js": js}
+        calls = len(self.calls)
         self.jobs.put(job)
         end = time.monotonic() + timeout
         with self.done:
             while job["id"] not in self.results:
                 left = end - time.monotonic()
                 if left <= 0:
-                    raise TimeoutError(js[:80])
+                    raise TimeoutError(f"{js[:80]!r}: {self.silence(job, calls)}")
                 self.done.wait(left)
             got = self.results.pop(job["id"])
         if got.get("error"):
@@ -629,6 +683,19 @@ class Harness:
         if callback is not None:
             callback(got.get("value"))
         return got.get("value")
+
+    def silence(self, job, calls):
+        """Why a script had no answer, as far as this side can tell: whether
+        Edge still runs, the page still asks for scripts and calls the bridge,
+        and whether this script was sent. Counts and times only."""
+        code = self.edge.poll()
+        asked = ("never" if self.asked is None
+                 else f"{time.monotonic() - self.asked:.1f} s ago")
+        sent = (self.sent is not None and self.sent["id"] == job["id"])
+        return (f"no answer; Edge {'running' if code is None else f'exited with {code}'}, "
+                f"the page last asked for a script {asked}, this script was "
+                f"{'sent' if sent else 'not sent'}, and the page made "
+                f"{len(self.calls) - calls} bridge calls meanwhile")
 
 
 def evaluate(window, js, timeout=60):
@@ -653,7 +720,14 @@ class HeadlessTests(WorkspaceCase):
         return harness
 
     def test_the_scenario_passes_on_the_real_page(self):
+        # The scenario's first script is lost on its way to the page, and then
+        # its answer on the way back, once before Python has it and once
+        # after (its reply lost). On CI a script that does not wait at all
+        # had no answer in 60 s (#405): one lost request stopped the driver
+        # for good. Each is now sent again, so it runs once and is answered.
         window = self.page()
+        with window.done:
+            window.lose = dict.fromkeys(LOSE, 1)
         report = draft_scenario.draft_checks(
             window, self.feed, evaluate,
             hide=lambda: evaluate(window, HIDE + "return true;"),
@@ -662,6 +736,8 @@ class HeadlessTests(WorkspaceCase):
                          json.dumps(report, indent=1)[:4000])
         self.assertIn("recording_draft", window.calls)
         self.assertFalse(self.feed.active)
+        self.assertEqual(window.lose, dict.fromkeys(LOSE, 0))   # each loss happened
+        self.assertEqual(evaluate(window, "return window.__driverRuns;"), window.seq)
 
     def test_the_draft_view_reflows_at_320_css_px(self):
         # WCAG 1.4.10, as accessibility_check's reflow step measures it: the
