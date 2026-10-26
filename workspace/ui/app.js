@@ -43,11 +43,14 @@ async function call(name, ...args) {
 // seconds, other messages after longer; a sticky one (an import in progress)
 // stays until the app replaces it.
 const OK_MESSAGE = /^(Saved|Copied|Name saved|Template saved|Download started|Queued|Folder added|Meeting discarded|Recording saved|Edit undone|Speaker change undone|Token removed|Removed)/;
+// #status is a live region: a screen reader may read it again at each change,
+// even to the same text, so the same message again leaves it alone (#404, as
+// #346's putText) and only starts the timer again.
 let toastTimer = null;
 function say(message, { sticky = false } = {}) {
   const t = $("status");
   clearTimeout(toastTimer);
-  t.textContent = message || "";
+  putText(t, message || "");
   t.classList.toggle("ok", OK_MESSAGE.test(message || ""));
   t.dataset.sticky = sticky && message ? "1" : "";
   if (message && !sticky)
@@ -60,6 +63,20 @@ function say(message, { sticky = false } = {}) {
 async function attempt(fn) {
   try { return await fn(); } catch (err) { say(String((err && err.message) || err)); }
 }
+
+// An error from the poll is shown once, not at every poll (#404): a bridge call
+// that keeps failing would otherwise be toasted, and may be read out, every 2
+// or 10 s. Kept for each place in the poll, and forgotten when that place next
+// succeeds, so a new or changed error, or the same one after a recovery, is
+// shown at once.
+const pollErrors = {};
+function pollError(where, err) {
+  const message = String((err && err.message) || err);
+  if (pollErrors[where] === message) return;
+  pollErrors[where] = message;
+  say(message);
+}
+function pollOk(where) { delete pollErrors[where]; }
 
 // -- formatting -------------------------------------------------------------
 function fmtTime(t) {
@@ -2953,7 +2970,7 @@ async function renderRecorder(tick = false) {
   // index and name, and the app refuses any that no longer match. While no
   // microphone is listed, every poll asks, as before #369.
   if (r.enabled && (!sel.options.length || micLists["rec-device"].stale))
-    relistMics("rec-device", showRecMics).catch((err) => say(String((err && err.message) || err)));
+    relistMics("rec-device", showRecMics).then(() => pollOk("mics"), (err) => pollError("mics", err));
   const now = r.recording || {};
   const rec = state.recSaving ? { ...now, state: "saving", seconds: now.seconds || state.recSeconds || 0, events: now.events || [] }
     : r.recording;
@@ -3102,8 +3119,9 @@ async function refresh() {
       if (state.view === "meetings") {
         try {
           reminders = await call("reminders");
+          pollOk("reminders");
         } catch (err) {
-          say(String((err && err.message) || err));
+          pollError("reminders", err);
         }
       }
       await renderLists(reminders);
@@ -3118,8 +3136,9 @@ async function refresh() {
     else if (state.view === "settings") await renderSettings();
     else if (state.view === "setup") await renderSetup();
     else if (state.view === "downloads") await renderDownloads();
+    pollOk("refresh");
   } catch (err) {
-    say(String((err && err.message) || err));
+    pollError("refresh", err);
   } finally {
     refreshing = false;
   }

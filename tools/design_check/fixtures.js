@@ -708,6 +708,19 @@
       },
       steps: [],
     },
+    // #404 (the live-region gate in tools/ui_idle_check.py, no boards): a
+    // recording going while two bridge calls fail at every poll, with sample
+    // errors: the reminders from the start, and recording_status once the card
+    // is drawn (the clock's own reads drop their errors). The step waits for a
+    // poll, so each error has been shown once before the count starts.
+    "recording-bridge-error": {
+      change: (d) => {
+        SCENARIOS.recording.change(d);
+        d.fail = { reminders: "The reminders could not be read (sample)." };
+      },
+      steps: [() => { data.fail.recording_status = "The recorder could not be reached (sample)."; },
+              wait(2500)],
+    },
     "home-empty": { change: (d) => { d.meetings = []; }, steps: [] },
     "home-drop": {
       steps: [() => {
@@ -1111,6 +1124,7 @@
     get: (_, method) => async (...args) => {
       perf.calls[method] = (perf.calls[method] || 0) + 1;
       perf.allCalls[method] = (perf.allCalls[method] || 0) + 1;
+      if (data.fail && data.fail[method]) return { ok: false, error: data.fail[method] };   // #404
       if (method === "status" && data.failStatus > 0) {    // locked-after-error
         data.failStatus -= 1;
         return { ok: false, error: "The request failed." };

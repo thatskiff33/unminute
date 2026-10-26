@@ -63,10 +63,16 @@ RECORDING_SCENARIO = "recording"   # the Meetings view with a recording going
 # More views whose live regions must not change while nothing changes (#346):
 # a recording with computer audio, the same with its "no sound from the
 # computer" hint shown, one with draft text, a reviewed meeting (its banner), a
-# meeting whose transcription stopped (the assertive #m-error) and Setup's
-# speaker step during its download. Visible, LIVE_MS of page time each.
+# meeting whose transcription stopped (the assertive #m-error), Setup's
+# speaker step during its download, and a recording while two bridge calls fail
+# at every poll (#404: each error is toasted once, not at every poll). Visible,
+# LIVE_MS of page time each.
 LIVE_SCENARIOS = ("recording-computer", "recording-computer-quiet", "recording-drafts",
-                  "meeting-reviewed", "meeting-error", "setup-3-downloading")
+                  "meeting-reviewed", "meeting-error", "setup-3-downloading",
+                  "recording-bridge-error")
+# The calls that fail in that run: the page must have made each in the measured
+# window, or nothing was tested.
+FAILING_SCENARIO = ("recording-bridge-error", ("reminders", "recording_status"))
 LIVE_MS = 20000
 DISPLAY_HZ = 120             # the simulated display: the meter draws every 2nd frame
 # The level meter's draws a second may be this share either side of METER_HZ.
@@ -349,6 +355,15 @@ def recording_problems(results, hz):
     return problems
 
 
+def failing_problems(live):
+    """The failing-bridge run (#404) tested nothing if the page did not make the
+    failing calls while it was measured."""
+    name, methods = FAILING_SCENARIO
+    calls = (live.get(name) or {}).get("calls_per_minute") or {}
+    return [f"live {name}: the page did not call {method} while measured, so its failure "
+            "was not tested" for method in methods if not calls.get(method)]
+
+
 def main():
     parser = argparse.ArgumentParser(description="Count what the idle page does.")
     parser.add_argument("report", nargs="?", type=Path)
@@ -390,7 +405,8 @@ def main():
                 + locked_problems(locked_late, None, "locked after a failed status",
                                   status_calls=2)
                 + [f"live {name}: the page threw: {'; '.join(r['page_errors'][:3])}"
-                   for name, r in live.items() if r.get("page_errors")])
+                   for name, r in live.items() if r.get("page_errors")]
+                + failing_problems(live))
     report = {"scenario": SCENARIO, "page_ms": args.page_ms, "results": results,
               "early_error": early, "transcribing": growing, "recording": recording,
               "locked": locked, "locked_after_error": locked_late,
