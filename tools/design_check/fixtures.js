@@ -31,7 +31,10 @@
   // live: changes to the text of a live region (polite or assertive, or role
   // status, alert or log) while measured. A screen reader may read a live
   // region again at each change, even to the same text, so an idle page or a
-  // steady recording must make none (Narrator, 26 Oct 2026, #346).
+  // steady recording must make none (Narrator, 26 Oct 2026, #346). Counted
+  // when the region holds text afterwards (what a screen reader would read):
+  // a message cleared (a toast going) is not. Text only: a region shown,
+  // hidden or relabelled (attributes) is not counted.
   const perf = { calls: {}, allCalls: {}, timeouts: 0, rebuilds: 0, errors: [], live: 0, liveIds: new Set(),
                  intervals: new Map(), pendingFrames: new Set(), draws: 0, drawnFrame: -1 };
   const LIVE = '[aria-live="polite"], [aria-live="assertive"], [role="status"], [role="alert"], [role="log"]';
@@ -143,7 +146,10 @@
     new MutationObserver((records) => {
       for (const r of records) {
         const region = liveRegion(r.target);
-        if (region) { perf.live++; perf.liveIds.add(region.id || region.className || "?"); }
+        if (region && region.textContent.trim()) {
+          perf.live++;
+          perf.liveIds.add(region.id || region.className || "?");
+        }
       }
     }).observe(document.body, { subtree: true, childList: true, characterData: true });
     // Count from here, before the page becomes hidden, so work it does on the
@@ -900,6 +906,24 @@
     // and Models-Queued-Dark in the dark theme); and the same queue carried
     // on after a restart (Models-Resumed).
     "downloads-queued": { change: (d) => queueDownloads(d, false), steps: [show("downloads")] },
+    // #346 (the live-region gate in tools/ui_idle_check.py, no boards): a meeting
+    // whose transcription stopped (the assertive #m-error), and Setup's speaker
+    // step while its model downloads (#su-speaker-status), each left open.
+    "meeting-error": {
+      change: (d) => {
+        d.detail["m-garden"] = meeting({ stage: "inbox", progress: 40,
+                                         error: "Could not be transcribed: the recording could not be read." });
+      },
+      steps: [openGarden],
+    },
+    "setup-3-downloading": {
+      change: (d) => {
+        firstRun(d);
+        d.cards = d.cards.map((c) => (c.role === "speakers" ? { ...c, download: { state: "running", percent: 30,
+          log: [], message: "Downloading the speaker model (sample)..." } } : c));
+      },
+      steps: [() => window.workspace.setStep(3)],
+    },
     "downloads-resumed": { change: (d) => queueDownloads(d, true), steps: [show("downloads")] },
     // #244: a chosen model that is not downloaded (no board yet): the note
     // beside the picker; and the failed meeting's Transcribe with another model.

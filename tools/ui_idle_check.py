@@ -60,6 +60,13 @@ SCENARIO = "home"            # the Meetings view with the sample meetings, nothi
 GROW_SCENARIO = "meeting-transcribing-long"   # a long meeting open while transcribing
 GROW_PAGE_MS = 90000         # its steps (12 x 4 s) after start-up, with room to spare
 RECORDING_SCENARIO = "recording"   # the Meetings view with a recording going
+# More views whose live regions must not change while nothing changes (#346):
+# a recording with computer audio, one with draft text, a reviewed meeting (its
+# banner), a meeting whose transcription stopped (the assertive #m-error) and
+# Setup's speaker step during its download. Visible, LIVE_MS of page time each.
+LIVE_SCENARIOS = ("recording-computer", "recording-drafts", "meeting-reviewed",
+                  "meeting-error", "setup-3-downloading")
+LIVE_MS = 20000
 DISPLAY_HZ = 120             # the simulated display: the meter draws every 2nd frame
 # The level meter's draws a second may be this share either side of METER_HZ.
 METER_TOLERANCE = 0.1
@@ -362,6 +369,8 @@ def main():
                      for mode in MODES}
         locked = run_locked(base, args.page_ms)
         locked_late = run_locked(base, args.page_ms, LOCKED_LATE_SCENARIO)
+        live = {name: run_page(base, "visible", LIVE_MS, name, DISPLAY_HZ)
+                for name in LIVE_SCENARIOS}
     except design_check.EdgeTimeout as timeout:
         print(f"NOT MEASURED: {timeout}", file=sys.stderr)
         return design_check.NOT_MEASURED
@@ -371,15 +380,20 @@ def main():
     over = (compare(results, budgets["ui_idle"]["ratchets"])
             + compare({"transcribing": growing}, budgets["ui_transcribing"]["ratchets"])
             + [(f"recording {m}", k, v, r) for m, k, v, r in
-               compare(recording, budgets["ui_recording"]["ratchets"])])
+               compare(recording, budgets["ui_recording"]["ratchets"])]
+            + [(f"live {m}", k, v, r) for m, k, v, r in
+               compare(live, budgets["ui_live_regions"]["ratchets"])])
     problems = (sanity(results) + early_problems(early) + transcribing_problems(growing)
                 + recording_problems(recording, meter_hz())
                 + locked_problems(locked, locked_methods())
                 + locked_problems(locked_late, None, "locked after a failed status",
-                                  status_calls=2))
+                                  status_calls=2)
+                + [f"live {name}: the page threw: {'; '.join(r['page_errors'][:3])}"
+                   for name, r in live.items() if r.get("page_errors")])
     report = {"scenario": SCENARIO, "page_ms": args.page_ms, "results": results,
               "early_error": early, "transcribing": growing, "recording": recording,
               "locked": locked, "locked_after_error": locked_late,
+              "live_regions": live,
               "over_ratchet": [{"mode": m, "metric": k, "value": v, "ratchet": r}
                                for m, k, v, r in over], "problems": problems}
     if args.report:
@@ -415,6 +429,9 @@ def main():
           f"{locked_late.get('timeouts_per_minute')} timeouts/min, "
           f"{locked_late.get('live_intervals')} interval(s); shown "
           f"{locked_late.get('locked_shown')}")
+    for name, r in live.items():
+        print(f"live regions {name}: {r.get('live_region_changes_per_minute')} changes/min "
+              f"{r.get('live_regions_changed') or ''}")
     for problem in problems:
         print(f"PAGE PROBLEM: {problem}")
     for m, k, v, r in over:

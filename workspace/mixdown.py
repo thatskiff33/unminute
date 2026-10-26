@@ -46,9 +46,7 @@ LEVEL_MAX_GAIN_DB = 15.0     # the quieter track is raised at most this much
 LEVEL_GATE_DB = -50.0        # level windows quieter than this are not counted as sound
 LEVEL_MIN_ACTIVE_S = 5.0     # a track with less sound than this is not measured (left as it is)
 LEVEL_WINDOW_S = 0.256       # level windows
-LEVEL_PIECE_S = 1.0          # a long track is measured from a piece of this length
-LEVEL_EVERY_S = 15.0         # every this many seconds (about 7 % of it)
-LEVEL_WHOLE_S = 120.0        # a track this short is measured whole
+LEVEL_BLOCK_S = 10.0         # the level is measured over the whole track, this much at a time
 _RELATIVE_GATE_DB = -10.0    # then windows this far below the mean of the rest are left out
 
 
@@ -66,19 +64,19 @@ def gated_level_db(powers, gate_db):
 
 
 def track_level_db(track, rate, full=32768.0):
-    """A track's level over its sound (gated_level_db at LEVEL_GATE_DB),
-    from all of a short track or a LEVEL_PIECE_S piece every LEVEL_EVERY_S
-    of a long one; None when it has less than LEVEL_MIN_ACTIVE_S of sound
-    (estimated from the pieces read). track: .frames, .read(a, b) (sample
-    values, full scale `full`)."""
+    """A track's level over its sound (gated_level_db at LEVEL_GATE_DB);
+    None when it has less than LEVEL_MIN_ACTIVE_S of sound. Every window of
+    the whole track is measured, whatever its length, read LEVEL_BLOCK_S at
+    a time (a whole number of windows) so memory stays bounded: no sample, so
+    one notification can never pass for a call, nor sparse sound be missed
+    (the af9ab66 review, F1). Only a final part shorter than a window is left
+    out. track: .frames, .read(a, b) (sample values, full scale `full`)."""
     rate, frames = int(rate), int(track.frames)
     window = max(1, int(LEVEL_WINDOW_S * rate))
-    whole = frames <= LEVEL_WHOLE_S * rate
-    piece = frames if whole else int(LEVEL_PIECE_S * rate)
-    step = frames if whole else int(LEVEL_EVERY_S * rate)
+    step = max(window, int(LEVEL_BLOCK_S * rate) // window * window)
     powers = []
-    for a in range(0, max(1, frames), max(1, step)):
-        x = np.asarray(track.read(a, min(frames, a + piece)), dtype=np.float64) / full
+    for a in range(0, frames, step):
+        x = np.asarray(track.read(a, min(frames, a + step)), dtype=np.float64) / full
         n = len(x) - len(x) % window
         if n:
             w = x[:n].reshape(-1, window)
@@ -86,9 +84,7 @@ def track_level_db(track, rate, full=32768.0):
     if not powers:
         return None
     p = np.concatenate(powers)
-    active_s = np.count_nonzero(p > 10 ** (LEVEL_GATE_DB / 10)) * LEVEL_WINDOW_S * (
-        1.0 if whole else LEVEL_EVERY_S / LEVEL_PIECE_S)
-    if active_s < LEVEL_MIN_ACTIVE_S:
+    if np.count_nonzero(p > 10 ** (LEVEL_GATE_DB / 10)) * window / rate < LEVEL_MIN_ACTIVE_S:
         return None
     return gated_level_db(p, LEVEL_GATE_DB)
 

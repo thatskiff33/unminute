@@ -1038,6 +1038,62 @@ class MixdownTests(unittest.TestCase):
         mixed = self.level_mix(quiet, np.zeros(60 * CRATE, np.int16))
         self.assertTrue(np.array_equal(mixed, quiet))
 
+    # -- long tracks (the af9ab66 review, F1): the whole track is measured, in
+    # bounded blocks, so a lone notification is never mistaken for a call and
+    # sparse sound is never missed, whatever the length ----------------------
+
+    LONG = 600                                                     # 10 minutes
+
+    def hiss(self, seconds, rate, seed=5):
+        rng = np.random.default_rng(seed)
+        return (rng.standard_normal(seconds * rate) * 20).astype(np.int16)  # about -64 dB
+
+    def test_a_lone_notification_on_a_long_track_is_not_blown_up(self):
+        # Wherever it falls (150.0 s and 30.2 s sat on the old 1-in-15 s
+        # sample, where it counted as 7.7 s of sound and was raised 15 dB).
+        for start in (150.0, 150.5, 30.2, 151.0, 157.0):
+            with self.subTest(start=start):
+                comp = self.hiss(self.LONG, RATE)
+                a = int(start * RATE)
+                comp[a:a + 2 * RATE] = tone(2 * RATE, RATE, 1000, amp=1000)
+                self.assertIsNone(mixdown.track_level_db(ArrayTrack(comp), RATE))
+                self.assertEqual(mixdown.match_gains(-15.0, None), (1.0, 1.0))
+
+    def test_sparse_sound_on_a_long_track_is_measured(self):
+        # 4 s of sound a minute, all between the old sample's pieces (it
+        # measured None and matched nothing): 40 s of sound is a call.
+        comp = self.hiss(self.LONG, RATE)
+        for minute in range(self.LONG // 60):
+            a = (minute * 60 + 5) * RATE
+            comp[a:a + 4 * RATE] = tone(4 * RATE, RATE, 1000, amp=2000)
+        level = mixdown.track_level_db(ArrayTrack(comp), RATE)
+        self.assertIsNotNone(level)
+        self.assertAlmostEqual(level, 20 * np.log10(2000 / np.sqrt(2) / 32768), delta=1.0)
+
+    def test_the_level_is_measured_in_bounded_blocks(self):
+        # A 100 s track was read whole (as float64, with a squared copy):
+        # every read is now at most LEVEL_BLOCK_S, whatever the length.
+        reads = []
+
+        class Counting(ArrayTrack):
+            def read(self, a, b):
+                reads.append(b - a)
+                return super().read(a, b)
+
+        for seconds in (100, 300):
+            reads.clear()
+            mixdown.track_level_db(Counting(tone(seconds * RATE, RATE, 220, amp=2000)), RATE)
+            self.assertEqual(sum(reads), seconds * RATE)          # all of it, once
+            self.assertLessEqual(max(reads), mixdown.LEVEL_BLOCK_S * RATE)
+
+    def test_a_long_call_is_matched_end_to_end(self):
+        seconds = 150                                             # past the old 120 s whole read
+        mic = tone(seconds * RATE, RATE, 220, amp=2000)
+        comp = tone(seconds * CRATE, CRATE, 1000, amp=8000)       # 12 dB louder
+        mixed = self.level_mix(mic, comp)[20 * RATE:130 * RATE]
+        gap = self.component_db(mixed, RATE, 1000) - self.component_db(mixed, RATE, 220)
+        self.assertLess(abs(gap), 1.0)
+
     def test_level_matching_never_changes_the_saved_tracks(self):
         mic = tone(30 * RATE, RATE, 220, amp=1000)
         comp = tone(30 * CRATE, CRATE, 1000, amp=8000)

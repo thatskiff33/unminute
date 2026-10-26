@@ -580,7 +580,10 @@ async function renderMeeting() {
   renderSteps(d);
   renderBanner(d);
   $("m-error").hidden = !d.error;
-  $("m-error").textContent = d.error || "";
+  // Live regions (this one assertive) are set only when their text changes:
+  // set at every poll, even to the same text, a screen reader reads them
+  // again each time (#346, the owner's Narrator check of 26 Oct 2026).
+  putText($("m-error"), d.error || "");
   const transcribing = d.stage === "inbox";
   $("m-progress").hidden = !transcribing;
   if (transcribing) {
@@ -692,11 +695,11 @@ function renderBanner(d) {
   }
   $("m-banner").hidden = !text;
   $("m-banner").className = `m-banner ${kind}`.trim();
-  $("m-playback").textContent = text;
+  putText($("m-playback"), text);                  // in #m-banner, a live region: only on change
   $("m-banner-lock").toggleAttribute("hidden", icon !== "lock");
   $("m-banner-clock").toggleAttribute("hidden", icon !== "clock");
   $("m-banner-action").hidden = !action;
-  if (action) $("m-banner-action").textContent = action[0];
+  if (action) putText($("m-banner-action"), action[0]);
   state.bannerAction = action ? action[1] : null;
 }
 
@@ -2012,9 +2015,9 @@ async function renderSetup() {
   $("s-token-note").textContent = s.token_remembered
     ? "A Hugging Face token is remembered in Windows Credential Manager. Removing it does not affect models already downloaded."
     : "";
-  $("su-speaker-status").textContent = speaker.state === "ready" ? "The speaker model is downloaded and ready."
+  putText($("su-speaker-status"), speaker.state === "ready" ? "The speaker model is downloaded and ready."   // live: only on change
     : isQueued(speaker) ? queueNote(speaker.download)
-    : speaker.download ? speaker.download.message : "";
+    : speaker.download ? speaker.download.message : "");
   renderSummary(s);
   $("s-finish").disabled = !s.speech_ready;
   $("s-finish-note").textContent = s.speech_ready ? "" : `Download a speech model first (${cardName(rec)} is recommended).`;
