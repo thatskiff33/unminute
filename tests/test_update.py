@@ -461,6 +461,81 @@ class MigrationTests(unittest.TestCase):
         finally:
             s.close()
 
+    def hostile_table(self, name='receipts" --'):
+        """An empty workspace with one receipt, plus a table whose name is
+        not a plain identifier (one synthetic row in it)."""
+        s = Store(self.db, protector=keyprotect.TestProtector())
+        with s.tx() as db:
+            db.execute("INSERT INTO receipts VALUES ('r', 0, 1, 'kept')")
+        s.close()
+        quoted = '"' + name.replace('"', '""') + '"'
+        con = sqlite3.connect(self.db)
+        con.execute(f"CREATE TABLE {quoted} (x)")
+        con.execute(f"INSERT INTO {quoted} VALUES ('synthetic')")
+        con.commit()
+        con.close()
+        return quoted
+
+    def assert_untouched(self, quoted):
+        con = sqlite3.connect(self.db)
+        try:
+            self.assertEqual(self.saved, update.current_schema(self.db))
+            self.assertEqual(1, con.execute("SELECT COUNT(*) FROM receipts").fetchone()[0])
+            self.assertEqual(1, con.execute(f"SELECT COUNT(*) FROM {quoted}").fetchone()[0])
+        finally:
+            con.close()
+
+    def test_the_gate_waits_for_a_table_whose_name_is_not_a_plain_identifier(self):
+        # #415 item 5: names from sqlite_master never go into SQL. Unchecked,
+        # 'receipts" WHERE 0 --' counted no rows, so the gate let the update
+        # go ahead past a table with rows in it. Now it is never read, counts
+        # as content, and the update and the migration wait.
+        quoted = self.hostile_table('receipts" WHERE 0 --')
+        g = update.gate(self.db, self.saved + 1)
+        self.assertEqual((update.WAIT, ["content"]),
+                         (g["code"], [b["kind"] for b in g["blockers"]]))
+        self.assertNotIn("receipts", g["message"])                        # no name (P3)
+        store.SCHEMA_VERSION = self.saved + 1
+        with self.assertRaises(MigrationBlocked):
+            Store(self.db, protector=keyprotect.TestProtector())
+        self.assert_untouched(quoted)
+
+    def test_the_store_refuses_such_a_table_by_itself(self):
+        # Defence in depth: with the gate's answer taken away, the migration
+        # still refuses before it reads or drops anything. Unchecked, it
+        # dropped "receipts" in the hostile table's place and kept that table.
+        quoted = self.hostile_table()
+        store.SCHEMA_VERSION = self.saved + 1
+        with mock.patch.object(update, "blockers", return_value=[]), \
+                self.assertRaises(store.StoreError) as caught:
+            Store(self.db, protector=keyprotect.TestProtector())
+        self.assertEqual(store.UNEXPECTED_TABLE, str(caught.exception))      # no name (P3)
+        self.assert_untouched(quoted)
+
+    def test_every_table_either_schema_made_passes_the_identifier_check(self):
+        # The normal paths: every table schema 1 and the current schema make
+        # is a plain identifier, so stub checks and migrations never refuse
+        # one (#415). Anything else is refused with fixed text.
+        con = sqlite3.connect(":memory:")
+        try:
+            for script in (store.SCHEMA, schema_v1.SCHEMA_1):
+                con.executescript(script)
+            names = [r[0] for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'")]
+        finally:
+            con.close()
+        self.assertIn("meetings", names)
+        self.assertIn("crypto_meta", names)
+        self.assertEqual(store._TABLE_NAME.pattern, update._TABLE_NAME.pattern)  # one rule
+        for name in names:
+            self.assertEqual(f'"{name}"', store._quoted_table(name))
+        for name in ('receipts" --', 'a"b', "two words", "x;", "", "1st", "caf\u00e9",
+                     "a" * 65, "t\n", None, b"meetings"):
+            with self.subTest(name=name):
+                with self.assertRaises(store.StoreError) as caught:
+                    store._quoted_table(name)
+                self.assertEqual(store.UNEXPECTED_TABLE, str(caught.exception))
+
     def test_older_app_refuses_a_newer_workspace(self):
         store.SCHEMA_VERSION = self.saved + 1
         Store(self.db, protector=keyprotect.TestProtector()).close()
