@@ -1355,6 +1355,35 @@ class AppContainerTests(unittest.TestCase):
                 self.assertEqual(error.step, "check")
                 self.assertTrue(process_gone(pids[-1]))
 
+    def test_the_real_readers_report_a_process_outside_any_container(self):
+        # The refusals above feed token_facts made-up answers; this shows the
+        # real readers, unpatched, describe a plain process (as a decoder
+        # started outside the container would be) as not contained.
+        import ctypes
+        from ctypes import wintypes
+
+        from workspace import appcontainer, decode_child
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        proc = subprocess.Popen([PYTHON, "-I", "-c", "import time; time.sleep(60)"],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+        self.addCleanup(proc.wait, 10)
+        self.addCleanup(proc.kill)
+        handle = k32.OpenProcess(0x1000, False, proc.pid)         # QUERY_LIMITED_INFORMATION
+        self.assertTrue(handle)
+        try:
+            inside, sid, capabilities, level = appcontainer.token_facts(handle)
+        finally:
+            k32.CloseHandle(handle)
+        self.assertEqual((inside, sid, capabilities), (False, None, 0))
+        self.assertGreater(level, appcontainer.LOW_INTEGRITY)
+        self.assertGreater(decode_child.process_integrity(proc.pid), decode_child.LOW_INTEGRITY)
+        self.assertGreater(decode_child.process_integrity(os.getpid()),
+                           decode_child.LOW_INTEGRITY)
+
     def test_a_job_that_cannot_be_set_refuses_the_import(self):
         from workspace import jobs, media
         with mock.patch.object(jobs, "contain", side_effect=jobs.JobError(5, "denied")), \
@@ -1405,6 +1434,26 @@ class AppContainerTests(unittest.TestCase):
         self.assertTrue(appcontainer.delete_profile(name))
         self.assertFalse(appcontainer.profile_exists(name))
         self.assertFalse(appcontainer.delete_profile(name))       # nothing left to remove
+
+    def test_throwaway_profiles_of_ended_runs_are_swept_and_live_ones_kept(self):
+        # A test run that is killed never reaches atexit; the next run removes
+        # what it left, but never a profile whose process still runs.
+        import secrets
+
+        from workspace import appcontainer
+        ended = subprocess.Popen([PYTHON, "-I", "-c", "pass"])
+        ended.wait(timeout=30)
+        left = f"Unminute.Test.{ended.pid}.{secrets.token_hex(4)}"
+        live = f"Unminute.Test.{os.getpid()}.{secrets.token_hex(4)}"
+        other = "Unminute.Test." + secrets.token_hex(6)           # not a name profile() makes
+        for name in (left, live, other):
+            self.addCleanup(appcontainer.delete_profile, name)
+            appcontainer.ensure_profile(name).close()
+        swept = decoder_runtime.sweep_profiles()
+        self.assertEqual([n.lower() for n in swept], [left.lower()])
+        self.assertFalse(appcontainer.profile_exists(left))
+        self.assertTrue(appcontainer.profile_exists(live))
+        self.assertTrue(appcontainer.profile_exists(other))
 
 
 @unittest.skipUnless(WINDOWS and HAVE_DEPS, "Windows decoder process")

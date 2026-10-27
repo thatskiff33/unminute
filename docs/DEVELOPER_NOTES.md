@@ -76,8 +76,9 @@ real time, and remove it when the cause is fixed.
   decode from a checkout call it too: it copies the interpreter, the standard library, numpy,
   PyAV and the imported `workspace` package into a temporary folder (about 3 s and 2,500
   files), grants ALL APPLICATION PACKAGES read on that folder only, and uses a throwaway
-  AppContainer profile, removing both at exit. A new test module or tool that decodes needs the
-  same call. Never grant the container read on a whole checkout: `extracted/` can hold real
+  AppContainer profile, removing both at exit; a run that was killed leaves its profile, which
+  the next run removes (`sweep_profiles`, only once the process that made it has ended). A new
+  test module or tool that decodes needs the same call. Never grant the container read on a whole checkout: `extracted/` can hold real
   content (P2). In a package's own runtime it does nothing, so release evidence uses the real
   container.
 - **In the AppContainer, the decoder never opens the null device by name.** Windows Server 2025

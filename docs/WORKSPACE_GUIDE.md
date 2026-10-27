@@ -4,9 +4,10 @@ Unminute turns a meeting recording into a reviewed transcript on your own comput
 
 It is a temporary workspace, not an archive. Your final documents live wherever your organisation files them.
 
-This guide covers the packaged workspace, as it is in the project's latest code. The newest release is 0.5.0-preview.4 (27 October 2026). This part of the guide is not in that release yet, and arrives with the next one:
+This guide covers the packaged workspace, as it is in the project's latest code. The newest release is 0.5.0-preview.4 (27 October 2026). These parts of the guide are not in that release yet, and arrive with the next one:
 
 - **The note on the Meetings page when Unminute removes an import cut short**, in [Handing off and cleaning up](#handing-off-and-cleaning-up). In 0.5.0-preview.4 the app still finishes or removes such an import when it starts, but says nothing when it removes one, and an update that changes how the workspace is stored counts it as a meeting to review and hand off.
+- **The protected decoder**, in [Troubleshooting and support](#troubleshooting-and-support): the message "This recording can't be opened safely on this computer" and the `--check-decoder` option for IT. In 0.5.0-preview.4 the app still decodes each recording in a separate, limited process, but that process can read your files, and the app never shows that message.
 
 ## What stays on your computer, and what does not
 
