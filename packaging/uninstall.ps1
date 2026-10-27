@@ -56,7 +56,8 @@
   removes only the installer's own entries (the versions, the current junction
   as a link, current.json, the logs, install.lock, staging folders and this
   script), the Start menu entry for all users, the runtime firewall rules (#111
-  B7b: every rule in their group; a failure only warns), the Event Log source
+  B7b: every rule in their group; a failure only warns, and a firewall it
+  cannot read warns only where current.json recorded the choice), the Event Log source
   and, last, the machine-wide uninstall entry. While a version kept for people whose workspace has
   not moved to the current storage format is installed, it removes nothing
   unless -IncludeKeptSlots is given (exit 5), so a misconfigured "uninstall
@@ -1051,13 +1052,31 @@ function Unregister-EventSource {
     } catch { Write-Warn "The Event Log source could not be removed." }
 }
 
+# Whether current.json records the runtime firewall choice (#111 B7b): the
+# "block_runtime_network": true install.ps1 -Machine -BlockRuntimeNetwork writes.
+function Test-RuntimeBlockRecorded([string]$Root) {
+    $currentFile = [IO.Path]::Combine($Root, "current.json")
+    if (-not [IO.File]::Exists($currentFile)) { return $false }
+    try { $record = Get-Content -LiteralPath $currentFile -Raw | ConvertFrom-Json } catch { return $false }
+    return [bool]($record -and $record.block_runtime_network -is [bool] -and $record.block_runtime_network)
+}
+
 # Removes every rule in the runtime firewall group (#111 B7b), whether or not
 # current.json still records the choice, once the versions they name are gone. A
 # failure only warns: a block rule for a program that no longer exists does nothing.
-function Remove-RuntimeBlock {
+# When the group cannot be read (the firewall service stopped, for example), it
+# warns only if current.json recorded the choice ($Recorded, #455); a rule found
+# that cannot be removed always warns.
+function Remove-RuntimeBlock([bool]$Recorded) {
+    $message = "The runtime firewall rules could not be removed; remove the rules in their group by hand."
+    try { $rules = Get-RuntimeRule }
+    catch {
+        if ($Recorded) { Write-Warn $message }
+        return
+    }
     try {
-        foreach ($name in @((Get-RuntimeRule).Keys)) { Remove-RuntimeRule $name }
-    } catch { Write-Warn "The runtime firewall rules could not be removed; remove the rules in their group by hand." }
+        foreach ($name in @($rules.Keys)) { Remove-RuntimeRule $name }
+    } catch { Write-Warn $message }
 }
 
 function Invoke-MachineUninstall {
@@ -1088,6 +1107,7 @@ function Invoke-MachineUninstall {
     if (-not $folder.Exists -and -not (Test-Path -LiteralPath $regKey)) {
         Stop-Uninstall 1 "$AppName is not installed for everyone on this computer, so nothing was removed."
     }
+    $runtimeBlock = $false            # current.json records the runtime firewall choice (#455)
     if ($folder.Exists) {
         # The installer's checks: the folder's own permissions, exactly, before the
         # lock is written there; then, holding the lock, so not beside an install or
@@ -1132,6 +1152,8 @@ function Invoke-MachineUninstall {
                 "current storage format, so nothing was removed. Check with them first, then remove the kept " +
                 "version with install.ps1 -Machine -RemoveSlot, or run this again with -IncludeKeptSlots.")
         }
+        # Read before current.json goes, for the firewall warning below.
+        $runtimeBlock = Test-RuntimeBlockRecorded $root
         # The junctions first, as links, so nothing is removed through them; then
         # the rest, never through a link (Remove-OwnFolder).
         # The launch junction first, so nothing starts the app meanwhile, then the two
@@ -1156,7 +1178,7 @@ function Invoke-MachineUninstall {
         try { Remove-OwnFolder $root } catch { }
     }
     if (Test-Path -LiteralPath $link) { Remove-Item -LiteralPath $link -Force }
-    Remove-RuntimeBlock
+    Remove-RuntimeBlock $runtimeBlock
     Unregister-EventSource
     # Last: while any of it remains, the app still shows as installed (Intune detection).
     if (Test-Path -LiteralPath $regKey) { Remove-Item -LiteralPath $regKey -Recurse -Force }

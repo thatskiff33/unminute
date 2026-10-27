@@ -1762,16 +1762,22 @@ TEST_MACHINE_KEY = TEST_KEY + r"-machine\Uninstall\Unminute"
 TEST_EVENT_KEY = TEST_KEY + r"-machine\EventLog\Unminute"
 # The runtime firewall rule (#111 B7b): the rules' group, set once in both scripts'
 # shared machine section, and the policy key install.ps1 reads to warn. A copy names
-# a throwaway group and HKCU key instead, and its commands that add or remove a
-# firewall rule are renamed to one that does not exist (FIREWALL_STAND_IN), so no
-# test here writes this computer's firewall, even on CI's elevated runner. Reading it
-# (Get-NetFirewallRule, Get-NetFirewallProfile) is left as it is.
+# a throwaway group and HKCU key instead, and every Windows Firewall command that
+# changes something ((New|Set|Remove|Enable|Disable|Copy|Rename)-NetFirewall*, in any
+# letter case, Set-NetFirewallProfile included; #455) is renamed to one that does not
+# exist (FIREWALL_STAND_IN), so no test here writes this computer's firewall, even on
+# CI's elevated runner. Reading it (Get-NetFirewallRule, Get-NetFirewallProfile) is
+# left as it is. A copy that still holds such a command, names a firewall command
+# through its module (NetSecurity\New-NetFirewallRule), or reaches the firewall by
+# netsh or its COM interface (HNetCfg) is refused (check_scratch_run).
 FIREWALL_GROUP_LINE = '$FirewallGroup = "Unminute runtime"'
 TEST_FIREWALL_GROUP = f"Unminute-UnitTest-firewall-{os.getpid()}"
 POLICY_KEY_LINE = '$PolicyKey = "HKLM:\\SOFTWARE\\Policies\\Unminute"'
 TEST_POLICY_KEY = TEST_KEY + "-policy"
-FIREWALL_WRITES = ("New-NetFirewallRule", "Remove-NetFirewallRule", "Set-NetFirewallRule")
 FIREWALL_STAND_IN = "Stop-UnminuteTestFirewall"
+FIREWALL_WRITE = re.compile(r"(?i)\b(?:New|Set|Remove|Enable|Disable|Copy|Rename)-NetFirewall\w*")
+# A firewall command, or its stand-in, named through a module (module\command).
+FIREWALL_QUALIFIED = re.compile(r"(?i)\\\s*(?:[a-z]+-NetFirewall|" + FIREWALL_STAND_IN + ")")
 # What a copy may not hold: the ways a script reaches this account's own Start menu
 # or uninstall entries, or this computer's Program Files, all-users Start menu, HKLM
 # uninstall entries, Event Log sources, policy key or firewall rules.
@@ -1780,7 +1786,7 @@ REAL_REACH = ("GetFolderPath", "SpecialFolder", "Start Menu\\", "CurrentVersion\
               "HKLM:\\SOFTWARE\\Microsoft\\Windows", "HKLM:\\SOFTWARE\\Policies", "HKEY_",
               "$env:Program", "$env:ALLUSERSPROFILE", "$env:PUBLIC", "CreateSubKey",
               "DeleteSubKey", "DeleteValue", "EventSource(", "New-EventLog", "Remove-EventLog",
-              "Unminute runtime") + FIREWALL_WRITES
+              "Unminute runtime", "netsh", "HNetCfg")
 # How a copy's machine places read (check_scratch_run).
 MACHINE_PLACES = (("Program Files", r'(?m)^\$ProgramFilesFolder = "([^"]*)"\r?$'),
                   ("the all-users Start menu folder",
@@ -1960,8 +1966,7 @@ def scratch_text(name, programs, program_files=None, common_programs=None):
                              "policy key) once, so the tests cannot redirect them")
     text = (text.replace(FIREWALL_GROUP_LINE, f'$FirewallGroup = "{TEST_FIREWALL_GROUP}"')
             .replace(POLICY_KEY_LINE, f'$PolicyKey = "HKCU:\\{TEST_POLICY_KEY}"'))
-    for command in FIREWALL_WRITES:
-        text = text.replace(command, FIREWALL_STAND_IN)
+    text = FIREWALL_WRITE.sub(FIREWALL_STAND_IN, text)
     return (text.replace(PROGRAMS_CALL, f'"{programs}"').replace(REAL_KEY_LINE, TEST_KEY_LINE)
             .replace(PROGRAM_FILES_LINE, f'$ProgramFilesFolder = "{program_files}"')
             .replace(COMMON_PROGRAMS_LINE, f'$CommonProgramsFolder = "{common_programs}"')
@@ -1976,7 +1981,8 @@ def check_scratch_run(script, install_dir, scratch, env, where, machine=False):
     if not is_scratch(script, scratch) or not script.is_file():
         raise AssertionError("an installer test runs only a copy in its scratch folder")
     text = script.read_text(encoding="utf-8")
-    if TEST_KEY_LINE not in text or any(r.lower() in text.lower() for r in REAL_REACH):
+    if (TEST_KEY_LINE not in text or any(r.lower() in text.lower() for r in REAL_REACH)
+            or FIREWALL_WRITE.search(text) or FIREWALL_QUALIFIED.search(text)):
         raise AssertionError("an installer test's copy still reaches the real Start menu, "
                              "Program Files, uninstall keys or Event Log (use scratch_text)")
     if DECODER_PROFILE_LINE in text:
@@ -4065,6 +4071,32 @@ class InstallerIsolationTests(unittest.TestCase):
                 self.assertIn(FIREWALL_STAND_IN, text)
                 for reach in REAL_REACH:
                     self.assertNotIn(reach.lower(), text.lower(), reach)
+                self.assertIsNone(FIREWALL_WRITE.search(text))
+
+    def test_a_copy_renames_every_firewall_write(self):
+        # #455: scratch_text renames every Windows Firewall command that changes
+        # something ((New|Set|Remove|Enable|Disable|Copy|Rename)-NetFirewall*, in any
+        # letter case, Set-NetFirewallProfile included), not only the three the
+        # scripts use today; reads are left as they are.
+        writes = ("New-NetFirewallRule", "Set-NetFirewallRule", "Remove-NetFirewallRule",
+                  "Enable-NetFirewallRule", "Disable-NetFirewallRule", "Copy-NetFirewallRule",
+                  "Rename-NetFirewallRule", "Set-NetFirewallProfile", "Set-NetFirewallSetting",
+                  "New-NetFirewallHyperVRule", "remove-netfirewallrule")
+        fake = self.root / "fake-repo"
+        (fake / "packaging").mkdir(parents=True)
+        for name in ("install.ps1", "uninstall.ps1"):
+            text = (ROOT / "packaging" / name).read_text(encoding="utf-8")
+            extra = "".join(f"# {w}\n" for w in writes) + "# Get-NetFirewallProfile\n"
+            (fake / "packaging" / name).write_text(extra + text, encoding="utf-8")
+        with mock.patch.object(sys.modules[__name__], "ROOT", fake):
+            for name in ("install.ps1", "uninstall.ps1"):
+                with self.subTest(name):
+                    text = scratch_text(name, self.root / "programs")
+                    for write in writes:
+                        self.assertFalse(write.lower() in text.lower(), write)
+                    self.assertIsNone(FIREWALL_WRITE.search(text))
+                    self.assertIn("# Get-NetFirewallProfile", text)
+                    self.assertGreaterEqual(text.count(FIREWALL_STAND_IN), len(writes))
 
     def test_a_machine_run_cannot_reach_the_real_places(self):
         # #111 B6b: each machine place of a copy pointed back at a real one, or at
@@ -4121,6 +4153,21 @@ class InstallerIsolationTests(unittest.TestCase):
                 copy.write_text(good.replace(find, put), encoding="utf-8")
                 self.assertIn(says, self.refused(copy, machine=True))
                 self.assertIn(says, self.refused(copy))
+        # #455: every Windows Firewall command that changes something, by any verb and
+        # in any letter case, and any firewall command named through its module (which
+        # a stand-in cannot catch), is refused wherever it is.
+        anchor = FIREWALL_STAND_IN + " -Name $Name -DisplayName"
+        for put in ("Enable-NetFirewallRule", "Disable-NetFirewallRule", "Copy-NetFirewallRule",
+                    "Rename-NetFirewallRule", "Set-NetFirewallProfile", "set-netfirewallsetting",
+                    "New-NetFirewallAddressFilter", "NetSecurity\\Get-NetFirewallRule",
+                    "NetSecurity\\" + FIREWALL_STAND_IN, "netsh advfirewall",
+                    "New-Object -ComObject HNetCfg.FwPolicy2"):
+            with self.subTest(put):
+                self.assertEqual(good.count(anchor), 1, anchor)
+                copy = self.root / "machine-copy.ps1"
+                copy.write_text(good.replace(anchor, put + "; " + anchor), encoding="utf-8")
+                self.assertIn("still reaches", self.refused(copy, machine=True))
+                self.assertIn("still reaches", self.refused(copy))
         # The copy as scratch_text makes it is not refused (it would run). The shared
         # module cache is filled first: its first use runs PowerShell, which the mock
         # below would stop, leaving the cache unwritten for the rest of this process.

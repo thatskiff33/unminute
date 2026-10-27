@@ -335,7 +335,11 @@ class InstallIdentityTests(unittest.TestCase):
                 "event_source": "Unminute",
                 "event_source_key": r"HKLM\SYSTEM\CurrentControlSet\Services\EventLog"
                                     r"\Application\Unminute",
-                "event_message_file": "EventLogMessages.dll"}})
+                "event_message_file": "EventLogMessages.dll",
+                # The runtime firewall rules' group (#111 B7b): the machine uninstall
+                # removes the rules by it, so a new name would leave the old rules
+                # behind. Pinned by #455.
+                "firewall_group": "Unminute runtime"}})
         self.assertEqual({script: {mode: sorted(codes) for mode, codes in modes.items()}
                           for script, modes in identity["exit_codes"].items()},
                          {"install.ps1": {"user": ["0", "1", "2", "3", "4", "5", "6"],
@@ -400,6 +404,8 @@ class InstallIdentityTests(unittest.TestCase):
                                                               text, "$JunctionNames")))
                 self.assertEqual(r"^staging-[0-9a-f]{32}\z",
                                  one(r"^\$StagingPattern = '([^']+)'$", text, "$StagingPattern"))
+                self.assertEqual(machine["firewall_group"],
+                                 one(r'^\$FirewallGroup = "([^"]+)"$', text, "$FirewallGroup"))
                 self.assertIn('"$AppName.lnk"', text)
                 self.assertIn('"EventLogMessages.dll"', text)
                 # Program Files and the all-users Start menu from Windows' known
@@ -416,6 +422,14 @@ class InstallIdentityTests(unittest.TestCase):
         self.assertEqual(identity["modes"]["machine"]["install_folder"],
                          "%ProgramFiles%\\" + update.MACHINE_FOLDER)
         self.assertEqual(identity["modes"]["machine"]["event_source"], identity["event_source"])
+        # The tests' copies of the firewall group (#455): the Pester tests' real one,
+        # and the line the unit tests redirect.
+        self.assertEqual(identity["modes"]["machine"]["firewall_group"], one(
+            r'^\$script:RealFirewallGroup = "([^"]+)"$', read("tests/powershell/Isolation.ps1"),
+            "$script:RealFirewallGroup"))
+        self.assertIn(f'= "{identity["modes"]["machine"]["firewall_group"]}"',
+                      one(r"^FIREWALL_GROUP_LINE = '([^']+)'$", read("tests/test_hardening.py"),
+                          "FIREWALL_GROUP_LINE"))
         self.assertEqual(identity["app_id"], one(r'^\$AppId = "([^"]+)"', self.install, "$AppId"))
         self.assertEqual({identity["icon"]}, {Path(p).name for p in re.findall(
             r'"app\\([^"]+\.ico)"', self.install)})

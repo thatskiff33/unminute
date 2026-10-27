@@ -827,9 +827,10 @@ Describe "install.ps1 -Machine" {
 
         It "warns while managed policy still allows downloads: <Label>" -TestCases @(
             @{ Label = "neither value set"; Policy = @{}; Says = "AllowModelDownloads, AllowGpuComponent not set to 0" }
-            @{ Label = "GPU components allowed"; Policy = @{ AllowModelDownloads = 0; AllowGpuComponent = 1 }; Says = "AllowGpuComponent not set to 0" }
             @{ Label = "a value that is text, not a number"; Policy = @{ AllowModelDownloads = "0"; AllowGpuComponent = 0 }; Says = "AllowModelDownloads not set to 0" }
             @{ Label = "user models off but GPU components allowed (#111 B7a)"; Policy = @{ AllowUserModels = 0 }; Says = "AllowGpuComponent not set to 0" }
+            @{ Label = "user models off but GPU components allowed, as DWORDs"; Policy = @{ AllowModelDownloads = 1; AllowUserModels = 0; AllowGpuComponent = 1 }; Says = "AllowGpuComponent not set to 0" }
+            @{ Label = "GPU components off but user models allowed"; Policy = @{ AllowGpuComponent = 0 }; Says = "AllowModelDownloads not set to 0" }
         ) {
             param($Label, $Policy, $Says)
             $null = $Label
@@ -837,6 +838,8 @@ Describe "install.ps1 -Machine" {
             Invoke-TestInstall (New-TestZip "1.0.0") @{ BlockRuntimeNetwork = $true }
             @($script:Warnings).Count | Should -Be 1
             $script:Warnings[0] | Should -BeLike "*($Says)*"
+            # #455: either way of turning downloads off is named.
+            $script:Warnings[0] | Should -BeLike "*set AllowModelDownloads to 0, or AllowUserModels and AllowGpuComponent to 0."
             [IO.File]::ReadAllText((Join-Path $script:Root "logs\install.log")) | Should -Match "step=firewall result=downloads_allowed"
             Get-Current | Should -BeExactly "1.0.0"
         }
@@ -845,6 +848,37 @@ Describe "install.ps1 -Machine" {
             $script:Policy = @{ AllowUserModels = 0; AllowGpuComponent = 0 }
             Invoke-TestInstall (New-TestZip "1.0.0") @{ BlockRuntimeNetwork = $true }
             $script:Warnings | Should -BeNullOrEmpty
+        }
+
+        # #455: AllowModelDownloads at 0 refuses every download, the graphics card
+        # components' included, so AllowGpuComponent then needs no warning.
+        It "does not warn about downloads when AllowModelDownloads is 0: <Label>" -TestCases @(
+            @{ Label = "GPU components allowed"; Policy = @{ AllowModelDownloads = 0; AllowGpuComponent = 1 } }
+            @{ Label = "nothing else set"; Policy = @{ AllowModelDownloads = 0 } }
+        ) {
+            param($Label, $Policy)
+            $null = $Label
+            $script:Policy = $Policy
+            Invoke-TestInstall (New-TestZip "1.0.0") @{ BlockRuntimeNetwork = $true }
+            $script:Warnings | Should -BeNullOrEmpty
+            [IO.File]::ReadAllText((Join-Path $script:Root "logs\install.log")) | Should -Not -Match "downloads_allowed"
+        }
+
+        # #455 (IT_DEPLOYMENT.md, "Runtime firewall rule"): a computer already
+        # installed gets the rules from the same package again with the switch, by the
+        # same-version path, which copies nothing.
+        It "turns the rules on for the version already installed, by the same package again with the switch" {
+            Invoke-TestInstall (New-TestZip "1.0.0")
+            $slot = Get-Item -LiteralPath (Join-Path $script:Root "versions\1.0.0")
+            $made = $slot.CreationTimeUtc
+            Get-RuleList | Should -BeExactly ""
+            Invoke-TestInstall (New-TestZip "1.0.0") @{ BlockRuntimeNetwork = $true }
+            Get-RuleList | Should -BeExactly "1.0.0 python.exe,1.0.0 pythonw.exe"
+            (Get-Record).block_runtime_network | Should -BeTrue
+            Get-Current | Should -BeExactly "1.0.0"
+            Get-Kept | Should -BeExactly "1.0.0"
+            (Get-Item -LiteralPath (Join-Path $script:Root "versions\1.0.0")).CreationTimeUtc | Should -Be $made
+            [IO.File]::ReadAllText((Join-Path $script:Root "logs\install.log")) | Should -Match "step=firewall result=ok"
         }
 
         It "warns, and logs, that the rules are not in effect when <Label>" -TestCases @(
@@ -1178,6 +1212,45 @@ Describe "uninstall.ps1 -Machine" {
         [IO.Directory]::Exists($root) | Should -BeFalse
         Test-Path -LiteralPath $script:RegPath | Should -BeFalse
         @($script:Warnings) | Should -Be @("The runtime firewall rules could not be removed; remove the rules in their group by hand.")
+    }
+
+    # #455: where Windows Firewall cannot be read (its service stopped, for example),
+    # the uninstall warns about the rules only when current.json recorded the choice.
+    It "warns that the firewall could not be read only when current.json recorded the choice: <Label>" -TestCases @(
+        @{ Label = "recorded"; Recorded = $true; Warns = $true }
+        @{ Label = "never chosen"; Recorded = $false; Warns = $false }
+    ) {
+        param($Label, $Recorded, $Warns)
+        $null = $Label
+        $script:Warnings = @()
+        Mock Get-RuntimeRule { throw "the service is stopped" }
+        Mock Write-Warn { $script:Warnings += $Message }
+        $root = New-TestMachineInstall @{ "1.0.0" = 2 } "1.0.0"
+        if ($Recorded) {
+            $file = Join-Path $root "current.json"
+            $record = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json
+            $record | Add-Member -NotePropertyName block_runtime_network -NotePropertyValue $true
+            [IO.File]::WriteAllText($file, ($record | ConvertTo-Json -Depth 4))
+        }
+        Invoke-TestUninstall
+        [IO.Directory]::Exists($root) | Should -BeFalse
+        Test-Path -LiteralPath $script:RegPath | Should -BeFalse
+        Test-Path -LiteralPath $script:EventPath | Should -BeFalse
+        if ($Warns) {
+            @($script:Warnings) | Should -Be @("The runtime firewall rules could not be removed; remove the rules in their group by hand.")
+        } else {
+            $script:Warnings | Should -BeNullOrEmpty
+        }
+    }
+
+    It "does not warn about the firewall when it cannot be read and the folder has already gone (#455)" {
+        $script:Warnings = @()
+        Mock Get-RuntimeRule { throw "the service is stopped" }
+        Mock Write-Warn { $script:Warnings += $Message }
+        New-Item -Path $script:RegPath -Force | Out-Null
+        Invoke-TestUninstall
+        Test-Path -LiteralPath $script:RegPath | Should -BeFalse
+        $script:Warnings | Should -BeNullOrEmpty
     }
 
     It "removes what is left when the folder has gone, and says there is nothing to remove otherwise" {

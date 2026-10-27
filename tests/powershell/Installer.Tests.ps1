@@ -84,6 +84,14 @@ Describe "the tests' own safety check" {
         @{ Label = "the firewall group"; Code = 'function Get-Group { "Unminute runtime" }' }
         @{ Label = "a firewall command elsewhere"; Code = 'function Set-Thing { New-NetFirewallRule -Name x }' }
         @{ Label = "a firewall command in a string"; Code = 'function Get-RuntimeRule { $c = "Remove-NetFirewallRule"; & $c }' }
+        # #455: a firewall command named through its module (which no stand-in can
+        # catch), one the tests do not stand in, and netsh or the firewall's COM
+        # interface, even inside a firewall function.
+        @{ Label = "a firewall command named through its module"; Code = 'function Add-RuntimeRule { NetSecurity\New-NetFirewallRule -Name x }' }
+        @{ Label = "a read named through its module"; Code = 'function Get-RuntimeRule { NetSecurity\Get-NetFirewallRule -Group x }' }
+        @{ Label = "a firewall command the tests do not stand in"; Code = 'function Add-RuntimeRule { Set-NetFirewallSetting -Exemptions None }' }
+        @{ Label = "netsh"; Code = 'function Add-RuntimeRule { netsh advfirewall firewall add rule name=x dir=out action=block }' }
+        @{ Label = "the firewall's COM interface"; Code = 'function Add-RuntimeRule { New-Object -ComObject HNetCfg.FwPolicy2 }' }
     ) {
         param($Label, $Code)
         $null = $Label
@@ -357,7 +365,11 @@ Describe "packaging/identity.json mirrors the scripts" {
             ("staging-" + ("a" * 31)) | Should -Not -MatchExactly $StagingPattern
             # Program Files from Windows' known folder: loaded, a scratch one.
             Get-MachineRoot | Should -BeExactly (Join-Path $ProgramFilesFolder (Split-Path -Leaf $named.install_folder))
+            # The runtime firewall rules' group (#111 B7b, pinned by #455): the
+            # uninstaller removes the rules by it. Loaded, it is a throwaway one.
+            Get-TopString $path "FirewallGroup" | Should -BeExactly $named.firewall_group
         }
+        $script:RealFirewallGroup | Should -BeExactly $named.firewall_group
     }
 
     It "uninstall.ps1 uses the identity's names and exit codes" {

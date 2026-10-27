@@ -354,10 +354,17 @@ function Assert-RedirectableTarget([string]$Path) {
     $present = @($lines | Where-Object { $top -ccontains $_ })
     # Windows Firewall (#111 B7b): its commands are named directly, each inside one of
     # $script:FirewallFunctions, which the tests stand in, and nowhere else (not even
-    # in a string), and the rules' group only in its line at the top.
+    # in a string), and the rules' group only in its line at the top. Each is one of
+    # $script:FirewallCommands by its plain name (#455): a name through its module
+    # (NetSecurity\New-NetFirewallRule) would pass the stand-ins by, and a command not
+    # on that list has none. netsh and the firewall's COM interface (HNetCfg) are
+    # refused below.
     $firewall = @($ast.FindAll({ param($n)
         $n -is [Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -match 'NetFirewall' }, $true))
     foreach ($command in $firewall) {
+        if ($script:FirewallCommands -notcontains [string]$command.GetCommandName()) {
+            throw "$Path reaches Windows Firewall other than through the commands the tests stand in, so it was not loaded."
+        }
         $owner = $command.Parent
         while ($owner -and $owner -isnot [Management.Automation.Language.FunctionDefinitionAst]) { $owner = $owner.Parent }
         if (-not $owner -or $script:FirewallFunctions -cnotcontains $owner.Name) {
@@ -375,7 +382,7 @@ function Assert-RedirectableTarget([string]$Path) {
     $reach = @("GetFolderPath", "SpecialFolder", "CurrentVersion\Uninstall", "Services\EventLog", "HKLM:",
                "HKEY_", "Registry::", "Start Menu\", "env:Program", "env:ALLUSERSPROFILE", "env:PUBLIC",
                "CreateSubKey", "DeleteSubKey", "DeleteValue", "OpenSubKey", "EventSource(", "New-EventLog",
-               "Remove-EventLog", $script:RealFirewallGroup)
+               "Remove-EventLog", $script:RealFirewallGroup, "netsh", "HNetCfg")
     foreach ($word in $reach) {
         $pattern = [regex]::Escape($word)
         $count = ([regex]::Matches($code, $pattern, "IgnoreCase")).Count
