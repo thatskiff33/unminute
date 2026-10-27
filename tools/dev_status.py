@@ -36,7 +36,6 @@
 # (AGENTS.md "Delivery").
 
 import argparse
-import datetime
 import json
 import re
 import subprocess
@@ -67,8 +66,9 @@ UNSET_TIME = "0001-"           # gh writes an unset time as 0001-01-01T00:00:00Z
 REGISTER_ISSUE_FIELDS = "number,title,body"
 REGISTER_PR_FIELDS = "number,title,body,isDraft,mergeStateStatus,statusCheckRollup"
 # A register line: "Release gate: ..." or "Next step: ...", at the start of a line of
-# the description, optionally as a list item or in bold ("**Release gate:** ...").
-REGISTER_LINE = re.compile(r"(?im)^[ \t]*(?:[-*][ \t]+)?\**(release gate|next step)[ \t]*:"
+# the description, optionally as a list item or in bold ("**Release gate:** ..." or
+# "**Release gate**: ...").
+REGISTER_LINE = re.compile(r"(?im)^[ \t]*(?:[-*][ \t]+)?\**(release gate|next step)\**[ \t]*:"
                            r"[ \t]*\**[ \t]*(\S.*?)[ \t]*$")
 CLOSES = re.compile(r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[ \t]+#(\d+)\b")
 CI_WORKFLOW = "ci.yml"
@@ -353,8 +353,7 @@ def register_rows(issues, prs, required):
 
 def utc_seconds(stamp):
     """Seconds since the epoch from a GitHub UTC time, such as 2026-10-27T02:37:34Z."""
-    return datetime.datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(
-        tzinfo=datetime.UTC).timestamp()
+    return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
 
 
 def ci_minutes(run_, jobs, job_name=CI_TIME_JOB):
@@ -644,6 +643,15 @@ def show_ci_time(count):
     return 0
 
 
+def run_count(text):
+    """--ci-time's RUNS: a whole number of at least 1 (0 or less measures nothing and
+    would send the API a bad page size)."""
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"RUNS must be 1 or more, not {value}")
+    return value
+
+
 def main(argv=None):
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")   # PR titles may hold any character
@@ -656,7 +664,8 @@ def main(argv=None):
     group.add_argument("--register", action="store_true",
                        help="print the release register: open issues and PRs with a "
                        "'Release gate:' line")
-    group.add_argument("--ci-time", nargs="?", type=int, const=CI_TIME_RUNS, metavar="RUNS",
+    group.add_argument("--ci-time", nargs="?", type=run_count, const=CI_TIME_RUNS,
+                       metavar="RUNS",
                        help=f"how long '{CI_TIME_JOB}' took from push in the latest RUNS "
                        f"successful runs (default {CI_TIME_RUNS})")
     parser.add_argument("--no-fetch", action="store_true",
@@ -668,7 +677,7 @@ def main(argv=None):
         return show_pr(args.pr, required_checks())
     if args.register:
         return show_register(required_checks())
-    if args.ci_time:
+    if args.ci_time is not None:
         return show_ci_time(args.ci_time)
     prs = gh_json(["pr", "list", "--state", "open", "--limit", "100", "--json", PR_FIELDS])
     if args.files:

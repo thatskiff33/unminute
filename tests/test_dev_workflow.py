@@ -3,10 +3,13 @@
 # each with a Claude Code pointer in .claude/skills that matches it. Stdlib only.
 #   python -m unittest discover -s tests -v
 
+import io
 import re
 import sys
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -381,6 +384,8 @@ class RegisterTests(unittest.TestCase):
                 "Release gate: a second line is ignored\n")
         self.assertEqual(("next preview", "the owner"), dev_status.register_fields(body))
         self.assertEqual(("Later", None), dev_status.register_fields("* Release gate: Later"))
+        self.assertEqual(("next preview", "the owner"), dev_status.register_fields(
+            "**Release gate**: next preview\n- **Next step**: the owner\n"))
         self.assertEqual((None, None), dev_status.register_fields(
             "The release gate: mid-sentence is not a register line\n"))
         self.assertEqual((None, None), dev_status.register_fields(None))
@@ -432,6 +437,26 @@ class CiTimeTests(unittest.TestCase):
     def test_median(self):
         self.assertEqual(4, dev_status.median([5, 3, 4]))
         self.assertEqual(3.5, dev_status.median([4, 3]))
+
+    def test_runs_below_one_are_refused_before_any_gh_call(self):
+        # Without the check, 0 fell through to the whole status picture and a negative
+        # count sent a negative page size to the API. gh is stubbed, so nothing leaves.
+        def no_gh(*_args, **_kwargs):
+            raise AssertionError("gh was called")
+        with mock.patch.object(dev_status, "gh_json", no_gh), \
+                mock.patch.object(dev_status, "show_ci_time") as show:
+            for runs in ("0", "-3"):
+                with self.subTest(runs=runs):
+                    with redirect_stderr(io.StringIO()), \
+                            self.assertRaises(SystemExit) as stop:
+                        dev_status.main(["--no-fetch", f"--ci-time={runs}"])
+                    self.assertEqual(2, stop.exception.code)
+            show.assert_not_called()
+            show.return_value = 0
+            self.assertEqual(0, dev_status.main(["--no-fetch", "--ci-time"]))
+            self.assertEqual(0, dev_status.main(["--no-fetch", "--ci-time", "1"]))
+            self.assertEqual([mock.call(dev_status.CI_TIME_RUNS), mock.call(1)],
+                             show.call_args_list)
 
     def test_the_job_measured_is_the_required_one(self):
         workflow = (ROOT / ".github" / "workflows" / dev_status.CI_WORKFLOW).read_text(
