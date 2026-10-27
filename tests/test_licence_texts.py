@@ -14,6 +14,7 @@ import tempfile
 import unittest
 import urllib.error
 import urllib.parse
+import urllib.request
 import zipfile
 from pathlib import Path
 from unittest import mock
@@ -1027,9 +1028,19 @@ class CrateModeTests(unittest.TestCase):
         self.assertEqual(cl.github_repository("https://github.com/o/r.git"), ("o", "r"))
         self.assertEqual(cl.github_repository("https://github.com/o/r/tree/main/x"), ("o", "r"))
         for url in ("https://gitlab.com/o/r", "http://github.com/o/r", "https://github.com/o",
-                    "https://github.com/o/..", "https://user@github.com/o/r"):
+                    "https://github.com/o/..", "https://github.com/o/.",
+                    "https://github.com/../r", "https://github.com/./r",
+                    "https://user@github.com/o/r"):
             with self.subTest(url=url):
                 self.assertIsNone(cl.github_repository(url))
+
+    def test_a_cargo_toml_whose_package_is_not_a_table_is_a_gap(self):
+        # Not a traceback: the crate is a gap like any other it cannot read.
+        for toml in (b'package = "alpha"\n', b"package = [1]\n", b"[other]\nx = 1\n"):
+            with self.subTest(toml=toml):
+                crate = crate_of("alpha", "1.0.0", {"LICENSE": MIT, "Cargo.toml": toml})
+                with self.assertRaisesRegex(cl.CrateGap, "names another package"):
+                    cl.crate_parts(crate, "alpha", "1.0.0")
 
 
 class CrateHostTests(unittest.TestCase):
@@ -1080,6 +1091,15 @@ class CrateHostTests(unittest.TestCase):
             return FakeResponse(b"x", "https://example.com/x")
         with self.assertRaisesRegex(cl.CollectError, "off the crate hosts"):
             cl.crate_fetch("https://static.crates.io/x", 100, moved)
+
+    def test_the_default_opener_checks_each_redirect(self):
+        # The final-URL check would catch an off-host redirect only after the
+        # request had gone; CrateRedirects refuses it before.
+        with mock.patch.object(urllib.request, "build_opener") as build:
+            build.return_value.open.return_value = FakeResponse(
+                b"crate", "https://static.crates.io/x")
+            self.assertEqual(cl.crate_fetch("https://static.crates.io/x", 100), b"crate")
+        build.assert_called_once_with(cl.CrateRedirects)
 
     def test_the_token_goes_to_the_github_api_only_and_never_across_a_redirect(self):
         web = crate_web({"https://static.crates.io/x": b"crate",

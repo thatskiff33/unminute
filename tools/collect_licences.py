@@ -380,7 +380,7 @@ def wheel_crates(wheel, lock_text):
         blob = wheel.read_bytes()
     except OSError as exc:
         raise CollectError(f"Cannot read {wheel} ({type(exc).__name__}).") from None
-    stem =wheel.name[:-len(".whl")] if wheel.name.endswith(".whl") else ""
+    stem = wheel.name[:-len(".whl")] if wheel.name.endswith(".whl") else ""
     parts = stem.split("-")
     if len(parts) < 5:
         raise CollectError(f"{wheel.name} is not a wheel file name.")
@@ -420,7 +420,7 @@ def github_repository(url):
             or len(segments) < 2):
         return None
     owner, repo = segments[0], segments[1].removesuffix(".git")
-    if not (GITHUB_NAME.fullmatch(owner) and GITHUB_NAME.fullmatch(repo)) or repo in (".", ".."):
+    if not all(GITHUB_NAME.fullmatch(s) and s not in (".", "..") for s in (owner, repo)):
         return None
     return owner, repo
 
@@ -447,7 +447,7 @@ def crate_parts(blob, name, version):
             if "Cargo.toml" not in members:
                 raise CrateGap(f"{name} {version}: the crate has no Cargo.toml.")
             package = tomllib.loads(read("Cargo.toml", members["Cargo.toml"])
-                                    .decode("utf-8")).get("package", {})
+                                    .decode("utf-8")).get("package")
             texts = {}
             for rel, m in members.items():
                 base = rel.rsplit("/", 1)[-1]
@@ -468,7 +468,8 @@ def crate_parts(blob, name, version):
     if not isinstance(where, str) or (where and not all(SEGMENT.fullmatch(s)
                                                         for s in where.split("/"))):
         raise CrateGap(f"{name} {version}: its path_in_vcs is not a plain path.")
-    if package.get("name") != name or package.get("version") != version:
+    if not isinstance(package, dict) or (package.get("name"), package.get("version")) != (
+            name, version):
         raise CrateGap(f"{name} {version}: its Cargo.toml names another package.")
     if not texts:
         raise CrateGap(f"{name} {version}: the crate has no licence file.")
