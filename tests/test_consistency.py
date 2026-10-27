@@ -348,7 +348,13 @@ class InstallIdentityTests(unittest.TestCase):
                 # The runtime firewall rules' group (#111 B7b): the machine uninstall
                 # removes the rules by it, so a new name would leave the old rules
                 # behind. Pinned by #455.
-                "firewall_group": "Unminute runtime"}})
+                "firewall_group": "Unminute runtime",
+                # The models IT installs for everyone (#111 B7a; the owner's decision
+                # B7-1, 21 Oct 2026): their folder, the record in each model's
+                # folder and the model package's detection file.
+                "models_folder": "models",
+                "models_record": "models.verified.json",
+                "models_detection_file": r"models\package-<SHA-256 of models.json>.json"}})
         self.assertEqual({script: {mode: sorted(codes) for mode, codes in modes.items()}
                           for script, modes in identity["exit_codes"].items()},
                          {"install.ps1": {"user": ["0", "1", "2", "3", "4", "5", "6"],
@@ -1082,7 +1088,12 @@ class SecuritySummaryTests(unittest.TestCase):
         block = self.summary.split("- **Not protected today, planned.**", 1)[1]
         block = block.split("\n- **", 1)[0]
         items = [line for line in block.splitlines() if line.startswith("  - ")]
-        self.assertTrue(items, "the Summary's planned list no longer matches")
+        if not items:
+            # Nothing planned is said in words (since B7a and B7b, #111), so an empty
+            # list is a statement, not a list that went missing.
+            self.assertTrue(block.lstrip().startswith("None:"),
+                            "the Summary's planned list is empty but does not say None")
+            return {}
         found = {}
         for item in items:
             match = re.search(r"\(([^()]+): (T\d+(?:, T\d+)*)\)\.$", item)
@@ -1096,7 +1107,13 @@ class SecuritySummaryTests(unittest.TestCase):
 
     def test_planned_list_matches_the_rows(self):
         rows = self.planned_by_rows()
-        self.assertTrue(rows, "no row plans code work: rewrite the Summary and this test")
+        # The threat table was read, every row with its Planned cell, so an empty
+        # result means no row plans code work (since B7a and B7b, #111), not a table
+        # this test could no longer parse.
+        self.assertGreaterEqual(len(self.rows), 35, "the threat table no longer parses")
+        for threat, cells in self.rows.items():
+            self.assertGreaterEqual(len(cells), 6, f"{threat}'s row no longer parses")
+            self.assertTrue(cells[4], f"{threat} has no Planned cell")
         self.assertEqual(self.planned_by_summary(), rows,
                          "the Summary's 'Not protected today, planned' items differ from "
                          "the work the threat rows still plan (slice or issue: threats)")

@@ -566,7 +566,8 @@ function Test-InstallRecord([IO.FileInfo]$File) {
 # whatever else is in it: the installer never removes that.
 # Machine mode also accepts its own entries (#111 B6b): the junctions current,
 # current.new and current.old, each pointing at a version folder inside versions
-# (Test-OwnJunction), and staging-<32 hex digits> folders left by a stopped run.
+# (Test-OwnJunction), and staging-<32 hex digits> folders left by a stopped run, and
+# the models folder IT's model package fills (#111 B7a), which the install never changes.
 function Assert-InstallFolder([string]$Dir) {
     $notOurs = "The install folder already holds files that $AppName did not put there. Choose an empty or new -InstallDir."
     if ([IO.File]::Exists($Dir)) { Stop-Install 2 $notOurs }
@@ -579,7 +580,7 @@ function Assert-InstallFolder([string]$Dir) {
         if ($Options.Machine -and $JunctionNames -ccontains $item.Name) {
             if (-not (Test-OwnJunction $item $folder.FullName)) { $links++ }
         }
-        elseif ($Options.Machine -and $item.Name -cmatch $StagingPattern) {
+        elseif ($Options.Machine -and ($item.Name -cmatch $StagingPattern -or $item.Name -ceq $ModelsFolderName)) {
             if (Test-Link $item) { $links++ } elseif (-not $isDir) { $foreign++ }
         }
         elseif ($OwnEntries -notcontains $item.Name) { $foreign++ }
@@ -1124,6 +1125,9 @@ $EventSourceKey = "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\
 $JunctionName = "current"
 $JunctionNames = @("current", "current.new", "current.old")
 $StagingPattern = '^staging-[0-9a-f]{32}\z'
+# The models IT installs for everyone (#111 B7a, packaging/models/Install-Models.ps1),
+# a folder the install keeps and the machine uninstall removes.
+$ModelsFolderName = "models"
 # The install folder's permissions: owner Administrators (or SYSTEM); full control
 # for SYSTEM and Administrators; read and run for Users and ALL APPLICATION
 # PACKAGES; nothing inherited from Program Files; everything beneath inherits them.

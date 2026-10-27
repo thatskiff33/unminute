@@ -54,11 +54,11 @@
   elevated Windows PowerShell. It checks the folder's permissions as the
   installer does, refuses while the app runs for anyone on the computer, and
   removes only the installer's own entries (the versions, the current junction
-  as a link, current.json, the logs, install.lock, staging folders and this
-  script), the Start menu entry for all users, the runtime firewall rules (#111
-  B7b: every rule in their group; a failure only warns, and a firewall it
-  cannot read warns only where current.json recorded the choice), the Event Log source
-  and, last, the machine-wide uninstall entry. While a version kept for people whose workspace has
+  as a link, current.json, the logs, install.lock, staging folders, the models
+  IT's model package installed (#111 B7a) and this script), the Start menu entry for
+  all users, the runtime firewall rules (#111 B7b: every rule in their group; a failure
+  only warns, and a firewall it cannot read warns only where current.json recorded the
+  choice), the Event Log source and, last, the machine-wide uninstall entry. While a version kept for people whose workspace has
   not moved to the current storage format is installed, it removes nothing
   unless -IncludeKeptSlots is given (exit 5), so a misconfigured "uninstall
   previous version" in Intune fails safe (#111 B6-11). It never reads or writes
@@ -834,6 +834,9 @@ $EventSourceKey = "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\
 $JunctionName = "current"
 $JunctionNames = @("current", "current.new", "current.old")
 $StagingPattern = '^staging-[0-9a-f]{32}\z'
+# The models IT installs for everyone (#111 B7a, packaging/models/Install-Models.ps1),
+# a folder the install keeps and the machine uninstall removes.
+$ModelsFolderName = "models"
 # The install folder's permissions: owner Administrators (or SYSTEM); full control
 # for SYSTEM and Administrators; read and run for Users and ALL APPLICATION
 # PACKAGES; nothing inherited from Program Files; everything beneath inherits them.
@@ -1130,7 +1133,7 @@ function Invoke-MachineUninstall {
             $isDir = $item -is [IO.DirectoryInfo]
             if ($JunctionNames -ccontains $item.Name) {
                 if (-not (Test-OwnJunction $item $root)) { $links++ }
-            } elseif ($item.Name -cmatch $StagingPattern) {
+            } elseif ($item.Name -cmatch $StagingPattern -or $item.Name -ceq $ModelsFolderName) {
                 if (Test-Link $item) { $links++ } elseif (-not $isDir) { $strays++ }
             } elseif ($OwnEntries -cnotcontains $item.Name) {
                 $strays++
@@ -1163,7 +1166,9 @@ function Invoke-MachineUninstall {
         foreach ($dir in $folder.GetDirectories()) {
             if ($dir.Name -cmatch $StagingPattern) { Invoke-LockRetry { Remove-OwnFolder $dir.FullName } }
         }
-        foreach ($entry in @("versions", "current.json", "current.json.tmp")) {
+        # The models IT installed for everyone (#111 B7a), with the model package's
+        # detection file, so Intune sees them gone too.
+        foreach ($entry in @($ModelsFolderName, "versions", "current.json", "current.json.tmp")) {
             $path = [IO.Path]::Combine($root, $entry)
             if ([IO.Directory]::Exists($path)) { Invoke-LockRetry { Remove-OwnFolder $path } }
             elseif ([IO.File]::Exists($path)) { Invoke-LockRetry { Remove-Item -LiteralPath $path -Force } }
@@ -1182,8 +1187,8 @@ function Invoke-MachineUninstall {
     Unregister-EventSource
     # Last: while any of it remains, the app still shows as installed (Intune detection).
     if (Test-Path -LiteralPath $regKey) { Remove-Item -LiteralPath $regKey -Recurse -Force }
-    Write-Step ("$AppName has been removed for everyone on this computer. Each person's workspace and " +
-        "downloaded models are kept in their own profile.")
+    Write-Step ("$AppName has been removed for everyone on this computer, with the models your IT team " +
+        "installed. Each person's workspace and downloaded models are kept in their own profile.")
 }
 
 # Dot-sourced (the Pester tests in tests/powershell): the functions above are defined

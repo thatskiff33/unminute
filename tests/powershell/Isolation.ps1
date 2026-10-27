@@ -398,6 +398,18 @@ function Assert-RedirectableTarget([string]$Path) {
     }
 }
 
+# Which places a script has, by its name, for Assert-ScratchTarget (#111 B7a): the
+# installer and uninstaller have every one; the model package's Install-Models.ps1
+# reaches only Program Files; New-ModelPackage.ps1, IT's own tool, reaches none. Any
+# other name is the installer's kind, so it gets every check.
+function Get-ScriptKind([string]$Path) {
+    switch -CaseSensitive ([IO.Path]::GetFileName($Path)) {
+        "Install-Models.ps1" { return "models" }
+        "New-ModelPackage.ps1" { return "tool" }
+        default { return "installer" }
+    }
+}
+
 # Every check before a script is dot-sourced; returns its path for the dot-source.
 function Confirm-Loadable([string]$Path) {
     if (-not (Test-ScratchPath $env:LOCALAPPDATA) -or -not (Test-ScratchPath $env:APPDATA)) {
@@ -405,6 +417,7 @@ function Confirm-Loadable([string]$Path) {
     }
     Assert-DotSourceGuard $Path
     Assert-RedirectableTarget $Path
+    $script:LoadedKind = Get-ScriptKind $Path
     return $Path
 }
 
@@ -531,20 +544,25 @@ function Get-RealMachineState {
     return ($state -join "`n")
 }
 
-# Reads the loaded script's variables as the script's own functions would see them.
+# Reads the loaded script's variables as the script's own functions would see them,
+# every place the kind of script loaded last has (Get-ScriptKind).
 function Assert-ScratchTarget {
-    $places = [ordered]@{
-        "LOCALAPPDATA" = $env:LOCALAPPDATA; "APPDATA" = $env:APPDATA
-        "the default -InstallDir" = $InstallDir; "the install folder" = $Options.InstallDir
-        "the Start menu folder" = $ProgramsFolder; "Program Files" = $ProgramFilesFolder
-        "the all-users Start menu folder" = $CommonProgramsFolder
+    $places = [ordered]@{ "LOCALAPPDATA" = $env:LOCALAPPDATA; "APPDATA" = $env:APPDATA }
+    # Set-ScratchTarget makes the policy key and the firewall group scratch for every
+    # kind, so both are checked for every kind.
+    $keys = [ordered]@{ "the policy key" = [string]$PolicyKey }
+    if ($script:LoadedKind -ne "tool") { $places["Program Files"] = $ProgramFilesFolder }
+    if ($script:LoadedKind -notin @("tool", "models")) {
+        $places["the default -InstallDir"] = $InstallDir
+        $places["the install folder"] = $Options.InstallDir
+        $places["the Start menu folder"] = $ProgramsFolder
+        $places["the all-users Start menu folder"] = $CommonProgramsFolder
+        $keys["the uninstall key"] = [string]$RegKey
+        $keys["the machine uninstall key"] = [string]$MachineRegKey
+        $keys["the Event Log source key"] = [string]$EventSourceKey
     }
     foreach ($name in $places.Keys) {
         if (-not (Test-ScratchPath $places[$name])) { throw "Not scratch: $name. Nothing was run." }
-    }
-    $keys = [ordered]@{
-        "the uninstall key" = [string]$RegKey; "the machine uninstall key" = [string]$MachineRegKey
-        "the Event Log source key" = [string]$EventSourceKey; "the policy key" = [string]$PolicyKey
     }
     foreach ($name in $keys.Keys) {
         if (-not (Test-ScratchKey $keys[$name])) { throw "Not scratch: $name. Nothing was run." }

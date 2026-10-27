@@ -33,7 +33,10 @@
       "event_source": "Unminute",
       "event_source_key": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\EventLog\\Application\\Unminute",
       "event_message_file": "EventLogMessages.dll",
-      "firewall_group": "Unminute runtime"
+      "firewall_group": "Unminute runtime",
+      "models_folder": "models",
+      "models_record": "models.verified.json",
+      "models_detection_file": "models\\package-<SHA-256 of models.json>.json"
     }
   },
   "exit_codes": {

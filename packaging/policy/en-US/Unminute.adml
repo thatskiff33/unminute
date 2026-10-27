@@ -14,14 +14,14 @@
       <string id="AllowModelDownloads">Allow model downloads in the app</string>
       <string id="AllowModelDownloads_Help">Enabled or not configured: users can download and repair speech and speaker models in Setup and Downloads.
 
-Disabled: the app refuses downloads and shows "Ask your IT team". Use this when IT installs the models, so the app never needs the network (a models package for Intune is planned).</string>
+Disabled: the app refuses downloads and shows "Ask your IT team". Use this when IT installs the models for everyone with the model package (docs/PACKAGING.md), so the app never needs the network.</string>
 
       <string id="AllowUserModels">Allow models downloaded by users (machine installs)</string>
       <string id="AllowUserModels_Help">Applies only where Unminute is installed for everyone on the computer (install.ps1 -Machine). A per-user install ignores it.
 
 Enabled or not configured: the app uses the models your IT team installed in Program Files first, and otherwise models each user downloaded into their profile.
 
-Disabled: the app uses only the models your IT team installed, and refuses model downloads, which would not be used. Setup and Downloads show "Ask your IT team" in place of Download or Repair. The graphics card components are not affected. Use this once your IT team installs the models for everyone, so that nothing a user can change is loaded as a model. If the policy key cannot be read, the app behaves as if this were disabled.
+Disabled: the app uses only the models your IT team installed, and refuses model downloads, which would not be used. Setup and Downloads show "Ask your IT team" in place of Download or Repair. The graphics card components are not affected. Use this with the model package (tools\intune\New-ModelPackage.ps1), so that nothing a user can change is loaded as a model. If the policy key cannot be read, the app behaves as if this were disabled.
 
 Older versions of Unminute kept for an earlier storage format ignore this setting until IT removes them.</string>
 

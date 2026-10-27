@@ -689,6 +689,25 @@ Describe "install.ps1 -Machine" {
             { Invoke-TestInstall (New-TestZip "2.0.0") } | Should -Throw "STOP 2"
             Get-LinkTarget (Join-Path $script:Root "current") | Should -BeExactly $outside
         }
+
+        It "keeps the models folder IT's model package filled, as it is (#111 B7a)" {
+            Invoke-TestInstall (New-TestZip "1.0.0")
+            $models = [IO.Directory]::CreateDirectory((Join-Path $script:Root "models\parakeet\m\$("a" * 40)")).FullName
+            [IO.File]::WriteAllText((Join-Path $models "config.json"), "{}")
+            $before = Get-Snapshot (Join-Path $script:Root "models")
+            Invoke-TestInstall (New-TestZip "2.0.0")
+            Get-Snapshot (Join-Path $script:Root "models") | Should -BeExactly $before
+            Get-Current | Should -BeExactly "2.0.0"
+        }
+
+        It "refuses a models folder that is a link (exit 2)" {
+            Invoke-TestInstall (New-TestZip "1.0.0")
+            $outside = New-TestFolder "out"
+            New-Item -ItemType Junction -Path (Join-Path $script:Root "models") -Target $outside | Out-Null
+            { Invoke-TestInstall (New-TestZip "2.0.0") } | Should -Throw "STOP 2"
+            Get-Current | Should -BeExactly "1.0.0"
+            @(Get-ChildItem -LiteralPath $outside -Force).Count | Should -Be 0
+        }
     }
 
     Context "rollback and removing a kept version" {
@@ -1086,6 +1105,26 @@ Describe "uninstall.ps1 -Machine" {
         Test-Path -LiteralPath $script:EventPath | Should -BeFalse
         Test-Path -LiteralPath $script:RegPath | Should -BeFalse
         Should -Invoke Invoke-LidRestore -Times 0 -Exactly
+    }
+
+    It "removes the models IT installed, with the model package's detection file (#111 B7a)" {
+        $root = New-TestMachineInstall @{ "1.0.0" = 2 } "1.0.0"
+        $models = [IO.Directory]::CreateDirectory((Join-Path $root "models\parakeet\m\$("a" * 40)")).FullName
+        [IO.File]::WriteAllText((Join-Path $models "config.json"), "{}")
+        [IO.File]::WriteAllText((Join-Path $root "models\package-$("c" * 64).json"), "{}")
+        Invoke-TestUninstall
+        [IO.Directory]::Exists($root) | Should -BeFalse
+        Test-Path -LiteralPath $script:RegPath | Should -BeFalse
+    }
+
+    It "removes nothing when the models folder is a link (exit 1)" {
+        $root = New-TestMachineInstall @{ "1.0.0" = 2 } "1.0.0"
+        $outside = New-TestFolder "out"
+        [IO.File]::WriteAllText((Join-Path $outside "sentinel.txt"), "keep")
+        New-Item -ItemType Junction -Path (Join-Path $root "models") -Target $outside | Out-Null
+        { Invoke-TestUninstall } | Should -Throw "STOP 1"
+        [IO.File]::ReadAllText((Join-Path $outside "sentinel.txt")) | Should -BeExactly "keep"
+        Test-Path -LiteralPath $script:RegPath | Should -BeTrue
     }
 
     It "refuses <Label> with exit 2" -TestCases @(
