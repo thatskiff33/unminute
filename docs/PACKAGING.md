@@ -420,7 +420,7 @@ On a machine install, IT can install the speech and speaker models for everyone,
    - **Install behaviour:** System.
    - **Install command:** `%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File Install-Models.ps1`
    - **Uninstall command:** `%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File Install-Models.ps1 -Uninstall`
-   - **Detection rule:** File; path `%ProgramFiles%\Unminute\models`; file `package-<SHA-256 of models.json>.json`; file or folder exists.
+   - **Detection rule:** File; path `%ProgramFiles%\Unminute\models`; file `package-<SHA-256 of models.json>.json`; file or folder exists; associated with a 32-bit app on 64-bit clients: No (so `%ProgramFiles%` is the 64-bit folder; to confirm in Intune, #189).
    - **Dependency:** the Unminute app (the machine install above), so Intune installs it first.
    - **Return codes:** map 3 (a model folder is in use) to Retry, and 1, 2 and 4 to Failed.
 5. **Set the policy** `AllowUserModels` to 0 if staff should use only these models.
@@ -436,6 +436,8 @@ What `Install-Models.ps1` does, as SYSTEM in a 64-bit, elevated Windows PowerShe
 `Install-Models.ps1 -Uninstall` removes the models folder, with the detection file. The machine uninstall of the app removes it too, and the app installer keeps it as it is (a link there stops the installer with exit code 2).
 
 Exit codes: 0 done; 1 failed (including another install still running after 10 minutes); 2 not allowed (32-bit, not elevated, or Unminute not installed for everyone); 3 a model folder is in use; 4 the package failed its checks, or the install folder's permissions have changed or a link is where models go.
+
+`Install-Models.ps1` checks the package against its own `models.json`, both from the folder Intune runs it in: as for the app's package ("Machine install in System context" above), whoever can write Intune's content folder could replace the files and `models.json` together before the run (SECURITY_MODEL.md T22). The check against the verified release happens earlier, when IT builds the package.
 
 A version kept for an earlier storage format that is older than #111 B7a knows neither these models nor `AllowUserModels`, and uses each user's own models until IT removes it (`install.ps1 -Machine -RemoveSlot`).
 

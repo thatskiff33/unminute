@@ -237,8 +237,9 @@ Intune (Win32 app; wrap this folder with the Microsoft Win32 Content Prep Tool):
   Install command:   %SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File Install-Models.ps1
   Uninstall command: %SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File Install-Models.ps1 -Uninstall
   Install behaviour: System
-  Detection rule:    File. Path %ProgramFiles%\Unminute\models, file package-$Sha.json, exists
-  Dependency:        the Unminute app (install it first)
+  Detection rule:    File. Path %ProgramFiles%\Unminute\models, file package-$Sha.json, exists;
+                     associated with a 32-bit app on 64-bit clients: No
+  Dependency:       the Unminute app (install it first)
   Return codes:      0 success; 3 retry (a model folder was in use); 1, 2 and 4 failed
 
 Then set the policy AllowUserModels to 0 if staff should use only these models.
