@@ -204,6 +204,38 @@ class OpeningTests(unittest.TestCase):
         self.assert_refused("missing")
         self.assertEqual(before, other.read_bytes())
 
+    def stub_with(self, *statements):
+        """A database with no schema version, made by the given statements."""
+        self.db.parent.mkdir(parents=True)
+        con = sqlite3.connect(self.db)
+        for statement in statements:
+            con.execute(statement)
+        con.commit()
+        con.close()
+        return self.db.read_bytes()
+
+    def test_a_table_name_that_is_not_a_plain_identifier_is_refused(self):
+        # #415 item 5: a name read from sqlite_master is never put into SQL.
+        # Unchecked, 'meetings" --' read as the empty "meetings", which hid
+        # its rows from the stub check and rebuilt the file with a new key.
+        before = self.stub_with("CREATE TABLE meetings (id TEXT)",
+                                'CREATE TABLE "meetings"" --" (id TEXT)',
+                                """INSERT INTO "meetings"" --" VALUES ('synthetic')""")
+        for mode in ("raise", "lock"):
+            with self.subTest(mode=mode):
+                with self.assertRaises(StoreError) as caught:
+                    open_store(self.db, on_unavailable=mode)
+                self.assertEqual(store.UNEXPECTED_TABLE, str(caught.exception))  # no name
+                self.assertEqual(before, self.db.read_bytes())                 # nothing written
+
+    def test_a_table_named_like_sqlites_own_is_not_hidden_from_the_stub_check(self):
+        # 'sqlite_%' unescaped matched any character after "sqlite", so a
+        # table "sqliteX" with rows was skipped and the stub rebuilt (#415).
+        before = self.stub_with("CREATE TABLE sqliteX (id TEXT)",
+                                "INSERT INTO sqliteX VALUES ('synthetic')")
+        self.assert_refused("missing")
+        self.assertEqual(before, self.db.read_bytes())
+
     def test_a_changed_check_value_is_refused(self):
         self.made()
         con = sqlite3.connect(self.db)

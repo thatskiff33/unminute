@@ -349,6 +349,23 @@ def current_schema(db_path):
         con.close()
 
 
+# Table names go into SQL only as plain identifiers (#415 item 5): the names
+# read back from sqlite_master are data from the file, not code. The same
+# pattern as store._TABLE_NAME (tests/test_update.py keeps them equal; this
+# module imports nothing from the store).
+_TABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+
+
+def _count(con, name):
+    """The rows in table `name`. A name that is not a plain identifier is
+    never put into SQL: it counts as one row, so the update waits (fails
+    closed) rather than read it, and the store would refuse it too
+    (store.UNEXPECTED_TABLE)."""
+    if not isinstance(name, str) or not _TABLE_NAME.fullmatch(name):
+        return 1
+    return con.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
+
+
 def blockers(db_path):
     """What stops a schema-changing update, in plain language. Counts only.
     Reads plain columns and folder names only: no key is needed, so it works
@@ -363,7 +380,7 @@ def blockers(db_path):
     try:
         tables = [r[0] for r in con.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table'")]
-        count = (lambda t: con.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0])
+        count = (lambda t: _count(con, t))
         out = []
         holds = (con.execute("SELECT COUNT(*) FROM holds WHERE released_at IS NULL")
                  .fetchone()[0] if "holds" in tables else 0)

@@ -439,6 +439,25 @@ class MigrationBlocked(StoreError):
     place (#26). The installer's gate normally prevents this ever happening."""
 
 
+# Table names go into SQL only as plain identifiers (#415 item 5). The names
+# read back from sqlite_master are data from the file, not code: a stub check,
+# a stub rebuild or a migration that meets any other name (a quote, a space,
+# a non-ASCII letter) refuses with fixed text, before anything is read or
+# dropped, rather than put the name into a statement. Every table this app
+# has ever made (schema 1 and 2) is a plain identifier.
+_TABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+UNEXPECTED_TABLE = ("Unminute found a table it does not recognise in its workspace database, "
+                    "so it will not change the workspace's storage.")
+
+
+def _quoted_table(name):
+    """name as a quoted SQL identifier, if it is a plain one; else StoreError
+    (UNEXPECTED_TABLE: fixed text, never the name, P3)."""
+    if not isinstance(name, str) or not _TABLE_NAME.fullmatch(name):
+        raise StoreError(UNEXPECTED_TABLE)
+    return f'"{name}"'
+
+
 def local_appdata():
     """%LOCALAPPDATA%, which must be an absolute local path outside OneDrive.
     Meetings must never end up in the current folder, a synced folder or a
@@ -786,7 +805,7 @@ def _next_ids(db, table, n):
     given (sqlite_sequence, AUTOINCREMENT), so an id freed by an undo or a
     cleanup never comes back. Inside the caller's write transaction."""
     seq = db.execute("SELECT seq FROM sqlite_sequence WHERE name = ?", (table,)).fetchone()
-    top = db.execute(f"SELECT COALESCE(MAX(id), 0) FROM {table}").fetchone()[0]
+    top = db.execute(f"SELECT COALESCE(MAX(id), 0) FROM {_quoted_table(table)}").fetchone()[0]
     first = max(seq[0] if seq else 0, top) + 1
     return range(first, first + n)
 
@@ -1016,8 +1035,16 @@ class Store:
         return keyring
 
     def _tables(self):
-        return [r[0] for r in self.db.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")]
+        """The database's own tables: {name: quoted identifier}
+        (_quoted_table). Every name is checked before any is returned, so one
+        unexpected name refuses the whole stub check, rebuild or migration
+        before it reads or drops anything (#415). Only SQLite's own tables
+        (sqlite_sequence, sqlite_stat1) are left out: the "_" is escaped, so
+        a table named, say, "sqliteX" is never hidden from the stub check."""
+        names = [r[0] for r in self.db.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'")]
+        return {name: _quoted_table(name) for name in names}
 
     def _open_schema(self, housekeeping):
         """Read the version (read only) and act on it. Returns the keyring when
@@ -1031,8 +1058,8 @@ class Store:
             # No version: a stub from an older build if every table is empty
             # (built afresh, in place); otherwise data whose key is unknown,
             # never given a new key or version.
-            if any(db.execute(f'SELECT 1 FROM "{t}" LIMIT 1').fetchone()
-                   for t in self._tables()):
+            if any(db.execute(f"SELECT 1 FROM {quoted} LIMIT 1").fetchone()
+                   for quoted in self._tables().values()):
                 raise KeyUnavailable("missing")
             if not housekeeping:
                 raise MigrationBlocked("Unminute found damage in its workspace database, so it "
@@ -1050,10 +1077,11 @@ class Store:
         blob = self._protect(root)               # before anything is written
         keyring = vault.Keyring(root)
         db = self.db
+        tables = self._tables()                 # checked before anything is dropped
         db.execute("BEGIN IMMEDIATE")
         try:
-            for t in self._tables():
-                db.execute(f'DROP TABLE IF EXISTS "{t}"')
+            for quoted in tables.values():
+                db.execute(f"DROP TABLE IF EXISTS {quoted}")
             self._build(db, blob, keyring)
             db.execute("COMMIT")
         except BaseException:
@@ -1081,12 +1109,12 @@ class Store:
         found = update.blockers(self.path)
         if found:
             raise MigrationBlocked(" ".join(b["message"] for b in found))
-        tables = self._tables()
+        tables = self._tables()                 # checked before anything is read or dropped
         carried = {}
         for t in CARRY_OVER:
             if t in tables:
-                cols = [r[1] for r in db.execute(f'PRAGMA table_info("{t}")')]
-                carried[t] = (cols, [tuple(r) for r in db.execute(f'SELECT * FROM "{t}"')])
+                cols = [r[1] for r in db.execute(f"PRAGMA table_info({tables[t]})")]
+                carried[t] = (cols, [tuple(r) for r in db.execute(f"SELECT * FROM {tables[t]}")])
         keyring = blob = None
         if current < 2:
             root = vault.new_key()
@@ -1106,8 +1134,8 @@ class Store:
         # leaves the old workspace exactly as it was.
         db.execute("BEGIN IMMEDIATE")
         try:
-            for t in tables:
-                db.execute(f'DROP TABLE IF EXISTS "{t}"')
+            for quoted in tables.values():
+                db.execute(f"DROP TABLE IF EXISTS {quoted}")
             for statement in _statements(SCHEMA):
                 db.execute(statement)
             db.execute("INSERT INTO schema_version VALUES (?)", (SCHEMA_VERSION,))
@@ -1116,13 +1144,16 @@ class Store:
                            "created_at) VALUES (1, 1, ?, ?, ?, ?)",
                            (self.protector.name, blob, keyring.check_value, time.time()))
             for t, entries in rows.items():
-                keep = {r[1] for r in db.execute(f'PRAGMA table_info("{t}")')}
+                # t is one of CARRY_OVER; the column names are only those the
+                # new schema's own table has (keep), never one read from the
+                # old table alone.
+                keep = {r[1] for r in db.execute(f"PRAGMA table_info({_quoted_table(t)})")}
                 for entry in entries:
                     names = [c for c in entry if c in keep]
                     if not names:
                         continue
-                    db.execute(f'INSERT OR IGNORE INTO "{t}" ({", ".join(names)}) VALUES '
-                               f'({", ".join("?" * len(names))})',
+                    db.execute(f"INSERT OR IGNORE INTO {_quoted_table(t)} "
+                               f'({", ".join(names)}) VALUES ({", ".join("?" * len(names))})',
                                tuple(entry[c] for c in names))
             db.execute("COMMIT")
         except BaseException:
