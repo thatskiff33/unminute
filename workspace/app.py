@@ -880,6 +880,15 @@ class Workspace:
         p = self.policy.current()
         allow = {name: bool(p.get(name)) for name in policy.SPEC
                  if policy.SPEC[name][0] == "bool"}
+        # AllowUserModels as it applies here (#111 B7a): only a machine install
+        # reads it. Off there, a model download would not be used, so the page,
+        # which decides Download or Repair against "Ask your IT team" from
+        # AllowModelDownloads alone, is told downloads are off, as the
+        # refusals say (USER_MODELS_OFF). The page has one value for every
+        # card, so the graphics card components show "Ask your IT team" too,
+        # although download_model still accepts them.
+        allow["AllowUserModels"] = self._user_models_allowed()
+        allow["AllowModelDownloads"] = self._model_downloads_allowed()
         return {**p.summary(), "allow": allow,
                 "clipboard_clear_minutes": p.get("ClipboardClearMinutes"),
                 "handoff_folder_set": bool(p.get("HandoffDefaultFolder")),

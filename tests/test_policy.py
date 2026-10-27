@@ -404,6 +404,29 @@ class WorkspacePolicyTests(unittest.TestCase):
             self.assertTrue(ws._user_models_allowed())
             self.assertTrue(ws._model_downloads_allowed())
 
+    def test_the_page_offers_no_model_download_when_user_models_are_off(self):
+        # #111 B7a, design 3.2: the page picks Download or Repair against "Ask
+        # your IT team" from allow.AllowModelDownloads, so on a machine install
+        # with AllowUserModels off it must read false there (the review of
+        # 317a3d4). A per-user install never reads AllowUserModels.
+        from workspace import asr_engines
+        ws = self.open(AllowUserModels=False)
+        it_root = Path(self.tmp.name) / "machine"      # synthetic: holds no models
+        for root, expected in ((it_root, False), (None, True)):
+            with self.subTest(machine=root is not None), \
+                    mock.patch.object(asr_engines, "_machine_root", [root]):
+                ws._forget_display()
+                allow = ws.setup_state()["managed"]["allow"]
+                self.assertIs(allow["AllowModelDownloads"], expected)
+                self.assertIs(allow["AllowUserModels"], expected)
+
+    def test_downloads_off_stay_off_on_both_install_modes(self):
+        from workspace import asr_engines
+        ws = self.open(AllowModelDownloads=False)
+        for root in (Path(self.tmp.name) / "machine", None):
+            with mock.patch.object(asr_engines, "_machine_root", [root]):
+                self.assertFalse(ws.managed()["allow"]["AllowModelDownloads"])
+
     def test_an_unreadable_policy_uses_only_it_models_on_a_machine_install(self):
         from workspace import asr_engines
         ws = self.open()
