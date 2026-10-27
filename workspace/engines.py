@@ -31,9 +31,11 @@ def fix_speech(name, repair_only=False):
 # keeps the two equal).
 SPEAKER_FIX = f"Repair it in {DOWNLOADS}."
 # With downloads turned off by managed policy (K3), Manage downloads cannot fix
-# a model. A worker never reads the policy, so the window process, which does,
-# swaps the advice above for these before it stores a load error (#257). The
-# speech wording matches the note Settings shows beside the picker.
+# a model. A worker reads no other policy value than AllowUserModels (on a
+# machine install only, asr_engines.user_models_allowed, #111 B7a), so the
+# window process swaps the advice above for these before it stores a load error
+# (#257), also when that value means a download would not be used. The speech
+# wording matches the note Settings shows beside the picker.
 MANAGED_SPEECH_FIX = ("Downloads are turned off by your organisation. Choose another speech "
                       "model in Settings, or ask your IT team to install it.")
 MANAGED_SPEAKER_FIX = ("Downloads are turned off by your organisation. Ask your IT team to "

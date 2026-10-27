@@ -315,6 +315,12 @@ class ReproducibleBuildTests(unittest.TestCase):
             self.assertTrue(model["files"])
             for f in model["files"]:
                 self.assertRegex(f["sha256"], r"^[0-9a-f]{64}$")
+            # Where IT's copy goes on a machine install, and its credit (#111 B7a).
+            spec = ae.MANAGED_MODELS.get(model["name"], ae.SILERO_VAD)
+            self.assertEqual(ae.machine_model_dir(spec, "R"), Path("R", "models", model["family"],
+                                                                   model["folder"],
+                                                                   model["revision"]))
+            self.assertEqual(model["attribution"], ae.LICENCES[model["name"]][1])
 
     def test_executables_are_found_by_suffix_or_by_header(self):
         folder = self.root / "pkg"

@@ -73,8 +73,15 @@ def _size(name):
     return spec.download_bytes + extra
 
 
+# A model IT installed for everyone on a machine install (#111 B7a): ready, with
+# nothing to download or repair; Remove takes only the user's own copies.
+INSTALLED_BY_IT = "Installed by your IT team."
+
+
 def status(name, cache_dir):
     """('ready' | 'missing' | 'invalid', plain-language detail)."""
+    if asr_engines.machine_ready(name):
+        return "ready", INSTALLED_BY_IT, ""
     if asr_engines.is_parakeet(name):
         state, detail = asr_engines.parakeet_status(name, cache_dir)
     else:
@@ -425,6 +432,8 @@ def remove(name, cache_dir):
     the model cache, so nothing outside it can be deleted."""
     import shutil
     from pathlib import Path
+    if asr_engines.in_machine_root(cache_dir):         # only IT's script writes there (#111 B7a)
+        raise RemovalRefused("Models installed by your IT team cannot be removed in the app.")
     cache = Path(cache_dir).resolve()
     targets = removal_targets(name, cache_dir)
     # The check records' folder and the family folder above it too: matching
@@ -798,25 +807,22 @@ class Downloads:
                                           "message": "The check could not be completed."}
         try:
             comp = gpu.component(name)
+            parts = []
             if comp is not None:
                 ok = not comp.full_check(self.cache_dir)     # remembered: #153
-                spec = None
             else:
+                # The copy in use: IT's first on a machine install (#111 B7a).
                 spec = asr_engines.MANAGED_MODELS[name]
-            if spec is None:
-                pass
-            elif asr_engines.is_parakeet(name):
-                problems = []
-                for s in (spec, asr_engines.SILERO_VAD):
-                    folder = asr_engines.model_dir(s, self.cache_dir)
-                    problems += (asr_engines.check_files(s, folder, full=True)
-                                 if folder.exists() else ["not installed"])
-                ok = not problems
-            else:
-                ok = asr_engines.find_verified(spec, self.cache_dir, full=True) is not None
+                parts = [spec] + ([asr_engines.SILERO_VAD] if asr_engines.is_parakeet(name)
+                                  else [])
+                ok = all(asr_engines.find_verified(s, self.cache_dir, full=True) is not None
+                         for s in parts)
+            fix = ("Ask your IT team to repair it."
+                   if any(asr_engines.machine_copy(s) is not None for s in parts)
+                   else "Use Repair to download a fresh copy.")
             final = ({"state": "ready", "message": "Every file matches its checksum."} if ok
                      else {"state": "failed", "message": "Some files do not match their "
-                           "checksums. Use Repair to download a fresh copy."})
+                           f"checksums. {fix}"})
         except Exception:
             pass
         finally:

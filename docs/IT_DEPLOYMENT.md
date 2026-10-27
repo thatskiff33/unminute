@@ -230,6 +230,7 @@ Policy values live under `HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Unminute` and ove
 | Value | Setting name in the template | Area | Not set |
 | --- | --- | --- | --- |
 | `AllowModelDownloads` | Allow model downloads in the app | Downloads | Allowed |
+| `AllowUserModels` | Allow models downloaded by users (machine installs) | Models | Allowed |
 | `AllowGpuComponent` | Allow the graphics card components | GPU | Allowed |
 | `AllowMicrophoneRecording` | Allow microphone recording | Microphone | Allowed |
 | `AllowComputerAudioRecording` | Allow recording computer audio | Computer audio | Allowed (each user's switch is still off by default) |

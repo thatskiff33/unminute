@@ -107,6 +107,9 @@ RECORDING_DISPLAYS = ("flow", "spectrum", "wave")
 MANAGED_OFF = "{what} is turned off by your organisation. Ask your IT team if you need it."
 DOWNLOADS_OFF = ("Downloads are turned off by your organisation. Ask your IT team to install "
                  "the models.")
+# A machine install whose policy uses only the models IT installed (#111 B7a).
+USER_MODELS_OFF = ("Your organisation uses only the models your IT team installs on this "
+                   "computer. Ask your IT team to install or repair it.")
 # Every request refused while the workspace is locked (#111 C4a): the bridge
 # gate (api.LOCKED_METHODS) and the Workspace's own refusals give this.
 LOCKED_TEXT = ("Unminute is locked: Windows could not unlock its key on this computer. "
@@ -751,6 +754,17 @@ class Workspace:
     def _allowed(self, name):
         return bool(self.policy.current().get(name))
 
+    def _user_models_allowed(self):
+        """Whether models in this user's own cache are used (#111 B7a): always,
+        except on a machine install whose policy sets AllowUserModels to 0 or
+        cannot be read (K3). A download there would never be used."""
+        return asr_engines.machine_root() is None or self._allowed("AllowUserModels")
+
+    def _model_downloads_allowed(self):
+        """Model downloads (not the graphics card components) are allowed and
+        of use: AllowModelDownloads, and _user_models_allowed."""
+        return self._allowed("AllowModelDownloads") and self._user_models_allowed()
+
     def _not_locked(self):
         """Refuse a request that would read or write content while the
         workspace is locked (#111 C4a). The bridge gate refuses first; this
@@ -866,6 +880,13 @@ class Workspace:
         p = self.policy.current()
         allow = {name: bool(p.get(name)) for name in policy.SPEC
                  if policy.SPEC[name][0] == "bool"}
+        # AllowUserModels as it applies here (#111 B7a): only a machine install
+        # reads it, so a per-user install reports it allowed. Off there, a
+        # model download would not be used (USER_MODELS_OFF), so the page shows
+        # "Ask your IT team" for the models. AllowModelDownloads stays raw: the
+        # graphics card components stay per-user (B7-5, DEC-068) and follow
+        # only it and AllowGpuComponent.
+        allow["AllowUserModels"] = self._user_models_allowed()
         return {**p.summary(), "allow": allow,
                 "clipboard_clear_minutes": p.get("ClipboardClearMinutes"),
                 "handoff_folder_set": bool(p.get("HandoffDefaultFolder")),
@@ -2011,7 +2032,7 @@ class Workspace:
         # A model that is not ready names IT, not Manage downloads, when
         # managed policy turns downloads off (K3; unreadable: off). The worker
         # never reads the policy, so its error is reworded here (#257).
-        downloads = self._allowed("AllowModelDownloads")
+        downloads = self._model_downloads_allowed()
         if kind == "rerun":
             vid, count, skips = ref
             with self._lock:
@@ -2376,7 +2397,7 @@ class Workspace:
         model = self.settings["model"]
         if model in SPEECH_MODELS:            # test engines have no download state
             note = _model_note(model, self._speech_states().get(model, "missing"),
-                               self._allowed("AllowModelDownloads"))
+                               self._model_downloads_allowed())
             if note:
                 raise WorkspaceError(note)
         v = self.store.active_version(mid)
@@ -3104,7 +3125,7 @@ class Workspace:
     def get_settings(self):
         self.policy.refresh()             # re-read on each poll while Settings or Downloads is open
         states = self._speech_states()
-        downloads = self._allowed("AllowModelDownloads")
+        downloads = self._model_downloads_allowed()
         choices = [{"name": n, "label": asr_engines.label(n),
                     "recommended": n == asr_engines.RECOMMENDED_PARAKEET,
                     # The page labels a model that is not ready and shows the
@@ -3571,6 +3592,8 @@ class Workspace:
         gpu_only = gpu.component(name) is not None   # used by no work unless a GPU run
         if gpu_only and not self._allowed("AllowGpuComponent"):
             raise WorkspaceError(MANAGED_OFF.format(what="The graphics card component"))
+        if not gpu_only and not self._user_models_allowed():
+            raise WorkspaceError(USER_MODELS_OFF)
         if token is not None and not isinstance(token, str):
             raise WorkspaceError("Expected a token.")
         on_success = None
@@ -3613,6 +3636,8 @@ class Workspace:
         gpu_only = gpu.component(name) is not None
         if gpu_only and not self._allowed("AllowGpuComponent"):
             raise setup.SetupError(MANAGED_OFF.format(what="The graphics card component"))
+        if not gpu_only and not self._user_models_allowed():
+            raise setup.SetupError(USER_MODELS_OFF)
         with self._lock:
             # No job starts while a download waits; one that was running at the
             # click (only a graphics card component may be queued then) may
@@ -3642,9 +3667,12 @@ class Workspace:
             return
         if not self._allowed("AllowModelDownloads"):
             self.downloads.drop_queued(DOWNLOADS_OFF)
-        elif not self._allowed("AllowGpuComponent"):
+            return
+        if not self._allowed("AllowGpuComponent"):
             self.downloads.drop_queued(MANAGED_OFF.format(what="The graphics card component"),
                                        only=lambda n: gpu.component(n) is not None)
+        if not self._user_models_allowed():
+            self.downloads.drop_queued(USER_MODELS_OFF, only=lambda n: gpu.component(n) is None)
 
     def remove_model(self, name):
         """Remove a downloaded model, or the graphics card component, from this

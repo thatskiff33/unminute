@@ -383,6 +383,65 @@ class WorkspacePolicyTests(unittest.TestCase):
                                                               "parakeet-tdt-0.6b-v2"))
         self.assertFalse(ws.setup_state()["managed"]["allow"]["AllowModelDownloads"])
 
+    def test_user_models_off_on_a_machine_install(self):
+        # #111 B7a: only IT's models are used, so a download would never be
+        # used: refused with the IT wording; the graphics card components are
+        # not models and are unaffected.
+        from workspace import app, asr_engines, gpu
+        ws = self.open(AllowUserModels=False)
+        with mock.patch.object(asr_engines, "_machine_root", [Path("C:/Program Files/Unminute")]):
+            self.assertEqual(self.refused(ws.download_model, "parakeet-tdt-0.6b-v2"),
+                             app.USER_MODELS_OFF)
+            self.assertFalse(ws._model_downloads_allowed())
+            with mock.patch.object(ws.downloads, "start", return_value="started") as start:
+                ws.download_model(gpu.COMPONENT)
+            start.assert_called_once()
+            note = app._model_note("parakeet-tdt-0.6b-v2", "missing",
+                                   ws._model_downloads_allowed())
+            self.assertIn("ask your IT team", note)
+        # A per-user install never reads it.
+        with mock.patch.object(asr_engines, "_machine_root", [None]):
+            self.assertTrue(ws._user_models_allowed())
+            self.assertTrue(ws._model_downloads_allowed())
+
+    def test_the_page_is_told_whether_user_models_apply(self):
+        # #111 B7a, design 3.2: the page shows "Ask your IT team" for a model
+        # when allow.AllowUserModels is false (the reviews of 317a3d4 and
+        # 1ae77ee). It is the value in force: false on a machine install with
+        # AllowUserModels off, true on a per-user install, which never reads it.
+        # AllowModelDownloads stays raw: the graphics card components stay
+        # per-user (B7-5, DEC-068) and follow only it and AllowGpuComponent.
+        from workspace import asr_engines
+        ws = self.open(AllowUserModels=False)
+        it_root = Path(self.tmp.name) / "machine"      # synthetic: holds no models
+        for root, expected in ((it_root, False), (None, True)):
+            with self.subTest(machine=root is not None), \
+                    mock.patch.object(asr_engines, "_machine_root", [root]):
+                ws._forget_display()
+                allow = ws.setup_state()["managed"]["allow"]
+                self.assertIs(allow["AllowUserModels"], expected)
+                self.assertIs(allow["AllowModelDownloads"], True)
+                self.assertIs(ws.get_settings()["managed"]["allow"]["AllowUserModels"],
+                              expected)
+
+    def test_downloads_off_stay_off_on_both_install_modes(self):
+        from workspace import asr_engines
+        ws = self.open(AllowModelDownloads=False)
+        for root in (Path(self.tmp.name) / "machine", None):
+            with mock.patch.object(asr_engines, "_machine_root", [root]):
+                allow = ws.managed()["allow"]
+                self.assertFalse(allow["AllowModelDownloads"])
+                self.assertTrue(allow["AllowUserModels"])
+
+    def test_an_unreadable_policy_uses_only_it_models_on_a_machine_install(self):
+        from workspace import asr_engines
+        ws = self.open()
+        ws.policy = policy.PolicySource(reader=lambda: ({}, policy.UNREADABLE))
+        with mock.patch.object(asr_engines, "_machine_root", [Path("C:/Program Files/Unminute")]):
+            self.assertFalse(ws._user_models_allowed())
+        with mock.patch.object(asr_engines, "_machine_root", [None]):
+            self.assertTrue(ws._user_models_allowed())
+
     def test_gpu_component_off(self):
         from workspace import gpu
         ws = self.open(AllowGpuComponent=False)
@@ -821,6 +880,74 @@ class WorkspacePolicyTests(unittest.TestCase):
         self.assertEqual(managed["managed"], [])
         self.assertTrue(all(v for k, v in managed["allow"].items()
                             if k not in ("AllowNetworkSources", "HandoffFilenameIncludesTitle")))
+
+
+class PageModelGateTests(unittest.TestCase):
+    """#111 B7a: what Setup and Downloads offer for each card under policy.
+    The page helpers are taken from workspace/ui/app.js by name and run in
+    Node.js, as tests/test_settings_policy_names.py does."""
+
+    HELPERS = ("allowed", "modelDownloadsOff", "downloadOff")
+    CASES = {
+        "all allowed": {},
+        "user models off": {"AllowUserModels": False},
+        "downloads off": {"AllowModelDownloads": False},
+        "gpu off": {"AllowGpuComponent": False},
+        "user models and gpu off": {"AllowUserModels": False, "AllowGpuComponent": False},
+    }
+
+    def simulate(self):
+        import json
+        import re
+        import shutil
+        import subprocess
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node.js not installed")
+        app_js = (Path(__file__).resolve().parents[1] / "workspace" / "ui" / "app.js"
+                  ).read_text(encoding="utf-8")
+        parts = []
+        for name in self.HELPERS:
+            found = re.search(r"^function " + name + r"\(.*?^\}$", app_js, re.M | re.S)
+            self.assertIsNotNone(found, f"{name} not found at the top level of app.js")
+            parts.append(found.group(0))
+        script = "\n".join(parts) + "\nconst cases = " + json.dumps(self.CASES) + r""";
+const state = { managed: null };
+const result = {};
+for (const [k, allow] of Object.entries(cases)) {
+  state.managed = { allow: Object.assign({ AllowModelDownloads: true, AllowUserModels: true,
+                                           AllowGpuComponent: true }, allow) };
+  result[k] = { speech: downloadOff({ role: "speech" }),
+                speakers: downloadOff({ role: "speakers" }),
+                gpu: downloadOff({ role: "gpu" }), token: modelDownloadsOff() };
+}
+console.log(JSON.stringify(result));
+"""
+        done = subprocess.run([node, "-"], input=script, capture_output=True, text=True,
+                              timeout=60, check=False)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)
+
+    def test_user_models_off_stops_model_downloads_but_not_the_gpu_components(self):
+        r = self.simulate()
+        off = {"speech": True, "speakers": True, "gpu": False, "token": True}
+        self.assertEqual(r["all allowed"],
+                         {"speech": False, "speakers": False, "gpu": False, "token": False})
+        self.assertEqual(r["user models off"], off)
+        self.assertEqual(r["downloads off"],
+                         {"speech": True, "speakers": True, "gpu": True, "token": True})
+        self.assertEqual(r["gpu off"],
+                         {"speech": False, "speakers": False, "gpu": True, "token": False})
+        self.assertEqual(r["user models and gpu off"], {**off, "gpu": True})
+
+    def test_the_cards_and_the_token_field_use_the_helpers(self):
+        app_js = (Path(__file__).resolve().parents[1] / "workspace" / "ui" / "app.js"
+                  ).read_text(encoding="utf-8")
+        self.assertEqual(app_js.count("else if (downloadOff(c))\n    action = itManaged(c);"), 2)
+        self.assertIn('$("s-token").disabled = modelDownloadsOff();', app_js)
+        self.assertIn("|| isQueued(speaker) || modelDownloadsOff();", app_js)
+        self.assertEqual(app_js.count('allowed("AllowModelDownloads")'), 2,
+                         "a page reader decides model downloads outside the two helpers")
 
 
 if __name__ == "__main__":

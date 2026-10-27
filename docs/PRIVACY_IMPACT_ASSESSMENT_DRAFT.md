@@ -103,6 +103,7 @@ Managed policy (`HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Unminute`) overrides the u
 - `HandoffFilenameIncludesTitle` and `HandoffDefaultFolder`: the saved file's suggested name and starting folder.
 - `AllowHandoffAssistant`, `HandoffAssistantName`, `HandoffAssistantUrl`: whether Copy and open is offered, and which assistant it opens.
 - `AllowModelDownloads` and `AllowGpuComponent`: whether staff can download models and the graphics card components.
+- `AllowUserModels` (machine installs only): whether the app may use models staff downloaded, or only the models IT installed.
 - `ReviewReminderDays` and `ActionRequiredDays`: after how many days a meeting's next step shows "Review due" (30 when not set) and "Action required" (off when not set). They remind; they delete nothing.
 - `AllowLiveDrafts`: whether draft text while recording may be turned on (#104). It is off until the user turns it on in Settings. Set to 0, a draft in progress is stopped and cleared; the recording carries on.
 

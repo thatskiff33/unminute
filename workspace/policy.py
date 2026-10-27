@@ -32,6 +32,11 @@ UNREADABLE_RETRY_S = 30.0       # an unreadable key is often mid-rewrite: read a
 SPEC = {
     # Setup: downloading or repairing models in the app.
     "AllowModelDownloads": ("bool", True, True),
+    # Machine installs only (#111 B7a): models in the user's own cache, beside
+    # those IT installed in Program Files. Off: only IT's copies are used, and
+    # downloads count as off. A per-user install never reads it (it has no
+    # machine copies), so an unreadable key cannot leave it without models.
+    "AllowUserModels": ("bool", True, True),
     # The optional NVIDIA component (code downloaded into the user's profile).
     "AllowGpuComponent": ("bool", True, True),
     # Microphone recording (the user may still turn it off).

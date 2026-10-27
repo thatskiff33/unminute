@@ -1477,9 +1477,14 @@ def model_manifest(source):
         sys.modules.pop(ae.__name__, None)
     specs = [*ae.PARAKEET_MODELS.values(), ae.SILERO_VAD, *ae.WHISPER_MODELS.values(),
              ae.SPEAKER_MODEL]
+    # "family" and "folder" say where IT's copy goes on a machine install
+    # (<install>\models\<family>\<folder>\<revision>, #111 B7a); "attribution" is
+    # the credit the model package's licence file gives.
     return {"_about": "Models are not in the package. These are the files each model "
                       "must have, by size and SHA-256 (docs/MODEL_MANIFEST.md).",
             "models": [{"name": s.name, "licence": ae.LICENCES[s.name][0],
+                        "attribution": ae.LICENCES[s.name][1],
+                        "family": s.family, "folder": s.folder,
                         "repository": s.repo, "revision": s.revision, "gated": s.gated,
                         "files": [{"name": f.name, "size": f.size, "sha256": f.sha256}
                                   for f in s.files]} for s in specs]}

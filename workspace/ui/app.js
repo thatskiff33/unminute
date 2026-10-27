@@ -1909,7 +1909,7 @@ function modelCard(c, s) {
   else if (isQueued(c)) action = cancelQueued(c, renderSetup);
   else if (c.state === "ready")
     action = el("span", { class: "su-ready" }, el("span", { class: "tick" }, icon("tick", 13)), "Ready");
-  else if (!allowed("AllowModelDownloads") || (c.role === "gpu" && !allowed("AllowGpuComponent")))
+  else if (downloadOff(c))
     action = itManaged(c);
   else {
     // Another download running: this one queues behind it (#366).
@@ -1969,7 +1969,7 @@ function downloadRow(c, s, inUse) {
       show("setup");
       setStep(3);
     }, { primary: true });
-  else if (!allowed("AllowModelDownloads") || (c.role === "gpu" && !allowed("AllowGpuComponent")))
+  else if (downloadOff(c))
     action = itManaged(c);
   else action = button(c.state === "missing" ? `Download (${c.size_gb} GB)` : "Repair", () => startDownload(c.name), { primary: true });
   // Download, Repair and Set up stay available: another download queues (#366).
@@ -2023,10 +2023,10 @@ async function renderSetup() {
   $("su-2-note").textContent = isRunning(rec) || isQueued(rec) ? "You can keep going while it downloads" : "";
   const speaker = s.cards.find((c) => c.role === "speakers") || {};
   $("speaker-setup").hidden = speaker.state === "ready";
-  $("s-download-speakers").disabled = isRunning(speaker) || isQueued(speaker) || !allowed("AllowModelDownloads");
-  $("s-token").disabled = !allowed("AllowModelDownloads");
+  $("s-download-speakers").disabled = isRunning(speaker) || isQueued(speaker) || modelDownloadsOff();
+  $("s-token").disabled = modelDownloadsOff();
   $("s-use-remembered").hidden = !s.token_remembered || speaker.state === "ready"
-    || !allowed("AllowModelDownloads");
+    || modelDownloadsOff();
   $("s-use-remembered").disabled = isRunning(speaker) || isQueued(speaker);
   $("s-remove-token").hidden = !s.token_remembered;
   $("s-token-note").textContent = s.token_remembered
@@ -2183,6 +2183,17 @@ function computerNote(s) {
 }
 // Always possible to turn off; turning on needs policy and the microphone.
 const computerLocked = (s) => !s.computer_audio && (!computerAllowed() || !s.microphone);
+// Model downloads are off: AllowModelDownloads, or AllowUserModels on a machine
+// install (#111 B7a; the window reports it allowed on a per-user install).
+function modelDownloadsOff() {
+  return !allowed("AllowModelDownloads") || !allowed("AllowUserModels");
+}
+// Download and Repair are off for this card. The graphics card components stay
+// per-user (B7-5, DEC-068): AllowGpuComponent governs them, never AllowUserModels.
+function downloadOff(c) {
+  return !allowed("AllowModelDownloads")
+    || (c.role === "gpu" ? !allowed("AllowGpuComponent") : !allowed("AllowUserModels"));
+}
 // A component the organisation switched off, or models IT installs instead of downloads.
 function itManaged(c) {
   return el("span", { class: "set-text", textContent: c.role === "gpu" && !allowed("AllowGpuComponent")
