@@ -110,16 +110,49 @@ jobs:
     # there; Pester is a development tool under the Apache License 2.0 and is not
     # in the package. The Python-driven installer tests in "Unit tests (Windows)"
     # stay the required check.
+    #
+    # The Gallery fails now and then (#427): the script tries up to 3 times, and
+    # the package is kept in the Actions cache under a key of its version and
+    # SHA-256 (the same values as tools/run_pester.ps1, which
+    # tests/test_consistency.py holds equal). The script hashes a restored copy
+    # again and downloads afresh if it does not match, so the cache is never
+    # trusted; only a package that matches is saved.
     name: PowerShell tests, Pester (report only)
     runs-on: windows-2025
     permissions:
       contents: read
+    env:
+      PESTER_VERSION: "5.9.1"
+      PESTER_SHA256: "8dd4060fc3bc895f05bd655e4ab82abe346de54a4e6415dfb727cc8378672b69"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+      - name: Restore the pinned Pester package
+        id: pester-restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}\pester\pester.${{ env.PESTER_VERSION }}.nupkg
+          key: pester-${{ env.PESTER_VERSION }}-${{ env.PESTER_SHA256 }}
       - name: Run the Pester tests with the pinned Pester
         shell: powershell
         run: |
           & ./tools/run_pester.ps1 -ModuleRoot "$env:RUNNER_TEMP\pester"
           exit $LASTEXITCODE
+      # Saved after a miss, whether or not the tests passed, but only a package
+      # that matches the pin.
+      - name: Was the Pester package checked
+        id: pester-checked
+        if: ${{ !cancelled() && steps.pester-restore.outputs.cache-hit != 'true' }}
+        shell: pwsh
+        run: |
+          $package = Join-Path $env:RUNNER_TEMP "pester\pester.$env:PESTER_VERSION.nupkg"
+          $matched = (Test-Path -LiteralPath $package -PathType Leaf) -and
+            (Get-FileHash -Algorithm SHA256 -LiteralPath $package).Hash -eq $env:PESTER_SHA256
+          "matched=$matched" >> $env:GITHUB_OUTPUT
+      - name: Save the pinned Pester package
+        if: ${{ !cancelled() && steps.pester-checked.outputs.matched == 'True' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}\pester\pester.${{ env.PESTER_VERSION }}.nupkg
+          key: pester-${{ env.PESTER_VERSION }}-${{ env.PESTER_SHA256 }}

@@ -10,8 +10,9 @@
 # - every action is pinned to a full commit SHA, with its version in a comment;
 # - checkouts do not keep the token in .git/config;
 # - tools and test dependencies are installed from hash-locked files
-#   (requirements.txt, requirements/ci*.txt) or pinned to an exact version with
-#   a publisher check.
+#   (requirements.txt, requirements/ci*.txt); PowerShell modules are pinned to
+#   an exact version and the SHA-256 of their PowerShell Gallery package, and
+#   PSScriptAnalyzer also has a publisher check.
 # The Workflow lint job (zizmor) flags unpinned actions, template injection,
 # missing default permissions and persisted credentials; the rest is review.
 name: CI
@@ -253,25 +254,88 @@ jobs:
     # PSScriptAnalyzer on every tracked PowerShell script. Stylistic rules that
     # are wrong for an interactive console installer are excluded: Write-Host
     # is the point, and the empty catch blocks are deliberate "try the next
-    # candidate" probes. The module is pinned and must carry a valid Microsoft
+    # candidate" probes. The module is pinned by version and by the SHA-256 of
+    # its PowerShell Gallery package, and must carry a valid Microsoft
     # signature.
+    #
+    # The Gallery fails now and then (#427), so the package (.nupkg) is fetched
+    # directly, up to 3 times with a growing wait, and kept in the Actions cache
+    # under a key of its version and SHA-256 (no partial-key fallback). A copy
+    # from the cache is hashed again before use, and one that does not match is
+    # thrown away and downloaded afresh: the cache only saves a download, it is
+    # never trusted. The job fails if no package matching the hash is obtained.
+    # To move the pin, see docs/DEVELOPER_NOTES.md ("The PowerShell Gallery").
     name: PSScriptAnalyzer
     runs-on: windows-2025
     permissions:
       contents: read
+    env:
+      PSSA_VERSION: "1.25.0"
+      PSSA_SHA256: "14e634c828eb98efb9f40b2918ba90f139ed5eccdf663a2a747736d996995d60"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - name: Analyse the PowerShell scripts
+      - name: Restore the pinned PSScriptAnalyzer package
+        id: pssa-restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}\pssa\PSScriptAnalyzer.${{ env.PSSA_VERSION }}.nupkg
+          key: psscriptanalyzer-${{ env.PSSA_VERSION }}-${{ env.PSSA_SHA256 }}
+      - name: Get and check the pinned PSScriptAnalyzer package
+        id: pssa-get
         shell: pwsh
         run: |
-          Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Repository PSGallery -Scope CurrentUser -Force -Confirm:$false
-          $module = Get-Module -ListAvailable PSScriptAnalyzer | Where-Object Version -eq '1.25.0' | Select-Object -First 1
+          $package = Join-Path $env:RUNNER_TEMP "pssa\PSScriptAnalyzer.$env:PSSA_VERSION.nupkg"
+          [void][IO.Directory]::CreateDirectory((Split-Path -Parent $package))
+          function Test-Pinned([string]$Path) {
+            (Test-Path -LiteralPath $Path -PathType Leaf) -and
+              (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash -eq $env:PSSA_SHA256
+          }
+          # A restored copy is used only if it matches the pin.
+          if ((Test-Path -LiteralPath $package) -and -not (Test-Pinned $package)) {
+            Write-Warning "The cached package does not match its pinned SHA-256; downloading it instead."
+            Remove-Item -LiteralPath $package -Force
+          }
+          $url = "https://www.powershellgallery.com/api/v2/package/PSScriptAnalyzer/$env:PSSA_VERSION"
+          $part = "$package.part"
+          for ($attempt = 1; $attempt -le 3 -and -not (Test-Path -LiteralPath $package); $attempt++) {
+            if ($attempt -gt 1) { Start-Sleep -Seconds (15 * ($attempt - 1)) }
+            try {
+              Invoke-WebRequest -Uri $url -OutFile $part -TimeoutSec 300
+              if (Test-Pinned $part) { Move-Item -LiteralPath $part -Destination $package }
+              else { Write-Warning "Attempt ${attempt}: the download does not match the pinned SHA-256." }
+            } catch {
+              Write-Warning "Attempt ${attempt}: $($_.Exception.Message)"
+            }
+            Remove-Item -LiteralPath $part -Force -ErrorAction Ignore
+          }
+          if (-not (Test-Pinned $package)) {
+            Write-Error "No PSScriptAnalyzer $env:PSSA_VERSION package matching the pinned SHA-256 could be obtained."
+            exit 1
+          }
+          # Unpacked into a new folder and imported from there by path, so no
+          # other copy of the module is used.
+          $module = Join-Path $env:RUNNER_TEMP ("pssa\m" + [guid]::NewGuid().ToString("N").Substring(0, 8))
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [IO.Compression.ZipFile]::ExtractToDirectory($package, $module)
+          "module=$module" >> $env:GITHUB_OUTPUT
+      # Saved only after a miss, and only a package that matched the pin above.
+      - name: Save the pinned PSScriptAnalyzer package
+        if: ${{ steps.pssa-restore.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}\pssa\PSScriptAnalyzer.${{ env.PSSA_VERSION }}.nupkg
+          key: psscriptanalyzer-${{ env.PSSA_VERSION }}-${{ env.PSSA_SHA256 }}
+      - name: Analyse the PowerShell scripts
+        shell: pwsh
+        env:
+          PSSA_MODULE: ${{ steps.pssa-get.outputs.module }}
+        run: |
           # Every file that runs must carry a valid signature; the module's own
           # files must be Microsoft's (its bundled Newtonsoft.Json is signed by
           # the .NET Foundation).
-          $unsigned = Get-ChildItem $module.ModuleBase -Recurse -Include *.dll, *.psm1, *.psd1, *.ps1xml |
+          $unsigned = Get-ChildItem $env:PSSA_MODULE -Recurse -Include *.dll, *.psm1, *.psd1, *.ps1xml |
             ForEach-Object {
               $sig = Get-AuthenticodeSignature $_.FullName
               $microsoft = $sig.SignerCertificate.Subject -match 'O=Microsoft Corporation'
@@ -280,7 +344,13 @@ jobs:
               }
             }
           if ($unsigned) { $unsigned | ForEach-Object { Write-Error $_ }; exit 1 }
-          Import-Module $module.Path
+          Import-Module (Join-Path $env:PSSA_MODULE "PSScriptAnalyzer.psd1")
+          $loaded = Get-Module PSScriptAnalyzer
+          if (@($loaded).Count -ne 1 -or $loaded.Version -ne [version]$env:PSSA_VERSION -or
+              -not $loaded.ModuleBase.StartsWith($env:PSSA_MODULE, [StringComparison]::OrdinalIgnoreCase)) {
+            Write-Error "PSScriptAnalyzer $env:PSSA_VERSION did not load from the checked package."
+            exit 1
+          }
           $findings = git ls-files '*.ps1' |
             ForEach-Object { Invoke-ScriptAnalyzer -Path $_ -Severity Warning, Error `
             -ExcludeRule PSAvoidUsingWriteHost, PSAvoidUsingEmptyCatchBlock, PSUseShouldProcessForStateChangingFunctions }

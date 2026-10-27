@@ -140,6 +140,38 @@ class DependencyPinTests(unittest.TestCase):
                          "worker.DLL_PATH_VARIABLES (and T25 in docs/SECURITY_MODEL.md), "
                          "then set worker.DLL_PATH_CHECKED_CTRANSLATE2 to the new version")
 
+    # #427: the PowerShell modules CI uses come from the PowerShell Gallery as .nupkg
+    # files pinned by version and SHA-256, and are kept in the Actions cache only under
+    # a key of both. (workflow, job id, cache key prefix, version and hash variables)
+    GALLERY_PACKAGES = (
+        ("ci.yml", "lint-powershell", "psscriptanalyzer", "PSSA_VERSION", "PSSA_SHA256"),
+        ("quality.yml", "pester", "pester", "PESTER_VERSION", "PESTER_SHA256"),
+    )
+
+    def test_gallery_packages_are_pinned_and_cached_by_version_and_hash(self):
+        for workflow, job_id, prefix, version, sha in self.GALLERY_PACKAGES:
+            with self.subTest(workflow=workflow, job=job_id):
+                job = DocsTests.job_blocks(workflow)[job_id]
+                one(rf'^      {version}: "(\d+\.\d+\.\d+)"$', job, f"{job_id}'s {version}")
+                one(rf'^      {sha}: "([0-9a-f]{{64}})"$', job, f"{job_id}'s {sha}")
+                key = f"key: {prefix}-${{{{ env.{version} }}}}-${{{{ env.{sha} }}}}"
+                self.assertEqual(job.count(key), 2, f"{job_id} restores and saves by {key}")
+                self.assertEqual(job.count("key:"), 2, f"{job_id} caches something else too")
+                # A partial key would restore some other version's package.
+                self.assertNotIn("restore-keys", job)
+                self.assertNotIn("Install-Module", job)
+
+    def test_pester_cache_key_matches_the_script_pin(self):
+        # The pester job's cache key must name the package tools/run_pester.ps1 pins, or
+        # the cache holds a package the script throws away and downloads again.
+        script = read("tools/run_pester.ps1")
+        job = DocsTests.job_blocks("quality.yml")["pester"]
+        for variable, name in (("PESTER_VERSION", "PesterVersion"),
+                               ("PESTER_SHA256", "PesterSha256")):
+            self.assertEqual(one(rf'^      {variable}: "([^"]+)"$', job, variable),
+                             one(rf'^\${name} = "([^"]+)"$', script, f"${name}"),
+                             f"quality.yml's {variable} differs from tools/run_pester.ps1")
+
 
 class VersionTests(unittest.TestCase):
     def test_version_file_matches_the_newest_changelog_heading(self):
