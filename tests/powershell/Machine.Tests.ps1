@@ -903,7 +903,9 @@ Describe "install.ps1 -Machine" {
             Invoke-TestInstall (New-TestZip "1.0.0")
             Invoke-TestInstall (New-TestZip "1.1.0")
             $before = Get-Snapshot $script:Root
-            { Invoke-TestInstall "" $With } | Should -Throw "STOP 2"
+            $stopped = $null
+            try { Invoke-TestInstall "" $With } catch { $stopped = $_.Exception.Message }
+            $stopped | Should -BeExactly "STOP 2"
             Get-Snapshot $script:Root | Should -BeExactly $before
             Should -Invoke Add-RuntimeRule -Times 0 -Exactly
         }
