@@ -155,6 +155,54 @@ class ManifestRuleTests(unittest.TestCase):
         self.assertIn("in_wheel entry", problems_of(entry(in_wheel=True, covers=["d/x1.dll"])))
         self.assertIn("files must list at least one text", problems_of(entry(files=[])))
 
+    def test_linked_into_names_exact_libraries(self):
+        # #176 D1: code compiled into a wheel's .pyd or .dll is recorded against
+        # each library by its exact path; a wildcard could hide a new library.
+        self.assertEqual(problems_of(entry(linked_into=["demo/_core.cp314-win_amd64.pyd",
+                                                        "demo/lib/core.dll"])), "")
+        for bad in (["demo/*.pyd"], ["demo/core.so"], ["../demo/core.pyd"], ["demo\\core.pyd"],
+                    ["/demo/core.pyd"], ["demo/./core.pyd"], [1], "demo/core.pyd"):
+            with self.subTest(bad=bad):
+                self.assertIn("linked_into", problems_of(entry(linked_into=bad)))
+        self.assertIn("at least one library", problems_of(entry(linked_into=[])))
+        self.assertIn("listed twice", problems_of(entry(linked_into=["d/a.pyd", "d/a.pyd"])))
+
+    def test_an_in_wheel_entry_may_record_compiled_in_code(self):
+        # FreeType in matplotlib: the wheel's own texts carry it, so the entry
+        # records where it is compiled in and has no files.
+        own = {k: v for k, v in entry(id="ft", linked_into=["demo/ft.pyd"], files=[],
+                                      in_wheel=True).items() if k != "source"}
+        self.assertEqual(problems_of(own), "")
+        self.assertIn("in_wheel entry", problems_of({**own, "linked_into": ["demo/ft.pyd"],
+                                                     "files": entry()["files"]}))
+
+    def test_a_crate_names_its_sbom_purl_and_its_library(self):
+        crate = entry(linked_into=["demo/_rust.pyd"], sbom="pkg:cargo/serde@1.0.228")
+        self.assertEqual(problems_of(crate), "")
+        for sbom in ("pkg:cargo/serde", "pkg:pypi/serde@1.0", "pkg:cargo/serde@1.0?x=y", 7):
+            with self.subTest(sbom=sbom):
+                self.assertIn("sbom must be",
+                              problems_of(entry(linked_into=["d/r.pyd"], sbom=sbom)))
+        self.assertIn("sbom must be", problems_of(entry(sbom="pkg:cargo/serde@1.0.228")))
+        twice = entry(id="other", linked_into=["demo/_rust.pyd"], sbom="pkg:cargo/serde@1.0.228",
+                      files=[{**entry()["files"][0], "path": "other-1.0/LICENSE"}])
+        self.assertIn("pkg:cargo/serde@1.0.228 is recorded twice", problems_of(crate, twice))
+
+    def test_a_bundle_is_a_short_name_on_an_entry_with_texts(self):
+        self.assertEqual(problems_of(entry(bundle="demo-1.0-rust-crates")), "")
+        for bundle in ("Demo", "../x", "", "a" * 61, 3):
+            with self.subTest(bundle=bundle):
+                self.assertIn("bundle must be", problems_of(entry(bundle=bundle)))
+        own = {k: v for k, v in entry(covers=["d/x1.dll"], files=[], in_wheel=True,
+                                      bundle="b").items() if k != "source"}
+        self.assertIn("bundle must be", problems_of(own))
+        # The bundle's file may not take a component folder's name.
+        folder = entry(version="1.0.txt", files=[{**entry()["files"][0],
+                                                   "path": "demo-1.0.txt/LICENSE"}])
+        clash = entry(id="other", bundle="demo-1.0",
+                      files=[{**entry()["files"][0], "path": "other-1.0/LICENSE"}])
+        self.assertIn("is a component folder's name", problems_of(folder, clash))
+
 
 class CommittedTextsTests(unittest.TestCase):
     def test_the_committed_texts_match_their_manifest_and_the_lock(self):
@@ -219,6 +267,59 @@ class CommittedTextsTests(unittest.TestCase):
                 self.assertEqual([f["url"] for f in c["files"]], [url])
                 text = files[c["files"][0]["path"]]
                 self.assertIn(b"Additional Conditions for this Windows binary build", text)
+
+    def test_the_compiled_in_components_have_their_texts(self):
+        # #176 D1 (owner decision, 19 Oct 2026): code compiled into other libraries,
+        # each checked against the locked wheels (27 Oct 2026). The build checks each
+        # library is in its wheel; this keeps the inventory from shrinking unseen.
+        components, _ = bp.licence_texts()
+        inside = {}
+        for c in components:
+            for lib in c.get("linked_into", []):
+                inside.setdefault((bp.canonical(c["wheel"]), lib), set()).add(c["id"])
+        expected = {
+            ("cryptography", "cryptography/hazmat/bindings/_rust.pyd"): {"openssl"},
+            ("torch", "torch/lib/torch_cpu.dll"): {"onemkl-torch"},
+            ("ctranslate2", "ctranslate2/ctranslate2.dll"): {
+                "onemkl-ct2", "onednn", "spdlog", "cpu-features", "cccl", "cuda-runtime",
+                "avx-mathfun", "simd-utils"},
+            ("ctranslate2", "ctranslate2/_ext.cp314-win_amd64.pyd"): {"pybind11-ct2"},
+            ("matplotlib", "matplotlib/ft2font.cp314-win_amd64.pyd"): {
+                "freetype-matplotlib", "harfbuzz-matplotlib", "libraqm-matplotlib",
+                "sheenbidi-matplotlib", "agg-matplotlib", "pybind11-matplotlib"},
+            ("pyyaml", "yaml/_yaml.cp314-win_amd64.pyd"): {"libyaml"},
+            ("cffi", "_cffi_backend.cp314-win_amd64.pyd"): {"libffi-cffi"},
+            ("contourpy", "contourpy/_contourpy.cp314-win_amd64.pyd"): {"pybind11-contourpy"},
+        }
+        for key, ids in expected.items():
+            with self.subTest(library=key):
+                self.assertLessEqual(ids, inside.get(key, set()))
+        # SciPy's wheel leaves out the texts of what it bundles (LICENSES_bundled.txt).
+        scipy = {c["id"] for c in components if c["wheel"] == "scipy"}
+        self.assertLessEqual({"scipy-bundled", "scipy-boost-math", "scipy-highs", "scipy-xsf",
+                              "scipy-unuran", "scipy-cobyqa"}, scipy)
+
+    def test_each_wheels_rust_crates_share_one_bundle(self):
+        # The crates' texts go into one file per wheel, so several hundred texts
+        # add a handful of files to the package (its package_files budget).
+        components, files = bp.licence_texts()
+        bundles = {}
+        for c in components:
+            if "sbom" in c:
+                bundles.setdefault(bp.canonical(c["wheel"]), set()).add(c["bundle"])
+                self.assertEqual(c["linked_into"], [c["linked_into"][0]])
+        self.assertEqual(sorted(bundles), ["cryptography", "hf_xet", "safetensors",
+                                           "tokenizers"])
+        for wheel, names in bundles.items():
+            with self.subTest(wheel=wheel):
+                self.assertEqual(len(names), 1)
+        crate_texts = sum(len(c["files"]) for c in components if c.get("bundle"))
+        self.assertGreater(crate_texts, 500)
+        loose = sum(len(c["files"]) for c in components if not c.get("bundle"))
+        with tempfile.TemporaryDirectory() as tmp:
+            bp.copy_licences(Path(tmp), files, components)
+            in_package = sum(1 for p in Path(tmp).rglob("*") if p.is_file())
+        self.assertEqual(in_package, loose + 4)
 
     def test_coverage_is_required_for_a_release(self):
         # Owner decision, 22 Oct 2026 (#111, #176): a release fails if any
@@ -288,6 +389,92 @@ class CoverageTests(unittest.TestCase):
         self.assertEqual(sorted(covered), ["demo.libs/libfoo-1-abc.dll"])
         self.assertEqual(stale, ["lib: demo/gone.dll matches no DLL in demo"])
 
+    def test_a_library_named_in_linked_into_must_be_in_its_wheel(self):
+        inside = entry(id="inside", linked_into=["demo/_rust.pyd", "demo/gone.pyd"],
+                       files=[{**entry()["files"][0], "path": "inside-1.0/LICENSE"}])
+        components = bp.licence_manifest(manifest(inside))
+        linked, stale = bp.licence_linked(components, {"demo": ["demo/_rust.pyd"],
+                                                       "other": ["demo/gone.pyd"]})
+        self.assertEqual([c["id"] for c in linked["demo"]], ["inside"])
+        self.assertEqual(stale, ["inside: demo/gone.pyd is not in demo"])
+
+
+def cyclonedx(*components):
+    return json.dumps({"bomFormat": "CycloneDX", "components": list(components)}).encode()
+
+
+class SbomTests(unittest.TestCase):
+    # #176 D1: the Rust crates a wheel's own SBOM lists are compiled into its library.
+
+    def test_the_crates_are_the_sboms_registry_crates_in_use(self):
+        data = cyclonedx(
+            {"name": "serde", "purl": "pkg:cargo/serde@1.0.228", "scope": "required"},
+            {"name": "tokio", "purl": "pkg:cargo/tokio@1.47.1"},                  # no scope
+            {"name": "cc", "purl": "pkg:cargo/cc@1.4.0", "scope": "excluded"},      # build tool
+            {"name": "own", "purl": "pkg:cargo/own@0.1.0?download_url=file://own"},  # own code
+            {"name": "openssl", "purl": "pkg:generic/openssl@4.0.3"},              # not a crate
+            {"name": "nested", "purl": "pkg:cargo/outer@2.0.0#sub",
+             "components": [{"name": "inner", "purl": "pkg:cargo/inner@3.0.0?x=1"}]},
+            {"name": "no purl"})
+        self.assertEqual(bp.sbom_crates(data), ["pkg:cargo/inner@3.0.0", "pkg:cargo/outer@2.0.0",
+                                                "pkg:cargo/serde@1.0.228",
+                                                "pkg:cargo/tokio@1.47.1"])
+        self.assertEqual(bp.sbom_crates(b"{}"), [])
+        with self.assertRaisesRegex(SystemExit, "SBOM is not JSON"):
+            bp.sbom_crates(b"not json")
+
+    def test_every_crate_needs_an_entry_and_every_entry_a_crate(self):
+        crate = entry(linked_into=["demo/_rust.pyd"], sbom="pkg:cargo/serde@1.0.228")
+        components = bp.licence_manifest(manifest(crate))
+        crates = {"demo": ["pkg:cargo/serde@1.0.228", "pkg:cargo/tokio@1.47.1"], "bare": []}
+        gaps, stale = bp.licence_sbom_problems(components, crates)
+        self.assertEqual(gaps, {"demo": ["pkg:cargo/tokio@1.47.1"]})
+        self.assertEqual(stale, [])
+        gaps, stale = bp.licence_sbom_problems(components, {"demo": ["pkg:cargo/tokio@1.47.1"]})
+        self.assertEqual(stale, ["demo: pkg:cargo/serde@1.0.228 is not in demo's SBOM"])
+        self.assertEqual(bp.licence_sbom_problems(components, {}),
+                         ({}, ["demo: pkg:cargo/serde@1.0.228 is not in demo's SBOM"]))
+
+
+class BundleTests(unittest.TestCase):
+    def setUp(self):
+        two = {"path": "demo-1.0/NOTICE", "sha256": hashlib.sha256(b"no newline").hexdigest(),
+               "archive": {"url": "https://files.pythonhosted.org/p/x.whl", "sha256": "c" * 64,
+                           "member": "x/NOTICE"}}
+        first = entry(bundle="demo-crates", linked_into=["demo/_rust.pyd"],
+                      files=entry()["files"] + [two])
+        second = entry(id="second", name="Second", bundle="demo-crates",
+                       linked_into=["demo/_rust.pyd"],
+                       files=[{**entry()["files"][0], "path": "second-1.0/LICENSE"}])
+        loose = entry(id="loose", files=[{**entry()["files"][0], "path": "loose-1.0/LICENSE"}])
+        self.components = bp.licence_manifest(manifest(first, second, loose))
+        self.files = {"demo-1.0/LICENSE": TEXT, "demo-1.0/NOTICE": b"no newline",
+                      "second-1.0/LICENSE": TEXT, "loose-1.0/LICENSE": TEXT}
+
+    def test_a_bundle_holds_each_text_unchanged_after_its_header(self):
+        text = bp.licence_bundles(self.components, self.files)["demo-crates.txt"]
+        self.assertTrue(text.startswith(b"Licence texts collected from each project's own"))
+        self.assertIn(b"Demo 1.0 (MIT (metadata))\nFile: demo-1.0/LICENSE\nSource: "
+                      b"https://raw.githubusercontent.com/example/demo/" + COMMIT.encode()
+                      + b"/LICENSE\nSHA-256: " + hashlib.sha256(TEXT).hexdigest().encode(), text)
+        self.assertIn(b"=" * 78 + b"\n" + TEXT, text)
+        self.assertIn(b"Source: x/NOTICE in https://files.pythonhosted.org/p/x.whl", text)
+        self.assertIn(b"no newline\n", text)                  # a newline before the next header
+        # In manifest order, and only the bundle's own components.
+        self.assertLess(text.index(b"File: demo-1.0/NOTICE"), text.index(b"File: second-1.0/"))
+        self.assertNotIn(b"loose-1.0", text)
+        self.assertEqual(bp.licence_package_paths(self.components[1]),
+                         ["licences/demo-crates.txt"])
+        self.assertEqual(bp.licence_package_paths(self.components[2]),
+                         ["licences/loose-1.0/LICENSE"])
+
+    def test_bundled_texts_are_one_file_in_the_package(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bp.copy_licences(Path(tmp), self.files, self.components)
+            found = sorted(p.relative_to(tmp).as_posix() for p in Path(tmp).rglob("*")
+                           if p.is_file())
+        self.assertEqual(found, ["licences/demo-crates.txt", "licences/loose-1.0/LICENSE"])
+
 
 class NoticesTests(unittest.TestCase):
     def setUp(self):
@@ -300,6 +487,8 @@ class NoticesTests(unittest.TestCase):
         for dist, files in (("bare-1.0", ["bare/__init__.py"]),
                             ("demo-1.0", ["demo/__init__.py", "demo/core.dll",
                                           "demo/.libs/uv.dll", "demo.libs/libfoo-1-abc.dll",
+                                          "demo/_rust.pyd",
+                                          "demo-1.0.dist-info/sboms/demo.cdx.json",
                                           "demo-1.0.dist-info/licenses/LICENSE"])):
             info = self.site / f"{dist}.dist-info"
             info.mkdir(parents=True, exist_ok=True)
@@ -308,6 +497,12 @@ class NoticesTests(unittest.TestCase):
                 (self.site / f).write_text("x")
             (info / "RECORD").write_text("".join(f"{f},,\n" for f in files)
                                          + f"{dist}.dist-info/RECORD,,\n")
+        # demo's own SBOM: one Rust crate compiled into demo/_rust.pyd, a build tool
+        # and the project's own crate (neither of those needs an entry).
+        (self.site / "demo-1.0.dist-info/sboms/demo.cdx.json").write_bytes(cyclonedx(
+            {"name": "serde", "purl": "pkg:cargo/serde@1.0.228", "scope": "required"},
+            {"name": "cc", "purl": "pkg:cargo/cc@1.4.0", "scope": "excluded"},
+            {"name": "demo", "purl": "pkg:cargo/demo@1.0.0?download_url=file://demo"}))
         self.installed = [
             {"metadata": {"name": "bare", "version": "1.0", "license": "MIT"},
              "download_info": {"url": "https://files.example/bare-1.0-py3-none-any.whl",
@@ -326,8 +521,17 @@ class NoticesTests(unittest.TestCase):
         core = {k: v for k, v in entry(id="demo-core", name="Demo core",
                                        covers=["demo/core.dll", "demo/.libs/uv.dll"],
                                        files=[], in_wheel=True).items() if k != "source"}
-        self.components = bp.licence_manifest(manifest(own, foo, core))
-        bp.copy_licences(self.folder, {"bare-1.0/LICENSE": TEXT, "libfoo-2.3/COPYING": TEXT})
+        # #176 D1: a crate from the SBOM (bundled), and code the wheel's own texts cover.
+        serde = entry(id="demo.serde", name="serde", version="1.0.228",
+                      licence="MIT OR Apache-2.0", linked_into=["demo/_rust.pyd"],
+                      sbom="pkg:cargo/serde@1.0.228", bundle="demo-1.0-rust-crates",
+                      files=[{**entry()["files"][0], "path": "demo.serde-1.0.228/LICENSE-MIT"}])
+        inner = {k: v for k, v in entry(id="inner", name="Inner", version="2.0",
+                                        linked_into=["demo/_rust.pyd"], files=[],
+                                        in_wheel=True).items() if k != "source"}
+        self.components = bp.licence_manifest(manifest(own, foo, core, serde, inner))
+        bp.copy_licences(self.folder, {"bare-1.0/LICENSE": TEXT, "libfoo-2.3/COPYING": TEXT,
+                                       "demo.serde-1.0.228/LICENSE-MIT": TEXT}, self.components)
 
     def notices(self, components=None, **kw):
         # A development build also lists the gaps on the console; kept in self.console.
@@ -344,12 +548,48 @@ class NoticesTests(unittest.TestCase):
         self.assertIn("      Demo core 1.0 (MIT (metadata)): the demo texts above", text)
         # Nothing is missing, so the notices no longer say texts are to follow.
         self.assertNotIn("to follow", text)
-        self.assertIn("collected in\nlicences/ from each project's own release", text)
+        self.assertNotIn("missing", text)
+        self.assertIn("collected in licences/ from each project's own\nrelease.", text)
+
+    def test_compiled_in_code_is_listed_with_its_texts(self):
+        # #176 D1: code from other projects compiled into a wheel's library.
+        text = self.notices(required=True)
+        lib = f"runtime/{bp.SITE}/demo/_rust.pyd"
+        self.assertIn("  Compiled into its libraries:\n"
+                      f"    serde 1.0.228 (MIT OR Apache-2.0), in {lib}: "
+                      "licences/demo-1.0-rust-crates.txt\n"
+                      f"    Inner 2.0 (MIT (metadata)), in {lib}: the demo texts above\n", text)
+        self.assertIn('listed under "Compiled into its libraries"', text)
+        bundle = (self.folder / "licences" / "demo-1.0-rust-crates.txt").read_bytes()
+        self.assertIn(b"File: demo.serde-1.0.228/LICENSE-MIT", bundle)
+        self.assertFalse((self.folder / "licences" / "demo.serde-1.0.228").exists())
+
+    def test_a_crate_in_the_sbom_without_a_text_stops_a_release(self):
+        less = [c for c in self.components if c["id"] != "demo.serde"]
+        text = self.notices(components=less)
+        self.assertNotIn("to follow", text)
+        self.assertIn("Some licence texts are missing from this development build", text)
+        self.assertIn("demo 1.0: pkg:cargo/serde@1.0.228 (in the wheel's SBOM) has no licence "
+                      "text recorded", self.console.getvalue())
+        with self.assertRaisesRegex(SystemExit, r"pkg:cargo/serde@1\.0\.228 \(in the wheel's"):
+            self.notices(components=less, required=True)
+
+    def test_a_stale_library_or_crate_stops_any_build(self):
+        for change, why in (({"linked_into": ["demo/_gone.pyd"]}, "demo/_gone.pyd is not in demo"),
+                            ({"sbom": "pkg:cargo/serde@9.9.9"},
+                             "pkg:cargo/serde@9.9.9 is not in demo's SBOM")):
+            with self.subTest(why=why):
+                stale = copy.deepcopy(self.components)
+                stale[3].update(change)
+                with self.assertRaisesRegex(SystemExit, f"is stale:(.|\n)*{why}"):
+                    self.notices(components=stale)
 
     def test_without_texts_the_gaps_are_stated_and_can_stop_the_build(self):
         text = self.notices(components=[])
         self.assertIn("bare 1.0\n  Licence: MIT\n  Texts: none shipped in the wheel", text)
-        self.assertIn("included yet (to follow, #176)", text)
+        self.assertNotIn("to follow", text)
+        self.assertIn("Some licence texts are missing from this development build; a release\n"
+                      "build stops until each has one.", text)
         with self.assertRaisesRegex(SystemExit, "bare 1.0: the wheel ships no licence text"):
             self.notices(components=[], required=True)
         self.notices(required=True)             # complete: passes
@@ -360,7 +600,7 @@ class NoticesTests(unittest.TestCase):
         self.notices(required=True)
         less = copy.deepcopy(self.components)
         less[2]["covers"] = ["demo/core.dll"]
-        self.assertIn("included yet (to follow, #176)", self.notices(components=less))
+        self.assertIn("missing from this development build", self.notices(components=less))
         self.assertIn(f"a release stops on these:\n  runtime/{bp.SITE}/demo/.libs/uv.dll: "
                       "no licence text recorded", self.console.getvalue())
         with self.assertRaisesRegex(SystemExit, r"demo/\.libs/uv\.dll: no licence text"):
