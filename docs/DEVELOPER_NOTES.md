@@ -60,6 +60,24 @@ real time, and remove it when the cause is fixed.
   --min-confidence 60` runs what CI's report runs (install vulture
   from `requirements/ci-vulture.txt`). Most hits are .NET or ctypes attributes set by name;
   add one to the whitelist only with its reason. Remove anything that is really unused.
+- **Type check (report only, #413).** `python tools/type_check.py` runs what CI's "Type check
+  (report only)" job runs: mypy over `workspace/` with `mypy.ini` (install mypy from
+  `requirements/ci-mypy.txt`), compared with the committed baseline
+  `tools/mypy_baseline.txt`. It lists errors new since the baseline and ones fixed since; CI
+  shows the new ones as warnings on the pull request and never fails on them. Fix a new
+  error rather than add it. When a change fixes errors, run `python tools/type_check.py
+  --update` and commit the shorter baseline; adding an error to it needs its reason in the
+  pull request. The baseline has no line numbers, so moving code leaves it alone. mypy reads
+  no installed package (`no_site_packages`: third-party imports are typed `Any`) and checks
+  the Windows branches (`platform = win32`), so every machine gets the same result, and it
+  writes no cache. Making it a gate needs the owner. The page has no type check yet.
+- **Coverage (report only, #413).** `.coveragerc` measures lines and branches in `workspace/`,
+  and the Python processes the tests start (`patch = subprocess`, so each process writes its
+  own data file). Set `COVERAGE_FILE` to a path outside the checkout first, as CI does, then
+  `python -m coverage run tools/run_tests.py --only <modules>`, `python -m coverage combine`
+  and `python -m coverage report`. A child started with an environment of its own, or the
+  decoder after it lowers itself to Low integrity, is not measured. There is no floor:
+  that would be a gate, which needs the owner.
 - **Tools drive their own version of the app.** Since R13c (#136) the tools import
   `workspace.asr_engines` and `workspace.offline_guard`, so they fail with an `ImportError`
   against a checkout or package from before that move (v0.5.0-preview.3 and earlier). To

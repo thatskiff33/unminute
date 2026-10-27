@@ -1,0 +1,19 @@
+# coverage.py settings for the report-only "Coverage (report only)" job in
+# .github/workflows/quality.yml (#125, #413). No floor: a floor would be a gate,
+# which needs the owner (docs/RELEASE_STANDARD.md, section 7).
+[run]
+source = workspace
+# Branch coverage as well as lines (#413).
+branch = True
+# Measure the Python processes the tests start too: the worker, the decoder and
+# the other children. coverage passes these settings to each child in an
+# environment variable (COVERAGE_PROCESS_CONFIG), and each process writes its
+# own data file, joined by "coverage combine". A child started with an
+# environment of its own, or one that cannot write the data file (the decoder
+# lowers itself to Low integrity), is not measured.
+patch = subprocess
+parallel = True
+
+[report]
+skip_empty = True
+sort = Cover

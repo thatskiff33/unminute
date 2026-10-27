@@ -7,6 +7,7 @@
 # allowlist means a new third-party import fails here until it is justified.
 
 import json
+import os
 import subprocess
 import sys
 import unittest
@@ -50,10 +51,18 @@ print(json.dumps({"attempted": sorted(attempted), "modules": len(sys.modules),
 """
 
 
+# The variables with which coverage.py starts itself in a child process (the
+# report-only Coverage job measures child processes, #413). They are dropped for
+# the probe, so it counts the window process's own modules, not coverage's; a
+# run without coverage, such as "Unit tests (Windows)", has neither.
+COVERAGE_CHILD_VARIABLES = ("COVERAGE_PROCESS_CONFIG", "COVERAGE_PROCESS_START")
+
+
 def probe():
+    env = {k: v for k, v in os.environ.items() if k.upper() not in COVERAGE_CHILD_VARIABLES}
     result = subprocess.run(
         [sys.executable, "-c", PROBE, ",".join(HEAVY), ",".join(UI_MODULES)],
-        cwd=ROOT, capture_output=True, text=True, timeout=120)
+        cwd=ROOT, capture_output=True, text=True, timeout=120, env=env)
     if result.returncode != 0:
         raise AssertionError("importing the window modules failed:\n" + result.stderr[-2000:])
     return json.loads(result.stdout.strip().splitlines()[-1])
