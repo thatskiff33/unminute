@@ -19,6 +19,12 @@
 #                 checkpoint (a synthetic one, in memory), and on Windows that
 #                 Windows Data Protection protects and unlocks a random key
 #                 (the workspace's root key is kept that way, #111 C2b-2)
+#   --check-decoder  for IT, run as the signed-in user (#299): the decoder
+#                 starts in its AppContainer and decodes a second of synthetic
+#                 silence. Prints {"decoder": "ok"}, or "failed" with the
+#                 step and Windows error number; exit 0 ok, 1 otherwise. Run
+#                 as Local System nothing is started ("system_account"). No
+#                 content or paths.
 #   --health      for an Intune Remediation detection script run as the
 #                 signed-in user (R9b): JSON with the version, whether the
 #                 workspace opens (or was locked at its last start), whether the
@@ -481,6 +487,40 @@ def dpapi_round_trip():
         return False, f"dpapi round trip: {getattr(exc, 'code', type(exc).__name__)}"
 
 
+class _Silence:
+    """One second of digital silence at 16 kHz, as recorder.RecordingAudio
+    gives a recording to media.WavFeed (rate, frames, blocks())."""
+    rate, frames = 16000, 16000
+
+    def blocks(self):
+        yield b"\0" * (2 * self.frames)
+
+
+def check_decoder(account=_UNREAD):
+    """--check-decoder (#299): (result, exit code). The decoder starts in its
+    AppContainer and decodes one second of synthetic silence fed over its
+    stdin, so no file is involved. The result names the failed step and the
+    Windows error number only (P3). Run as Local System, or when Windows
+    cannot say who runs it, nothing is started: the container's profile
+    belongs to the signed-in user."""
+    import io
+    account = _system_account() if account is _UNREAD else account
+    if account is None:
+        return {"decoder": "account_unknown"}, 1
+    if account:
+        return {"decoder": "system_account"}, 1
+    from workspace import media
+    try:
+        samples = media.decode(None, io.BytesIO(), feed=media.WavFeed(_Silence()))
+    except media.SandboxUnavailable as exc:
+        return {"decoder": "failed", "step": exc.step, "winerror": exc.winerror}, 1
+    except Exception:                       # never a message: it could hold a path
+        return {"decoder": "failed", "step": "decode"}, 1
+    if abs(samples - _Silence.frames) > 160:
+        return {"decoder": "failed", "step": "decode"}, 1
+    return {"decoder": "ok"}, 0
+
+
 def main():
     if "--version" in sys.argv:
         print(package_version())
@@ -512,6 +552,10 @@ def main():
         result = launchcheck.light_check(dpapi_round_trip)
         print(json.dumps(result))
         return 0 if result["result"] == "ok" else 1
+    if "--check-decoder" in sys.argv:
+        result, code = check_decoder()
+        print(json.dumps(result))
+        return code
     if "--verify-audit" in sys.argv:
         result, code = verify_audit(sys.argv)
         print(json.dumps(result))

@@ -52,6 +52,11 @@ _.LimitFlags            # JOBOBJECT_EXTENDED_LIMIT_INFORMATION (workspace/jobs.p
 _.ActiveProcessLimit
 _.ProcessMemoryLimit
 _.SimpleReasonString    # REASON_CONTEXT (workspace/power.py)
+_.dwFlags               # STARTUPINFOEXW, which CreateProcessW reads (workspace/appcontainer.py)
+_.hStdInput
+_.hStdOutput
+_.hStdError
+_.lpAttributeList
 
 # Library settings and protocols: the library reads them.
 _.before_load           # pywebview window event (workspace/shell.py)
@@ -78,3 +83,4 @@ resume_pending          # workspace/cleanup.py
 uninstall               # workspace/offline_guard.py
 list_outputs            # workspace/loopback.py: tools/capture_probe.py (and Settings, #108)
 probe                   # workspace/loopback.py: tools/capture_probe.py
+ALL_APPLICATION_PACKAGES  # workspace/appcontainer.py: the SID the installer grants (tests/test_consistency.py)

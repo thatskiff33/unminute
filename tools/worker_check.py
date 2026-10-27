@@ -45,6 +45,10 @@ def main():
     src, cache = Path(sys.argv[1]), sys.argv[2]
     model = sys.argv[3] if len(sys.argv) > 3 else "parakeet-tdt-0.6b-v2"
     ok = True
+    # The decoder runs in an AppContainer that cannot read this checkout's
+    # Python (#299): decode in a scratch copy it can read.
+    import decoder_runtime
+    decoder_runtime.use()
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         handle = WorkerHandle(cache, quiet=True, idle_unload_s=3)

@@ -36,6 +36,20 @@ CONSENT = consent.recording_record(clock=lambda: 1000.0)
 KEY = bytes(range(32))           # a recording's key in the recorder's own tests
 
 
+sys.path.append(str(Path(__file__).resolve().parents[1] / "tools"))
+import decoder_runtime  # noqa: E402  (tools/decoder_runtime.py)
+
+
+def setUpModule():
+    # #299: the decoder runs in an AppContainer that cannot read this Python:
+    # decodes here use a scratch runtime it can read and a throwaway profile.
+    decoder_runtime.use()
+
+
+def tearDownModule():
+    decoder_runtime.stop()
+
+
 def saved(folder, journal, key=KEY):
     """What a saved recording holds, as the import streams it (int16 at the
     journal's rate), its length in seconds and the problems reported."""

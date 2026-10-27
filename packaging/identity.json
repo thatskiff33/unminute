@@ -7,6 +7,7 @@
   "icon": "unminute.ico",
   "mutex": "Local\\Unminute.Workspace",
   "event_source": "Unminute",
+  "decoder_profile": "Unminute.Decoder",
   "data_folders": {
     "root": "%LOCALAPPDATA%\\Unminute",
     "workspace": "%LOCALAPPDATA%\\Unminute\\workspace",

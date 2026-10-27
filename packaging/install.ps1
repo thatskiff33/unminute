@@ -20,6 +20,8 @@
     run waits up to 10 minutes), writes current.json by a temporary file and a
     replace, and keeps a short log in <InstallDir>\logs\install.log with no user
     name, path or message text (#111 B6a).
+  - Per user, lets ALL APPLICATION PACKAGES read the versions folder, so the app's
+    decoder can run in its AppContainer (#299); a rollback makes sure of it too.
   - Registers a per-user uninstall entry (used for Intune detection) and a
     Start menu shortcut.
 
@@ -668,6 +670,34 @@ function Invoke-LockRetry([scriptblock]$Action) {
     }
 }
 
+# -- the decoder's read access (#299) -------------------------------------------------
+# The app decodes recordings in a Windows AppContainer with no capabilities, which can
+# read only what ALL APPLICATION PACKAGES (S-1-15-2-1) may read. A machine install's
+# folder grants that in its own permissions (Get-MachineRule); a per-user install
+# folder does not. So the per-user versions folder grants it
+# read and execute, inherited by every version in it (the runtime and the app code; the
+# install record and the uninstaller beside versions are not covered). Nothing here lets
+# a container write. Each install, update, repair and rollback makes sure the grant is
+# there; it stays harmless for a version from before #299, which does not use it.
+# The SID is $AppPackagesSid (with the machine permissions below).
+
+function Grant-DecoderRead([string]$Folder) {
+    $dir = [IO.DirectoryInfo]::new($Folder)
+    $sid = New-Object Security.Principal.SecurityIdentifier $AppPackagesSid
+    $rights = [Security.AccessControl.FileSystemRights]::ReadAndExecute
+    $inherit = [Security.AccessControl.InheritanceFlags]"ContainerInherit, ObjectInherit"
+    $acl = $dir.GetAccessControl([Security.AccessControl.AccessControlSections]::Access)
+    foreach ($rule in $acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])) {
+        if ($rule.IdentityReference -eq $sid -and $rule.AccessControlType -eq "Allow" -and
+            ($rule.FileSystemRights -band $rights) -eq $rights -and
+            ($rule.InheritanceFlags -band $inherit) -eq $inherit -and
+            $rule.PropagationFlags -eq [Security.AccessControl.PropagationFlags]::None) { return }
+    }
+    $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid, $rights, $inherit,
+        [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)))
+    $dir.SetAccessControl($acl)                 # Windows passes it on to what is inside
+}
+
 # Copies the package folder (already checked for links, Assert-NoLink) into
 # versions\<version>.partial and verifies that copy against the manifest, once
 # (#111 B6a, the owner's decision B6-8): the bytes checked are the bytes that will
@@ -676,6 +706,10 @@ function Invoke-LockRetry([scriptblock]$Action) {
 function New-StagedCopy([string]$Root, [string]$Version) {
     $versions = Join-Path $Options.InstallDir "versions"
     New-Item -ItemType Directory -Force -Path $versions | Out-Null
+    # Before the copy, so every new file inherits it (#299). Per-user only: machine
+    # mode copies with New-MachineStagedCopy, and its install folder grants this in
+    # its own permissions (Get-MachineRule), where an explicit entry is refused.
+    Grant-DecoderRead $versions
     $staging = Join-Path $versions "$Version.partial"
     Remove-OwnFolder $staging
     $script:StagedCopy = $staging
@@ -1677,6 +1711,9 @@ function Invoke-Rollback {
     } else {
         Test-WorkspaceGate $target -Checker (Join-Path $Options.InstallDir "versions\$version") -Schema 1
     }
+    # The decoder's read access (#299), in case it was taken away since: a version that
+    # decodes in the container cannot import anything without it.
+    Grant-DecoderRead (Join-Path $Options.InstallDir "versions")
     Copy-Item -LiteralPath (Join-Path $target "uninstall.ps1") -Destination (Join-Path $Options.InstallDir "uninstall.ps1") -Force
     # Format 2 (#111 B5): both versions keep their seq and installed time.
     $slots = Get-SlotRecord $current @($previous, $version) $null

@@ -933,7 +933,8 @@ class Workspace:
                 if key:
                     intake.import_finished(self.store, folder_id, key, content, True)
             except Exception as exc:          # a bad file must not stop the intake thread
-                code = None if _expected_import_error(exc) else self.log.incident("import", exc)
+                code = (None if _expected_import_error(exc)
+                        else _import_incident(self.log, "import", exc))
                 self._import_errors = (self._import_errors + [_import_message(exc, code)])[-5:]
             finally:
                 self._imports.task_done()
@@ -1645,7 +1646,7 @@ class Workspace:
             full = isinstance(exc, OSError) and getattr(exc, "errno", None) == 28
             changed = media.damaged_audio(exc)  # a chunk changed after it was checked
             code = (None if full or changed or _expected_import_error(exc)
-                    else self.log.incident("recording_import", exc))
+                    else _import_incident(self.log, "recording_import", exc))
             report["note"] = ("It could not be imported yet: " +
                               ("the disk is full. Free some space, then choose Try again."
                                if full else
@@ -3952,7 +3953,11 @@ def _folders(path):
 
 
 def _expected_import_error(exc):
-    """A refusal or a bad file, explained to the user; anything else is a bug."""
+    """A refusal or a bad file, explained to the user; anything else is a bug.
+    The decoder's container not starting (#299) is not the file's fault: it
+    is logged with a code for IT (_import_incident)."""
+    if isinstance(exc, media.SandboxUnavailable):
+        return False
     return (isinstance(exc, (media.SourceChanged, media.DecodeError, UnsafePathError,
                              WorkspaceError))
             or (isinstance(exc, ValueError) and "no audio" in str(exc)))
@@ -3969,7 +3974,19 @@ def _imports_removed(count):
             "other recording again if you still need it.")
 
 
+def _import_incident(log, area, exc):
+    """Log an unexpected import failure; returns its code. For the decoder's
+    container (#299) the record also says which step failed and its Windows
+    error number: no path, name or text (P3)."""
+    fields = {}
+    if isinstance(exc, media.SandboxUnavailable):
+        fields = {"step": exc.step, "winerror": exc.winerror}
+    return log.incident(area, exc, **fields)
+
+
 def _import_message(exc, code=None):
+    if isinstance(exc, media.SandboxUnavailable):
+        return f"{exc} (code {code})" if code else str(exc)
     if isinstance(exc, (media.SourceChanged, media.DecodeError, UnsafePathError,
                         WorkspaceError)):
         return str(exc)

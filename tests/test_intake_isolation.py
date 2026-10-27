@@ -1,5 +1,6 @@
 # Untrusted recordings (#111 slice A3): decoding in a contained child process
-# (plain process, Windows job, Low integrity, checked binary replies), FFmpeg
+# (an AppContainer with no capabilities since #299, a Windows job, Low
+# integrity, the recording as one read-only handle, checked binary replies), FFmpeg
 # limited to the supported demuxers, their audio decoders and local files,
 # input sample rates of 4 kHz to 384 kHz, and the length, size-ratio and disk
 # limits enforced by the app (D2 red team, part 2). A microphone recording is
@@ -20,6 +21,9 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+
+import decoder_runtime  # noqa: E402  (tools/decoder_runtime.py)
 
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
 WINDOWS = sys.platform == "win32"
@@ -27,6 +31,17 @@ WINDOWS = sys.platform == "win32"
 # interpreter as a second process; tests that contain a process use the
 # interpreter itself, as workspace.media does.
 PYTHON = getattr(sys, "_base_executable", sys.executable)
+
+
+def setUpModule():
+    # The decoder runs in its AppContainer (#299), which cannot read this
+    # Python: decodes here use a scratch runtime it can read, and a throwaway
+    # profile (tools/decoder_runtime.py).
+    decoder_runtime.use()
+
+
+def tearDownModule():
+    decoder_runtime.stop()
 
 
 def tone_wav(path, seconds=1.0, rate=16000):
@@ -466,14 +481,20 @@ class StdinDecoderTests(unittest.TestCase):
 
     def test_the_request_line_is_checked(self):
         from workspace import decode_child
-        ok = {b'{"src": "C:/x.wav"}\n': ("file", "C:/x.wav"),
+        ok = {b'{"handle": 1234}\n': ("handle", 1234),
+              b'{"handle": 4294967295}\n': ("handle", 0xFFFFFFFF),
               b'{"stdin": "wav", "bytes": 44}\n': ("stdin", 44)}
         for line, expected in ok.items():
             self.assertEqual(decode_child.read_request(io.BytesIO(line + b"RIFF")), expected)
+        # A path is no longer a request (#299): the container could not open
+        # it, and a decoder that asks for one gets nothing.
         for line in (b'{"stdin": "mp3", "bytes": 100}\n', b'{"stdin": "wav", "bytes": true}\n',
                      b'{"stdin": "wav", "bytes": 10}\n', b'{"stdin": "wav"}\n',
-                     b'{"stdin": "wav", "bytes": 100, "src": "x"}\n', b'{"src": 1}\n',
-                     b'["src"]\n', b'{"src": "x"}', b'{"src": "' + b"a" * 70000 + b'"}\n'):
+                     b'{"stdin": "wav", "bytes": 100, "handle": 8}\n', b'{"handle": "8"}\n',
+                     b'{"handle": true}\n', b'{"handle": 0}\n', b'{"handle": -4}\n',
+                     b'{"handle": 4294967296}\n', b'{"handle": 8.0}\n',
+                     b'{"src": "C:/x.wav"}\n', b'["handle"]\n', b'{"handle": 8}',
+                     b'{"handle": ' + b"8" * 70000 + b'}\n'):
             with self.assertRaises(ValueError, msg=line[:40]):
                 decode_child.read_request(io.BytesIO(line))
 
@@ -825,11 +846,55 @@ STAND_IN = (
 )
 SILENT = STAND_IN + ("lvl=d.lower_integrity() or 0;w(b'R',struct.pack('<I',lvl));"
                      "sys.stdin.readline();time.sleep(120)")
-LIAR = STAND_IN + ("w(b'R',struct.pack('<I',0x1000));"        # claims Low, is Medium
-                   "line=sys.stdin.readline();"
-                   "open(sys.argv[1],'w').write('got the path' if line else 'no path')")
+READY_THEN_WAIT = STAND_IN + ("lvl=d.lower_integrity() or 0;w(b'R',struct.pack('<I',lvl));"
+                              "sys.stdin.buffer.readline();time.sleep(120)")
+NEVER_READY = STAND_IN + "time.sleep(120)"
+# Put before the real BOOT: every open of the null device by name fails, as
+# it does in an AppContainer on Windows Server 2025 (the hosted CI runner,
+# measured 25 October 2026) though not on Windows 11 build 26300.
+NULL_REFUSED = (
+    "import os,builtins;_o,_b=os.open,builtins.open;"
+    "_x=lambda p:(_ for _ in ()).throw(PermissionError(13,'Access is denied',p));"
+    "_n=lambda p:isinstance(p,str) and p.lower()==os.devnull.lower();"
+    "os.open=lambda p,*a,**k:_x(p) if _n(p) else _o(p,*a,**k);"
+    "builtins.open=lambda p,*a,**k:_x(p) if _n(p) else _b(p,*a,**k);"
+)
+ENDS_AT_ONCE = "import sys;sys.exit(3)"
 TRICKLE = STAND_IN + ("lvl=d.lower_integrity() or 0;w(b'R',struct.pack('<I',lvl));"
                       "sys.stdin.readline()\nwhile True:\n w(b'A',b'\\0'*4);time.sleep(0.2)")
+
+
+class Lines:
+    """A decoder's stdin that counts the lines written to it (for checking
+    that a refused decoder never got its request)."""
+
+    def __init__(self, pipe):
+        self.pipe, self.lines = pipe, 0
+
+    def write(self, data):
+        self.lines += data.count(b"\n")
+        return self.pipe.write(data)
+
+    def __getattr__(self, name):
+        return getattr(self.pipe, name)
+
+
+def process_gone(pid):
+    """Has the process `pid` ended (or gone altogether)?"""
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = k32.OpenProcess(0x00100000, False, pid)              # SYNCHRONIZE
+    if not handle:
+        return True
+    try:
+        return k32.WaitForSingleObject(handle, 10000) == 0
+    finally:
+        k32.CloseHandle(handle)
 
 
 @unittest.skipUnless(WINDOWS and HAVE_DEPS, "Windows decoder process")
@@ -846,26 +911,27 @@ class StandInDecoderTests(unittest.TestCase):
                 proc.kill()
         self.tmp.cleanup()
 
-    def run_with(self, boot, extra_args=(), **patches):
-        """decode_to_file with `boot` as the decoder; returns the error and
-        the seconds it took."""
+    def run_with(self, boot, error=None, **patches):
+        """decode_to_file with `boot` as the decoder in its container;
+        returns the error and the seconds it took."""
         import time
 
-        from workspace import decode_child, media
-        real_popen = subprocess.Popen
+        from workspace import appcontainer, decode_child, media
+        real_start = appcontainer.start
 
-        def popen(cmd, *a, **kw):
-            proc = real_popen([*cmd, *extra_args], *a, **kw)
-            self.procs.append(proc)
-            return proc
-        start = time.monotonic()
+        def start(argv, *a, **kw):
+            child = real_start(argv, *a, **kw)
+            child.stdin = Lines(child.stdin)
+            self.procs.append(child)
+            return child
+        begin = time.monotonic()
         with mock.patch.object(decode_child, "BOOT", boot), \
-                mock.patch.object(subprocess, "Popen", popen), \
+                mock.patch.object(appcontainer, "start", start), \
                 mock.patch.multiple(media, **patches) if patches else mock.MagicMock():
-            with self.assertRaises(media.DecodeError) as ctx:
+            with self.assertRaises(error or media.DecodeError) as ctx:
                 media.decode_to_file(self.src, self.root / "audio.uma", bytes(32),
                                      ("decoded", "m"))
-        return str(ctx.exception), time.monotonic() - start
+        return ctx.exception, time.monotonic() - begin
 
     def assert_decoder_gone(self):
         self.assertTrue(self.procs)
@@ -873,22 +939,34 @@ class StandInDecoderTests(unittest.TestCase):
             self.assertIsNotNone(proc.wait(timeout=10))
 
     def test_a_silent_decoder_is_stopped_and_the_import_ends(self):
-        message, took = self.run_with(SILENT, IDLE_TIMEOUT_S=1.0)
-        self.assertIn("progress", message)
+        error, took = self.run_with(SILENT, IDLE_TIMEOUT_S=1.0)
+        self.assertIn("progress", str(error))
         self.assertLess(took, 30)
         self.assert_decoder_gone()
         self.assertFalse((self.root / "audio.partial").exists())
 
     def test_a_decoder_that_is_not_at_low_integrity_never_gets_the_file(self):
-        marker = self.root / "marker.txt"
-        message, _ = self.run_with(LIAR, extra_args=(str(marker),))
-        self.assertIn("safely", message)
+        # Checked from outside after READY, whatever the decoder reports.
+        from workspace import decode_child, media
+        with mock.patch.object(decode_child, "process_integrity", return_value=0x2000):
+            error, _ = self.run_with(READY_THEN_WAIT, error=media.SandboxUnavailable)
+        self.assertEqual((str(error), error.step), (media.SANDBOX_REFUSED, "check"))
         self.assert_decoder_gone()
-        self.assertEqual(marker.read_text() if marker.exists() else "no path", "no path")
+        self.assertEqual([p.stdin.lines for p in self.procs], [1])   # the path line only
+
+    def test_a_decoder_that_never_says_ready_is_refused_as_a_sandbox_failure(self):
+        from workspace import media
+        for boot, patches in ((NEVER_READY, {"READY_TIMEOUT_S": 1.0}), (ENDS_AT_ONCE, {})):
+            with self.subTest(boot=boot[-20:]):
+                self.procs = []
+                error, took = self.run_with(boot, error=media.SandboxUnavailable, **patches)
+                self.assertEqual((str(error), error.step), (media.SANDBOX_REFUSED, "ready"))
+                self.assertLess(took, 30)
+                self.assert_decoder_gone()
 
     def test_a_trickling_decoder_hits_the_overall_deadline(self):
-        message, took = self.run_with(TRICKLE, _deadline_s=lambda src: 2.0)
-        self.assertIn("far longer", message)
+        error, took = self.run_with(TRICKLE, _deadline_s=lambda src=None, size=None: 2.0)
+        self.assertIn("far longer", str(error))
         self.assertLess(took, 30)
         self.assert_decoder_gone()
 
@@ -964,6 +1042,461 @@ class JobObjectTests(unittest.TestCase):
             with self.assertRaises(jobs.JobError):
                 jobs.contain(1234, 200 << 20)           # other failures are not retried
 
+
+# What a compromised decoder can reach (#299; D2 red team, part 2, finding 2).
+# READ_UP_PROBE stands in for native code that a hostile recording has taken
+# over inside the decoder. media.decode starts and contains it exactly as it
+# does the real decoder (media._runtime(), the AppContainer, jobs.contain and
+# the token check before it runs, then a Low integrity check from outside),
+# and it lowers its own integrity with decode_child.lower_integrity(), as
+# decode_child.main does. It does not install the network guard, which covers
+# Python code only. Its "recording" is a JSON file that names what to try,
+# read through the request's handle as the decoder reads a recording (or by
+# its path, the request before #299, so the same probe ran on main for the
+# failing-first evidence); it answers with one audio frame holding JSON.
+# Everything it touches is in the test's temporary folder, or a listener in
+# this process.
+READ_UP_PROBE = r"""
+import hashlib, json, os, socket, sqlite3, struct, sys
+sys.path[:] = json.loads(sys.stdin.readline())
+from pathlib import Path
+from workspace import decode_child, dpapi, vault
+out = os.fdopen(os.dup(1), "wb")
+def send(kind, payload=b""):
+    out.write(kind + struct.pack("<I", len(payload)) + payload)
+    out.flush()
+send(b"R", struct.pack("<I", decode_child.lower_integrity() or 0))
+req = json.loads(sys.stdin.buffer.readline())
+f = decode_child.open_handle(req["handle"]) if "handle" in req else open(req["src"], "rb")
+with f:
+    cfg = json.loads(f.read())
+res = {"recording": "allowed: read"}
+def attempt(name, fn):
+    try:
+        res[name] = "allowed: " + str(fn())
+    except Exception as exc:
+        res[name] = "denied: %s %s" % (type(exc).__name__, getattr(exc, "winerror", "") or "")
+def read(path):
+    with open(path, "rb") as f:
+        return "read %d bytes" % len(f.read())
+for name, path in cfg["files"].items():
+    attempt("read " + name, lambda p=path: read(p))
+for name, path in cfg["folders"].items():
+    attempt("list " + name, lambda p=path: "listed %d" % len(os.listdir(p)))
+def key():
+    con = sqlite3.connect(Path(cfg["db"]).as_uri() + "?mode=ro&immutable=1", uri=True)
+    try:
+        blob = con.execute("SELECT root FROM crypto_meta").fetchone()[0]
+    finally:
+        con.close()
+    return "unprotected " + hashlib.sha256(dpapi.unprotect(blob, vault.ROOT_ENTROPY)).hexdigest()
+attempt("unprotect workspace key", key)
+def write():
+    with open(os.path.join(cfg["folders"]["workspace"], "written-at-low.txt"), "wb") as f:
+        f.write(b"x")
+    return "wrote"
+attempt("write workspace", write)
+def loopback():
+    with socket.create_connection(("127.0.0.1", cfg["port"]), 5) as s:
+        s.sendall(b"sent by the decoder")
+    return "connected and sent"
+attempt("loopback", loopback)
+body = json.dumps(res).encode()
+send(b"A", body + b" " * (-len(body) % 4))
+send(b"D")
+"""
+
+# Files and folders of a scratch workspace laid out like the real one
+# (%LOCALAPPDATA%\Unminute: workspace\ and models\; docs/SECURITY_MODEL.md,
+# "Data inventory"), relative to its Unminute folder. workspace.db is made by
+# the store with the app's own key protector; the rest hold synthetic bytes.
+SCRATCH_FILES = {
+    "workspace.db": "workspace/workspace.db",
+    "settings.json": "workspace/settings.json",
+    "templates.sealed": "workspace/templates.sealed",
+    "decoded audio": "workspace/media/1/audio.uma",
+    "recording chunk": "workspace/recordings/r1/chunk-000001.uma",
+    "diagnostics log": "workspace/logs/app.log",
+    "audit log": "workspace/audit/audit-000001.jsonl",
+    "model file": "models/model.bin",
+}
+SCRATCH_FOLDERS = {"Unminute": "", "workspace": "workspace", "media": "workspace/media",
+                   "models": "models"}
+# The user's other files: a recording outside Unminute, relative to the folder
+# that holds the scratch LocalAppData (as Documents sits beside AppData).
+OTHER_FILES = {"another recording": "Documents/other-recording.wav"}
+
+
+def make_scratch_workspace(base):
+    """A scratch workspace at base (its Unminute folder) and the SHA-256 of
+    its root key. The store makes workspace.db with Windows Data Protection,
+    as the app does; nothing here is under the real data folder."""
+    import hashlib
+    import sqlite3
+
+    from workspace import keystore, vault
+    from workspace.store import Store
+    s = Store(base / SCRATCH_FILES["workspace.db"], protector=keystore.DpapiProtector())
+    try:
+        s.create_meeting("synthetic title")
+    finally:
+        s.close()
+    for name, rel in SCRATCH_FILES.items():
+        path = base / rel
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"synthetic " + name.encode())
+    con = sqlite3.connect(base / SCRATCH_FILES["workspace.db"])
+    try:
+        blob = con.execute("SELECT root FROM crypto_meta").fetchone()[0]
+    finally:
+        con.close()
+    return hashlib.sha256(vault.open_root(blob)).hexdigest()
+
+
+def probe_scratch_workspace(base, folder):
+    """Run READ_UP_PROBE through media.decode against the scratch workspace
+    at base. folder: where its JSON "recording" goes (outside base). Returns
+    (the probe's results, the integrity level media.decode saw, what a
+    loopback listener here received)."""
+    import json
+    import socket
+    import threading
+
+    from workspace import decode_child, media
+    received = []
+    listener = socket.create_server(("127.0.0.1", 0))
+    listener.settimeout(20)
+
+    def accept():
+        try:
+            conn, _ = listener.accept()
+            with conn:
+                conn.settimeout(5)
+                data = conn.recv(100)
+                if data:                    # not the wake-up connection below, which sends none
+                    received.append(data)
+        except OSError:
+            pass
+    thread = threading.Thread(target=accept, daemon=True)
+    thread.start()
+    cfg = {"files": {**{n: str(base / r) for n, r in SCRATCH_FILES.items()},
+                     **{n: str(Path(folder) / r) for n, r in OTHER_FILES.items()}},
+           "folders": {n: str(base / r) for n, r in SCRATCH_FOLDERS.items()},
+           "db": str(base / SCRATCH_FILES["workspace.db"]),
+           "port": listener.getsockname()[1]}
+    src = Path(folder) / "probe-request.json"
+    src.write_text(json.dumps(cfg), encoding="utf-8")
+    out = io.BytesIO()
+    try:
+        with mock.patch.object(decode_child, "BOOT", READ_UP_PROBE):
+            media.decode(src, out)
+    finally:
+        try:
+            # Ends the accept() if the probe never connected.
+            socket.create_connection(("127.0.0.1", cfg["port"]), 2).close()
+        except OSError:
+            pass
+        thread.join(10)
+        listener.close()
+    return json.loads(out.getvalue()), media.last_decoder_integrity, received
+
+
+@unittest.skipUnless(WINDOWS and HAVE_DEPS, "Windows decoder process")
+class ReadUpTests(unittest.TestCase):
+    """#299 acceptance criterion 1: a process started and contained exactly as
+    the decoder is (in its AppContainer, since #299) cannot read the workspace
+    or the user's other files, cannot unprotect the workspace key, and cannot
+    open a loopback connection.
+
+    These three failed on main (the T2 residual before #299): run there, the
+    probe read every file, unprotected the key and reached the listener. The
+    first test checks the probe really ran contained like the decoder and
+    still read its own recording, so the others cannot pass because the probe
+    never ran."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        root = Path(cls.tmp.name)
+        cls.base = root / "LocalAppData" / "Unminute"
+        cls.key_hash = make_scratch_workspace(cls.base)
+        for name, rel in OTHER_FILES.items():
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_bytes(b"synthetic " + name.encode())
+        cls.results, cls.level, cls.received = probe_scratch_workspace(cls.base, root)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_the_probe_runs_contained_like_the_decoder(self):
+        self.assertEqual(0x1000, self.level)                   # Low, checked from outside
+        expected = ({"recording", "unprotect workspace key", "write workspace", "loopback"}
+                    | {"read " + n for n in [*SCRATCH_FILES, *OTHER_FILES]}
+                    | {"list " + n for n in SCRATCH_FOLDERS})
+        self.assertEqual(expected, set(self.results))
+        self.assertEqual("allowed: read", self.results["recording"])   # it can still decode
+        self.assertTrue(self.results["write workspace"].startswith("denied"), self.results)
+        self.assertFalse((self.base / "workspace" / "written-at-low.txt").exists())
+
+    def test_a_contained_decoder_cannot_read_the_workspace(self):
+        # Also the user's other files (OTHER_FILES), outside Unminute.
+        readable = {k: v for k, v in self.results.items()
+                    if k.startswith(("read ", "list ")) and not v.startswith("denied")}
+        self.assertEqual({}, readable)
+
+    def test_a_contained_decoder_cannot_unprotect_the_workspace_key(self):
+        got = self.results["unprotect workspace key"]
+        self.assertTrue(got.startswith("denied"),
+                        "the probe unprotected the scratch workspace's root key"
+                        + (" (it matches)" if got.endswith(self.key_hash) else ""))
+
+    def test_a_contained_decoder_cannot_open_a_loopback_connection(self):
+        self.assertEqual(([], True), (self.received,
+                                      self.results["loopback"].startswith("denied")))
+
+
+@unittest.skipUnless(WINDOWS and HAVE_DEPS, "Windows decoder process")
+class AppContainerTests(unittest.TestCase):
+    """#299: how the decoder's container is set up, checked and refused. If
+    any step fails the import is refused with SANDBOX_REFUSED, and no decoder
+    outside the container is ever started (the owner's decision of 24 October
+    2026). Profiles made here are throwaway ones, removed again."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.src = tone_wav(self.root / "tone.wav")
+
+    def refused(self, **patches):
+        """decode_to_file with appcontainer patched; Popen must never run.
+        Returns the SandboxUnavailable raised."""
+        from workspace import appcontainer, media
+
+        def no_fallback(*a, **kw):
+            raise AssertionError("a decoder was started outside the container")
+        with mock.patch.multiple(appcontainer, **patches), \
+                mock.patch.object(subprocess, "Popen", no_fallback):
+            with self.assertRaises(media.SandboxUnavailable) as ctx:
+                media.decode_to_file(self.src, self.root / "audio.uma", bytes(32),
+                                     ("decoded", "m"))
+        self.assertEqual(str(ctx.exception), media.SANDBOX_REFUSED)
+        self.assertNotIn(str(self.root), str(ctx.exception))
+        self.assertFalse((self.root / "audio.partial").exists())
+        self.assertFalse((self.root / "audio.uma").exists())
+        return ctx.exception
+
+    def test_the_decoder_runs_in_this_appcontainer_with_no_capabilities(self):
+        from workspace import appcontainer, media
+        seen = []
+        real = appcontainer.token_facts
+
+        def facts(process):
+            seen.append(real(process))
+            return seen[-1]
+        with mock.patch.object(appcontainer, "token_facts", facts):
+            samples = media.decode(self.src, io.BytesIO())
+        self.assertEqual(samples, 16000)
+        self.assertEqual(seen, [(True, appcontainer.container_sid(), 0, 0x1000)])
+        self.assertEqual(media.last_decoder_integrity, 0x1000)
+
+    def test_a_profile_that_cannot_be_made_refuses_the_import(self):
+        from workspace import appcontainer
+        error = self.refused(ensure_profile=mock.Mock(
+            side_effect=appcontainer.SandboxError("profile", 5)))
+        self.assertEqual((error.step, error.winerror), ("profile", 5))
+
+    def test_a_process_that_cannot_start_in_the_container_refuses_the_import(self):
+        from workspace import appcontainer
+        error = self.refused(start=mock.Mock(side_effect=appcontainer.SandboxError("start", 5)))
+        self.assertEqual((error.step, error.winerror), ("start", 5))
+
+    def test_a_runtime_the_container_cannot_read_refuses_the_import(self):
+        # The real failure when the install folder lacks the installer's grant:
+        # an interpreter in a folder ALL APPLICATION PACKAGES cannot read.
+        import shutil
+
+        from workspace import media
+        py = self.root / "ungranted"
+        py.mkdir()
+        for item in Path(sys.base_prefix).iterdir():
+            if item.is_file() and item.suffix.lower() in (".exe", ".dll"):
+                shutil.copy2(item, py / item.name)
+        acl = decoder_runtime.icacls(py).stdout
+        self.assertNotIn("S-1-15-2-1", acl)
+        self.assertNotIn("ALL APPLICATION PACKAGES", acl.upper())
+
+        def no_fallback(*a, **kw):
+            raise AssertionError("a decoder was started outside the container")
+        with mock.patch.object(media, "_runtime", lambda: (str(py / "python.exe"), [])), \
+                mock.patch.object(subprocess, "Popen", no_fallback):
+            with self.assertRaises(media.SandboxUnavailable) as ctx:
+                media.decode(self.src, io.BytesIO())
+        self.assertIn(ctx.exception.step, ("start", "ready"))
+        if ctx.exception.step == "start":
+            self.assertEqual(ctx.exception.winerror, 5)            # access denied
+
+    def test_a_process_outside_the_expected_container_is_never_resumed(self):
+        from workspace import appcontainer, jobs
+        pids = []
+        real_contain = jobs.contain
+
+        def contain(pid, memory):
+            pids.append(pid)
+            return real_contain(pid, memory)
+        for facts in ((False, None, 0, 0x2000),                       # not in a container
+                      (True, "S-1-15-2-1-2-3-4-5-6-7", 0, 0x1000),    # another container
+                      (True, appcontainer.container_sid(), 1, 0x1000),   # a capability
+                      (True, appcontainer.container_sid(), 0, 0x2000)):  # Medium
+            with self.subTest(facts=facts), mock.patch.object(jobs, "contain", contain):
+                error = self.refused(token_facts=mock.Mock(return_value=facts))
+                self.assertEqual(error.step, "check")
+                self.assertTrue(process_gone(pids[-1]))
+
+    def test_the_real_readers_report_a_process_outside_any_container(self):
+        # The refusals above feed token_facts made-up answers; this shows the
+        # real readers, unpatched, describe a plain process (as a decoder
+        # started outside the container would be) as not contained.
+        import ctypes
+        from ctypes import wintypes
+
+        from workspace import appcontainer, decode_child
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        proc = subprocess.Popen([PYTHON, "-I", "-c", "import time; time.sleep(60)"],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+        self.addCleanup(proc.wait, 10)
+        self.addCleanup(proc.kill)
+        handle = k32.OpenProcess(0x1000, False, proc.pid)         # QUERY_LIMITED_INFORMATION
+        self.assertTrue(handle)
+        try:
+            inside, sid, capabilities, level = appcontainer.token_facts(handle)
+        finally:
+            k32.CloseHandle(handle)
+        self.assertEqual((inside, sid, capabilities), (False, None, 0))
+        self.assertGreater(level, appcontainer.LOW_INTEGRITY)
+        self.assertGreater(decode_child.process_integrity(proc.pid), decode_child.LOW_INTEGRITY)
+        self.assertGreater(decode_child.process_integrity(os.getpid()),
+                           decode_child.LOW_INTEGRITY)
+
+    def test_a_job_that_cannot_be_set_refuses_the_import(self):
+        from workspace import jobs, media
+        with mock.patch.object(jobs, "contain", side_effect=jobs.JobError(5, "denied")), \
+                mock.patch.object(subprocess, "Popen", mock.Mock(side_effect=AssertionError)):
+            with self.assertRaises(media.SandboxUnavailable) as ctx:
+                media.decode(self.src, io.BytesIO())
+        self.assertEqual((ctx.exception.step, ctx.exception.winerror), ("contain", 5))
+
+    def test_the_decoder_gets_only_its_pipes_the_null_device_and_the_recording(self):
+        from workspace import appcontainer, media
+        lists = []
+        real_create = appcontainer._create
+
+        def create(argv, env, inherit, std, sid, pi):
+            lists.append((list(inherit), list(std), dict(env)))
+            return real_create(argv, env, inherit, std, sid, pi)
+        with mock.patch.object(appcontainer, "_create", create):
+            media.decode(self.src, io.BytesIO())
+        (inherit, std, env), = lists
+        self.assertEqual(len(inherit), 4)                       # stdin, stdout, NUL, the file
+        self.assertEqual(inherit[:3], std)
+        self.assertLessEqual(set(env), set(appcontainer.ENV_NAMES) | {
+            "PATH", "OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"})
+
+    def test_the_decoder_never_opens_the_null_device_itself(self):
+        # Windows may refuse the null device to a process in an AppContainer
+        # (Windows Server 2025 does: every decode there failed at "ready").
+        # The decoder silences its output with the null device the app hands
+        # it as stderr, so it decodes even where opening NUL is refused.
+        from workspace import decode_child, media
+        with mock.patch.object(decode_child, "BOOT", NULL_REFUSED + decode_child.BOOT):
+            self.assertEqual(media.decode(self.src, io.BytesIO()), 16000)
+
+    def test_a_throwaway_profile_is_made_found_and_removed(self):
+        import secrets
+
+        from workspace import appcontainer
+        name = "Unminute.Test." + secrets.token_hex(6)
+        self.addCleanup(appcontainer.delete_profile, name)
+        self.assertFalse(appcontainer.profile_exists(name))
+        sid = appcontainer.ensure_profile(name)
+        try:
+            self.assertEqual(sid.text(), appcontainer.container_sid(name))
+        finally:
+            sid.close()
+        self.assertTrue(appcontainer.profile_exists(name))
+        appcontainer.ensure_profile(name).close()                 # already there: the same
+        self.assertTrue(appcontainer.delete_profile(name))
+        self.assertFalse(appcontainer.profile_exists(name))
+        self.assertFalse(appcontainer.delete_profile(name))       # nothing left to remove
+
+    def test_throwaway_profiles_of_ended_runs_are_swept_and_live_ones_kept(self):
+        # A test run that is killed never reaches atexit; the next run removes
+        # what it left, but never a profile whose process still runs.
+        import secrets
+
+        from workspace import appcontainer
+        ended = subprocess.Popen([PYTHON, "-I", "-c", "pass"])
+        ended.wait(timeout=30)
+        left = f"Unminute.Test.{ended.pid}.{secrets.token_hex(4)}"
+        live = f"Unminute.Test.{os.getpid()}.{secrets.token_hex(4)}"
+        other = "Unminute.Test." + secrets.token_hex(6)           # not a name profile() makes
+        for name in (left, live, other):
+            self.addCleanup(appcontainer.delete_profile, name)
+            appcontainer.ensure_profile(name).close()
+        swept = decoder_runtime.sweep_profiles()
+        self.assertEqual([n.lower() for n in swept], [left.lower()])
+        self.assertFalse(appcontainer.profile_exists(left))
+        self.assertTrue(appcontainer.profile_exists(live))
+        self.assertTrue(appcontainer.profile_exists(other))
+
+
+@unittest.skipUnless(WINDOWS and HAVE_DEPS, "Windows decoder process")
+class CheckDecoderTests(unittest.TestCase):
+    """--check-decoder (#299): IT's check that the container decodes, with
+    the failed step and Windows error only, never a message or a path."""
+
+    def test_it_decodes_synthetic_silence_in_the_container(self):
+        import workspace.__main__ as main
+        self.assertEqual(main.check_decoder(account=False), ({"decoder": "ok"}, 0))
+
+    def test_it_names_the_step_and_nothing_else(self):
+        import workspace.__main__ as main
+        from workspace import media
+        with mock.patch.object(media, "_launch", side_effect=media.SandboxUnavailable("start", 5)):
+            self.assertEqual(main.check_decoder(account=False),
+                             ({"decoder": "failed", "step": "start", "winerror": 5}, 1))
+        with mock.patch.object(media, "decode", side_effect=RuntimeError("C:\\Users\\someone")):
+            self.assertEqual(main.check_decoder(account=False),
+                             ({"decoder": "failed", "step": "decode"}, 1))
+
+    def test_local_system_starts_nothing(self):
+        import workspace.__main__ as main
+        from workspace import media
+        with mock.patch.object(media, "decode", side_effect=AssertionError("started")):
+            self.assertEqual(main.check_decoder(account=True), ({"decoder": "system_account"}, 1))
+            self.assertEqual(main.check_decoder(account=None), ({"decoder": "account_unknown"}, 1))
+
+
+class AppContainerNamesTests(unittest.TestCase):
+    def test_the_profile_name_and_steps_are_fixed(self):
+        # The uninstaller and offboarding remove the profile by this name
+        # (tests/test_consistency.py checks uninstall.ps1's copy). Read from
+        # the source: this module points PROFILE at a throwaway name.
+        import re
+
+        from workspace import appcontainer, diag
+        source = Path(appcontainer.__file__).read_text(encoding="utf-8")
+        self.assertEqual(re.findall(r'(?m)^PROFILE = "([^"]*)"', source), ["Unminute.Decoder"])
+        self.assertEqual(appcontainer.ALL_APPLICATION_PACKAGES, "S-1-15-2-1")
+        for step in appcontainer.STEPS:
+            self.assertEqual(diag._clean("step", step), step)
+        self.assertEqual(diag._clean("step", "C:\\Users\\someone"), "?")
 
 if __name__ == "__main__":
     unittest.main()

@@ -1738,6 +1738,11 @@ def child(args):
     imports_s = time.perf_counter() - t0
     if args.app:
         evidence.require_app_modules(app)       # measuring the package, not this checkout
+    # The decoder runs in an AppContainer that cannot read a development
+    # Python (#299): decode in a scratch copy it can read (nothing to do in a
+    # package's own runtime). After imports_s, so the start-up timing is as before.
+    import decoder_runtime                      # tools/, on the path above
+    decoder_runtime.use()
     # The synthetic microphone, in this process only: the device list names
     # one synthetic input and opening it starts a PacedStream, so no audio
     # device (and no sounddevice) is ever loaded. Never the real power scheme.

@@ -1,22 +1,24 @@
 # workspace/decode_child.py
 # The contained decoder process (#111 slice A3; threats T2 to T4).
 #
-# workspace.media.decode_to_file starts this as a plain child process
-# (`python -I -B -c BOOT`, not multiprocessing, so it holds no handle to the
-# app), puts it in a Windows job (workspace/jobs.py) and only then gives it the
-# recording. Before it touches the file it lowers its own integrity level to
-# Low, the level browsers use for web content: from then on Windows stops it
-# writing the user's files, opening the app's process or sending messages to
-# other windows. It can still read what the user can read, the workspace
-# included, and Low integrity does not limit the network: the network guard
-# covers its Python code only, and the runtime firewall rule (#111 B7) is not
-# shipped yet (docs/SECURITY_MODEL.md T2; #299 tracks a decoder that cannot
-# read the workspace).
+# workspace.media.decode_to_file starts this (`python -I -B -c BOOT`, not
+# multiprocessing, so it holds no handle to the app) in a Windows AppContainer
+# with no capabilities (workspace/appcontainer.py, #299), suspended; puts it in
+# a Windows job (workspace/jobs.py); checks its token from outside; and only
+# then lets it run. In the container Windows gives it no access to the user's
+# files, the workspace or its key, and no network, loopback included: it reads
+# the runtime and the app code (readable by ALL APPLICATION PACKAGES), the
+# recording through one read-only handle the app opened for it, and its pipes.
+# It runs at Low integrity (the container's level; lower_integrity() confirms
+# it), so it cannot open the app's process or send messages to other windows,
+# and the job stops it starting processes (docs/SECURITY_MODEL.md T2, T3).
 #
 # Protocol, on stdin and stdout only (nothing is ever unpickled):
 #   app -> decoder  line 1: JSON list, the sys.path to use (read by BOOT)
 #                   line 2, sent only after READY, one of:
-#                     JSON {"src": "<path>"}: decode that file;
+#                     JSON {"handle": N}: decode the recording behind N, a
+#                     read-only handle the app opened and this process
+#                     inherited (the container cannot open it by its path);
 #                     JSON {"stdin": "wav", "bytes": N} (#111 C3b): a microphone
 #                     recording follows on stdin, a WAV stream of N bytes,
 #                     read with the same "wav" demuxer and limits. No plain
@@ -172,12 +174,13 @@ def lower_integrity():
         k32.CloseHandle(token)
 
 
-MAX_REQUEST_BYTES = 1 << 16             # line 2 (a path, or the stream's size)
+MAX_REQUEST_BYTES = 1 << 16             # line 2 (a handle, or the stream's size)
 MIN_WAV_BYTES = 44                        # a WAV header with no audio
+MAX_HANDLE = 0xFFFFFFFF                   # Windows handles fit in 32 bits
 
 
 def read_request(stream):
-    """Line 2 from the binary stdin: ("file", path) or ("stdin", size).
+    """Line 2 from the binary stdin: ("handle", n) or ("stdin", size).
     Raises ValueError for anything else."""
     import json
     line = stream.readline(MAX_REQUEST_BYTES)
@@ -186,8 +189,10 @@ def read_request(stream):
     req = json.loads(line)
     if not isinstance(req, dict):
         raise ValueError("request")
-    if set(req) == {"src"} and isinstance(req["src"], str):
-        return "file", req["src"]
+    handle = req.get("handle")
+    if (set(req) == {"handle"} and isinstance(handle, int) and not isinstance(handle, bool)
+            and 0 < handle <= MAX_HANDLE):
+        return "handle", handle
     size = req.get("bytes")
     if (set(req) == {"stdin", "bytes"} and req["stdin"] == "wav" and isinstance(size, int)
             and not isinstance(size, bool) and MIN_WAV_BYTES <= size <= 0xFFFFFFFF + 8):
@@ -195,10 +200,21 @@ def read_request(stream):
     raise ValueError("request")
 
 
+def open_handle(handle):
+    """The inherited read-only handle `handle` as a binary file (Windows: an
+    OS handle; elsewhere, for the Linux test job, a file descriptor)."""
+    import os
+    if sys.platform == "win32":
+        import msvcrt
+        return os.fdopen(msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY), "rb")
+    return os.fdopen(handle, "rb")
+
+
 def decode(src, send, max_samples=MAX_DECODED_S * SAMPLE_RATE, size=None):
-    """Decode `src` (a path, or with size a binary stream holding a WAV of
-    size bytes: the recorder's stdin form) to 16 kHz mono float32 and pass
-    the bytes to send() in frames. Raises DecodeFailed with an E_ code.
+    """Decode `src` (a path or an open binary file, or with size a binary
+    stream holding a WAV of size bytes: the recorder's stdin form) to 16 kHz
+    mono float32 and pass the bytes to send() in frames. Raises DecodeFailed
+    with an E_ code.
 
     Channels are mixed with equal weights (the arithmetic mean, #220), not
     by FFmpeg's surround matrix. That matrix treats channels as speaker
@@ -211,8 +227,10 @@ def decode(src, send, max_samples=MAX_DECODED_S * SAMPLE_RATE, size=None):
     full-scale input, exactly as it does for a mono file."""
     import os
     if size is None:
-        with open(src, "rb") as fh:
+        if hasattr(src, "read"):
             # The file's own size bounds how much audio it may decode to.
+            return _decode(src, os.fstat(src.fileno()).st_size, None, send, max_samples)
+        with open(src, "rb") as fh:
             return _decode(fh, os.fstat(fh.fileno()).st_size, None, send, max_samples)
     # A stream is not seekable and carries no name: the demuxer is named
     # (wav, already on the list), never guessed from the data.
@@ -328,10 +346,12 @@ def main():
         os.environ[var] = "1"
     # The protocol gets a private copy of the output handle; file descriptor 1
     # and sys.stdout go to the null device, so a library that prints cannot
-    # corrupt the frames.
+    # corrupt the frames. That is the null device the app gave as stderr
+    # (file descriptor 2): this process never opens it by name, which Windows
+    # may refuse in the AppContainer (Windows Server 2025 does).
     out = os.fdopen(os.dup(1), "wb")
-    os.dup2(os.open(os.devnull, os.O_WRONLY), 1)
-    sys.stdout = open(os.devnull, "w")
+    os.dup2(2, 1)
+    sys.stdout = open(1, "w", closefd=False)
 
     def send(kind, payload=b""):
         out.write(kind + struct.pack("<I", len(payload)) + payload)
@@ -354,8 +374,9 @@ def main():
         send(b"E", bytes([E_SETUP]))
         return
     try:
-        if kind == "file":
-            decode(what, send)
+        if kind == "handle":
+            with open_handle(what) as fh:
+                decode(fh, send)
         else:
             decode(sys.stdin.buffer, send, size=what)
         send(b"D")
