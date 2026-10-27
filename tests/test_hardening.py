@@ -1760,14 +1760,27 @@ MACHINE_KEY_LINE = '$MachineRegKey = "HKLM:\\' + REAL_MACHINE_KEY + '"'
 EVENT_KEY_LINE = '$EventSourceKey = "HKLM:\\' + REAL_EVENT_KEY + '"'
 TEST_MACHINE_KEY = TEST_KEY + r"-machine\Uninstall\Unminute"
 TEST_EVENT_KEY = TEST_KEY + r"-machine\EventLog\Unminute"
+# The runtime firewall rule (#111 B7b): the rules' group, set once in both scripts'
+# shared machine section, and the policy key install.ps1 reads to warn. A copy names
+# a throwaway group and HKCU key instead, and its commands that add or remove a
+# firewall rule are renamed to one that does not exist (FIREWALL_STAND_IN), so no
+# test here writes this computer's firewall, even on CI's elevated runner. Reading it
+# (Get-NetFirewallRule, Get-NetFirewallProfile) is left as it is.
+FIREWALL_GROUP_LINE = '$FirewallGroup = "Unminute runtime"'
+TEST_FIREWALL_GROUP = f"Unminute-UnitTest-firewall-{os.getpid()}"
+POLICY_KEY_LINE = '$PolicyKey = "HKLM:\\SOFTWARE\\Policies\\Unminute"'
+TEST_POLICY_KEY = TEST_KEY + "-policy"
+FIREWALL_WRITES = ("New-NetFirewallRule", "Remove-NetFirewallRule", "Set-NetFirewallRule")
+FIREWALL_STAND_IN = "Stop-UnminuteTestFirewall"
 # What a copy may not hold: the ways a script reaches this account's own Start menu
 # or uninstall entries, or this computer's Program Files, all-users Start menu, HKLM
-# uninstall entries or Event Log sources.
+# uninstall entries, Event Log sources, policy key or firewall rules.
 REAL_REACH = ("GetFolderPath", "SpecialFolder", "Start Menu\\", "CurrentVersion\\Uninstall",
               "Registry::", "Services\\EventLog", "HKLM:\\SYSTEM",
-              "HKLM:\\SOFTWARE\\Microsoft\\Windows", "HKEY_", "$env:Program",
-              "$env:ALLUSERSPROFILE", "$env:PUBLIC", "CreateSubKey", "DeleteSubKey",
-              "DeleteValue", "EventSource(", "New-EventLog", "Remove-EventLog")
+              "HKLM:\\SOFTWARE\\Microsoft\\Windows", "HKLM:\\SOFTWARE\\Policies", "HKEY_",
+              "$env:Program", "$env:ALLUSERSPROFILE", "$env:PUBLIC", "CreateSubKey",
+              "DeleteSubKey", "DeleteValue", "EventSource(", "New-EventLog", "Remove-EventLog",
+              "Unminute runtime") + FIREWALL_WRITES
 # How a copy's machine places read (check_scratch_run).
 MACHINE_PLACES = (("Program Files", r'(?m)^\$ProgramFilesFolder = "([^"]*)"\r?$'),
                   ("the all-users Start menu folder",
@@ -1776,6 +1789,12 @@ MACHINE_KEYS = (("the machine uninstall key", r'(?m)^\$MachineRegKey = "([^"]*)"
                  "HKCU:\\" + TEST_MACHINE_KEY),
                 ("the Event Log source key", r'(?m)^\$EventSourceKey = "([^"]*)"\r?$',
                  "HKCU:\\" + TEST_EVENT_KEY))
+# The firewall group and the policy key (#111 B7b): wherever a copy sets one, it is
+# the throwaway one; a -Machine run needs the group (both scripts set it).
+FIREWALL_PLACES = (("firewall group", r'(?m)^\$FirewallGroup = "([^"]*)"\r?$',
+                    TEST_FIREWALL_GROUP, True),
+                   ("policy key", r'(?m)^\$PolicyKey = "([^"]*)"\r?$',
+                    "HKCU:\\" + TEST_POLICY_KEY, False))
 
 
 def real_places():
@@ -1933,6 +1952,16 @@ def scratch_text(name, programs, program_files=None, common_programs=None):
             raise AssertionError("uninstall.ps1 no longer names the decoder's profile once, so "
                                  "the tests cannot redirect it")
         text = text.replace(DECODER_PROFILE_LINE, f'$DecoderProfile = "{DECODER_TEST_PROFILE}"')
+    # The runtime firewall rule (#111 B7b): a throwaway group and policy key, and no
+    # command that adds or removes a rule.
+    policy_lines = 1 if name == "install.ps1" else 0
+    if text.count(FIREWALL_GROUP_LINE) != 1 or text.count(POLICY_KEY_LINE) != policy_lines:
+        raise AssertionError(f"{name} no longer sets its firewall group (and install.ps1 its "
+                             "policy key) once, so the tests cannot redirect them")
+    text = (text.replace(FIREWALL_GROUP_LINE, f'$FirewallGroup = "{TEST_FIREWALL_GROUP}"')
+            .replace(POLICY_KEY_LINE, f'$PolicyKey = "HKCU:\\{TEST_POLICY_KEY}"'))
+    for command in FIREWALL_WRITES:
+        text = text.replace(command, FIREWALL_STAND_IN)
     return (text.replace(PROGRAMS_CALL, f'"{programs}"').replace(REAL_KEY_LINE, TEST_KEY_LINE)
             .replace(PROGRAM_FILES_LINE, f'$ProgramFilesFolder = "{program_files}"')
             .replace(COMMON_PROGRAMS_LINE, f'$CommonProgramsFolder = "{common_programs}"')
@@ -1963,6 +1992,10 @@ def check_scratch_run(script, install_dir, scratch, env, where, machine=False):
     for what, pattern, key in MACHINE_KEYS:
         found = re.findall(pattern, text)
         if len(found) > 1 or (machine and not found) or (found and found != [key]):
+            raise AssertionError(f"an installer test's {what} must be scratch")
+    for what, pattern, value, needed in FIREWALL_PLACES:
+        found = re.findall(pattern, text)
+        if len(found) > 1 or (machine and needed and not found) or (found and found != [value]):
             raise AssertionError(f"an installer test's {what} must be scratch")
     for name in ("LOCALAPPDATA", "APPDATA"):
         if not is_scratch(env.get(name), scratch):
@@ -4023,6 +4056,13 @@ class InstallerIsolationTests(unittest.TestCase):
                 for what, pattern, key in MACHINE_KEYS:
                     self.assertEqual(re.findall(pattern, text), [key], what)
                     self.assertTrue(key.startswith("HKCU:\\Software\\Unminute-UnitTest-"), what)
+                # #111 B7b: a throwaway firewall group (and, in install.ps1, policy
+                # key), and no command that adds or removes a firewall rule.
+                for what, pattern, value, needed in FIREWALL_PLACES:
+                    expected = [value] if needed or name == "install.ps1" else []
+                    self.assertEqual(re.findall(pattern, text), expected, what)
+                    self.assertIn("Unminute-UnitTest-", value, what)
+                self.assertIn(FIREWALL_STAND_IN, text)
                 for reach in REAL_REACH:
                     self.assertNotIn(reach.lower(), text.lower(), reach)
 
@@ -4062,6 +4102,17 @@ class InstallerIsolationTests(unittest.TestCase):
              "machine uninstall key must be scratch"),
             ("another HKLM key", event_key, '$EventSourceKey = "HKLM:\\SOFTWARE\\Unminute"',
              "Event Log source key must be scratch"),
+            # #111 B7b: the firewall group and the policy key.
+            ("the real firewall group", f'$FirewallGroup = "{TEST_FIREWALL_GROUP}"',
+             FIREWALL_GROUP_LINE, "still reaches"),
+            ("another firewall group", f'$FirewallGroup = "{TEST_FIREWALL_GROUP}"',
+             '$FirewallGroup = "Core Networking"', "firewall group must be scratch"),
+            ("the real policy key", f'$PolicyKey = "HKCU:\\{TEST_POLICY_KEY}"',
+             POLICY_KEY_LINE, "still reaches"),
+            ("another policy key", f'$PolicyKey = "HKCU:\\{TEST_POLICY_KEY}"',
+             '$PolicyKey = "HKCU:\\Software\\Unminute"', "policy key must be scratch"),
+            ("a firewall write", FIREWALL_STAND_IN + " -Name $Name -DisplayName",
+             "New-NetFirewallRule -Name $Name -DisplayName", "still reaches"),
         )
         for label, find, put, says in cases:
             with self.subTest(label):
@@ -4468,6 +4519,15 @@ class MachineModeScriptTests(unittest.TestCase):
         self.assertIn("-RemoveSlot is for a machine install", r.stderr)
         self.assertFalse(self.install.exists())
 
+    def test_block_runtime_network_needs_machine(self):
+        # #111 B7b: the runtime firewall rule is machine mode's only; a per-user run
+        # refuses the switch before it writes anything.
+        self.write_package("1.0.0")
+        r = self.run_copy(extra="-BlockRuntimeNetwork")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("-BlockRuntimeNetwork is for a machine install", r.stderr)
+        self.assertFalse(self.install.exists())
+
     def machine_copy(self, name, stand_ins=""):
         """A scratch copy of install.ps1 for a -Machine run: scratch_text's places, and
         none of INSTALL_STUBS, so its own Get-PackageRoot reads the -Package zip
@@ -4578,8 +4638,13 @@ class MachineModeScriptTests(unittest.TestCase):
             self.assertIn(f"function {function}", shared)
         # Every machine place outside the install folder is set once, in this section,
         # where the tests redirect it (scratch_text, tests/powershell/Isolation.ps1).
-        for line in (PROGRAM_FILES_LINE, COMMON_PROGRAMS_LINE, MACHINE_KEY_LINE, EVENT_KEY_LINE):
+        for line in (PROGRAM_FILES_LINE, COMMON_PROGRAMS_LINE, MACHINE_KEY_LINE, EVENT_KEY_LINE,
+                     FIREWALL_GROUP_LINE):
             self.assertIn(line, shared)
+        # #111 B7b: the firewall is reached only through these, here and in install.ps1's
+        # own section (tests/powershell/Isolation.ps1 checks where each command is).
+        for function in ("Get-RuntimeRule", "Remove-RuntimeRule"):
+            self.assertIn(f"function {function}", shared)
         # Junctions are removed as links only, never with Remove-Item -Recurse.
         self.assertIn("[IO.Directory]::Delete($Path, $false)", shared)
         for name in ("install.ps1", "uninstall.ps1"):

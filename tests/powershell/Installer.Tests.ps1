@@ -78,6 +78,12 @@ Describe "the tests' own safety check" {
         @{ Label = "the registry through .NET"; Code = 'function Set-Thing { $k.CreateSubKey("x") }' }
         @{ Label = "a key opened to write"; Code = 'function Set-Thing { $base.OpenSubKey($subKey, $true) }' }
         @{ Label = "an Event Log source made by .NET"; Code = 'function Set-Thing { [Diagnostics.EventLog]::CreateEventSource("Unminute", "Application") }' }
+        # #111 B7b: the policy key, the firewall group, and Windows Firewall outside the
+        # functions the tests stand in, or named in a string.
+        @{ Label = "the policy key"; Code = 'function Get-Policy { Get-ItemProperty "HKLM:\SOFTWARE\Policies\Unminute" }' }
+        @{ Label = "the firewall group"; Code = 'function Get-Group { "Unminute runtime" }' }
+        @{ Label = "a firewall command elsewhere"; Code = 'function Set-Thing { New-NetFirewallRule -Name x }' }
+        @{ Label = "a firewall command in a string"; Code = 'function Get-RuntimeRule { $c = "Remove-NetFirewallRule"; & $c }' }
     ) {
         param($Label, $Code)
         $null = $Label
@@ -116,6 +122,8 @@ Describe "the tests' own safety check" {
         $CommonProgramsFolder | Should -BeExactly $script:ScratchCommonPrograms
         $MachineRegKey | Should -BeExactly $script:ScratchMachineKey
         $EventSourceKey | Should -BeExactly $script:ScratchEventSourceKey
+        $PolicyKey | Should -BeExactly $script:ScratchPolicyKey
+        $FirewallGroup | Should -BeExactly $script:ScratchFirewallGroup
         Test-ScratchPath $Options.InstallDir | Should -BeTrue
         Test-ScratchPath (Get-MachineRoot) | Should -BeTrue
         Test-ScratchPath (Get-CommonProgramsFolder) | Should -BeTrue
@@ -132,7 +140,10 @@ Describe "the tests' own safety check" {
                 @{ Name = "CommonProgramsFolder"; Value = [Environment]::GetFolderPath("CommonPrograms"); Says = "*all-users Start menu*" }
                 @{ Name = "MachineRegKey"; Value = $script:RealMachineKey; Says = "*machine uninstall key*" }
                 @{ Name = "MachineRegKey"; Value = $script:ScratchKeyPrefix + "x\..\..\Microsoft"; Says = "*machine uninstall key*" }
-                @{ Name = "EventSourceKey"; Value = $script:RealEventSourceKey; Says = "*Event Log source key*" })) {
+                @{ Name = "EventSourceKey"; Value = $script:RealEventSourceKey; Says = "*Event Log source key*" }
+                @{ Name = "PolicyKey"; Value = $script:RealPolicyKey; Says = "*policy key*" }
+                @{ Name = "FirewallGroup"; Value = $script:RealFirewallGroup; Says = "*firewall group*" }
+                @{ Name = "FirewallGroup"; Value = "Unminute-PesterTest-other"; Says = "*firewall group*" })) {
             $saved = Get-Variable -Name $case.Name -ValueOnly
             Set-Variable -Name $case.Name -Value $case.Value
             { Assert-ScratchTarget } | Should -Throw $case.Says
@@ -145,6 +156,22 @@ Describe "the tests' own safety check" {
             $Options.InstallDir = $saved
         }
         { Assert-ScratchTarget } | Should -Not -Throw
+    }
+
+    It "stands in every Windows Firewall command, so no test can change a rule (#111 B7b)" {
+        foreach ($command in $script:FirewallCommands) {
+            (Get-Command -Name $command).CommandType | Should -Be "Function" -Because $command
+        }
+        # Only reads are run here, and they throw before reaching the firewall.
+        { Get-NetFirewallProfile } | Should -Throw "*without standing it in*"
+        { Get-NetFirewallRule } | Should -Throw "*without standing it in*"
+        # The scripts reach it only through their firewall functions, which these
+        # tests stand in, and in each the throwaway group.
+        foreach ($path in $script:Scripts) {
+            . (Confirm-Loadable $path); Set-ScratchTarget
+            { Get-RuntimeRule } | Should -Throw "*without standing it in*"
+            $FirewallGroup | Should -BeLike "Unminute-PesterTest-*"
+        }
     }
 
     It "writes the shortcut and the uninstall entry only to the scratch ones" {

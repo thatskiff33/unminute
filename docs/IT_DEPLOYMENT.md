@@ -27,7 +27,7 @@ Unminute assumes these are in place ([SECURITY_MODEL.md](SECURITY_MODEL.md), "Sc
 | Synced folders | A recording in a watched folder that syncs (for example OneDrive) is already in that service. Deleting an original from a synced folder, where the user has granted that, syncs the deletion too (to confirm). Very broad folders cannot be watched at all: a whole drive, the user's folder and the Windows and program folders, and also the folder that holds every user's profile (such as `C:\Users`), `AppData` and every folder in it, and Unminute's own data folder ([INTAKE.md](INTAKE.md)) | T5, T28 |
 | Forwarding the Windows Application log off the device | The app copies each audit record's hash to the Application log. On the device, a standard user can typically write to that log, and it overwrites its oldest events when full, so without forwarding the copy detects casual edits of the audit file only. Forwarded (Windows Event Forwarding or a SIEM), it is the stronger record. Standard users' rights to the log, and its size and retention on your baseline, are to confirm (#189). See "Audit log" below | T20 |
 
-Available: a per-machine install that standard users cannot change (B6b; "Install modes" below). Planned, not available yet: machine-wide models staged by IT (B7). A firewall rule that blocks the app's runtime is part of B7; until models are staged by IT it would also block model downloads, which run in the same runtime.
+Available: a per-machine install that standard users cannot change (B6b; "Install modes" below), and on it, if IT turns it on, a firewall rule that blocks the app's runtime (B7b; "Runtime firewall rule" below). Planned, not available yet: machine-wide models staged by IT (B7). The firewall rule also blocks model downloads, which run in the same runtime, so it suits computers where IT provides the models and turns downloads off.
 
 ## Install modes
 
@@ -43,11 +43,24 @@ Two install modes. Use one per computer.
 | Intune Win32 app | Install behaviour **User**, `install.ps1 -Silent` | See "Intune app" below. System context would see no user's workspace |
 | IT-managed updates | Add `-Managed` | The app then says "Updates are managed by your IT team". `-SelfService` switches back |
 | Intune Win32 app, machine (B6b) | Install behaviour **System**, `install.ps1 -Machine -Package <zip> -Silent` from the 64-bit Windows PowerShell | See "Intune app" below. No install-time workspace check: each user's start decides |
+| Runtime firewall rule, machine (B7b) | Add `-BlockRuntimeNetwork` to the machine install command, once | Opt-in. Also blocks downloads. See "Runtime firewall rule" below |
 | Roll back | `install.ps1 -Rollback` from the current version's folder | Refused if the previous version cannot open the workspace |
 
 Users never install Python, Git, FFmpeg or GPU tools.
 
 A custom `-InstallDir` must be new, empty or an existing Unminute install. A folder that already holds other files, or a link or junction where the installer looks, stops it with exit code 2, and nothing is changed; the installer and uninstaller remove only the version folders the installer made (#297; [PACKAGING.md](PACKAGING.md), "Installing (self-service)").
+
+## Runtime firewall rule
+
+On a machine install only, and only if IT turns it on (#111 B7b, the owner's decision DEC-068 of 21 October 2026). The app's own network guard covers its Python code only; these rules add a Windows Firewall block beneath it for everything the app's runtime runs: the app, its workers, the decode process and the download process. Per-user installs have no firewall rule.
+
+- **Turning it on.** Add `-BlockRuntimeNetwork` to the machine install command: `install.ps1 -Machine -Package Unminute-<version>.zip -BlockRuntimeNetwork -Silent`. For each installed version the installer adds two outbound block rules to the computer's own (local) Windows Firewall rules, for every network profile: one for `%ProgramFiles%\Unminute\versions\<version>\runtime\python.exe` and one for `runtime\pythonw.exe` beside it, named `Unminute runtime <version> python.exe` and `Unminute runtime <version> pythonw.exe`, in the group `Unminute runtime`. The choice is kept in `current.json` (`"block_runtime_network": true`), so later installs, `-Rollback` and `-RemoveSlot` keep the rules in step with the versions installed without the switch. `-BlockRuntimeNetwork` is refused with `-Rollback` or `-RemoveSlot`, and without `-Machine` (exit code 2).
+- **When versions change.** A new version's rules are added before it becomes current; if they cannot be added (for example the Windows Firewall service is stopped), the install stops with exit code 1 and the earlier version stays current. Rules for versions no longer installed are removed after the switch. The machine uninstall removes every rule in the group. There is no switch to turn the choice off: uninstall, then install again without it.
+- **It also blocks downloads.** Model downloads and the graphics card components download in the same runtime, so with the rules in place they fail with no connection. Use it where IT provides the models and sets `AllowModelDownloads` (or `AllowUserModels`) and `AllowGpuComponent` to 0 ("Managed policy" below). Each install, rollback or removal warns while they are not set (the warning names them; the install log shows `step=firewall result=downloads_allowed`). Machine-wide models staged by IT are not available yet (B7).
+- **Check that Windows applies it.** A firewall baseline can stop Windows applying a computer's own rules (the Windows Firewall policy setting that allows local firewall rules; whether your baseline sets it is to confirm, #189). Each run reads every network profile's settings as they apply now (`Get-NetFirewallProfile -PolicyStore ActiveStore`) and warns `Firewall rules not in effect` (log: `result=not_in_effect`) when Windows Firewall is off or ignores local rules for a profile, and `result=unchecked` when it cannot read them. The install still completes. There, deploy the same rules by Intune firewall policy instead: outbound, block, one rule for each of the two programs of each installed version, by the paths above. Program rules take no wildcards, and a rule for the path through the `current` junction may not match the path Windows reports (both to confirm), so update those rules with each version.
+- **To see the rules,** run `Get-NetFirewallRule -Group "Unminute runtime"` in an elevated PowerShell.
+- **What it does not cover.** WebView2's processes, which other apps share; a third-party firewall that replaces Windows Firewall; loopback traffic; SMB or WebDAV connections Windows makes on the app's behalf (to confirm).
+- **To confirm on a managed laptop (#189):** that the rule blocks an outbound attempt from `pythonw.exe` while the app still works offline with staged models and no token, and whether the tenant's baseline applies local rules.
 
 ## Protected decoder
 
@@ -211,9 +224,9 @@ The full settings are in [PACKAGING.md](PACKAGING.md), "Managed deployment (Intu
 For the machine install (B6b), the full settings are in [PACKAGING.md](PACKAGING.md), "Machine install in System context". In short:
 
 1. Verify the release, then package the zip itself with its `.sha256` file and that version's `install.ps1` (from inside the zip). Run it only from a folder that only administrators can change, such as the Intune Management Extension's content folder (its permissions are to confirm, #189): whoever can write there can replace the zip and its `.sha256` together before the run.
-2. Install behaviour: **System**. Install command: `%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Machine -Package Unminute-<version>.zip -Silent`.
+2. Install behaviour: **System**. Install command: `%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Machine -Package Unminute-<version>.zip -Silent`. Add `-BlockRuntimeNetwork` for the runtime firewall rule ("Runtime firewall rule" above); later versions keep it without the switch.
 3. Uninstall command: `%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%ProgramW6432%\Unminute\uninstall.ps1" -Machine -Silent`. It refuses (exit code 5) while a version kept for an earlier storage format is installed; add `-IncludeKeptSlots` only to decommission.
-4. Return codes: map 3 (the app is open for someone) to Retry, and 1, 2 and 4 to Failed. Code 4 also means the install folder's permissions have changed: check the computer.
+4. Return codes: map 3 (the app is open for someone) to Retry, and 1, 2 and 4 to Failed. Code 4 also means the install folder's permissions have changed: check the computer. With the runtime firewall rule, code 1 can also mean its rules could not be added (the earlier version stays current).
 5. Detection rule: `DisplayVersion` under `HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Unminute` equals the version.
 6. Updates: new content and detection version for the same Win32 app, or supersedence **without** "Uninstall previous version", which would remove the version kept for users still on the earlier storage format.
 
@@ -347,5 +360,5 @@ Start from the kind of incident. None of these steps needs meeting content: neve
 
 ## Not available yet
 
-- Machine-wide models staged by IT, and the runtime firewall rule (B7).
+- Machine-wide models staged by IT (B7). The runtime firewall rule (B7b) is available, but until IT can stage models it also stops every model download, so turn it on only where users have no need to download one.
 - Code signing of the zip and the installer scripts. Not planned: running them unsigned with `-ExecutionPolicy Bypass` is an accepted risk (the owner's decision DEC-031 of 22 October 2026, T22). Releases from 0.5.0 carry signed build provenance and an SBOM attestation instead; signing options are in [PACKAGING.md](PACKAGING.md), "Signing and trust".

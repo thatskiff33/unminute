@@ -80,6 +80,20 @@
   reads or writes a user's profile. -Machine -Rollback switches back to the
   previous version; -Machine -RemoveSlot <version> removes a kept version that
   is not current.
+  -Machine -BlockRuntimeNetwork (#111 B7b; opt-in, with -Package only) adds two
+  outbound block rules to Windows Firewall for each installed version, one for
+  its runtime\python.exe and one for runtime\pythonw.exe, by their real paths,
+  in a group of their own ($FirewallGroup). The choice is kept in current.json
+  ("block_runtime_network": true), so later installs, rollbacks and removals
+  keep the rules in step with the installed versions without the switch; the
+  machine uninstall removes the group. The download process is the same
+  program, so the rules also stop model downloads: they are for computers where
+  IT stages the models and sets AllowModelDownloads and AllowGpuComponent to 0.
+  The run warns when those values are not set, and when Windows Firewall is off
+  or ignores this computer's own rules for a network profile, where the rules
+  have no effect. Rules that cannot be added stop the run (exit 1) before it
+  switches version. There is no switch to turn the choice off: the machine
+  uninstall removes it with the rules.
   Machine exit codes: 0 installed, 1 failed, 2 not allowed (a 32-bit or
   non-elevated run, a refused switch, a package that states no storage format,
   prerequisites missing, or an install folder holding entries or a link the
@@ -103,20 +117,27 @@ param(
     [switch]$SelfService,
     [switch]$Rollback,
     [switch]$Machine,
-    [string]$RemoveSlot = ""
+    [string]$RemoveSlot = "",
+    [switch]$BlockRuntimeNetwork
 )
 
 $ErrorActionPreference = "Stop"
 # Parameters, read by the functions below.
 $Options = @{ Package = $Package; InstallDir = $InstallDir; Silent = [bool]$Silent; SkipShortcut = [bool]$SkipShortcut
              Managed = [bool]$Managed; SelfService = [bool]$SelfService; Rollback = [bool]$Rollback
-             Machine = [bool]$Machine; RemoveSlot = $RemoveSlot; InstallDirGiven = $false }
+             Machine = [bool]$Machine; RemoveSlot = $RemoveSlot; InstallDirGiven = $false
+             BlockRuntimeNetwork = [bool]$BlockRuntimeNetwork }
 $AppName = "Unminute"
 $script:TempExtract = $null
 $script:StagedCopy = $null           # versions\<version>.partial while this run owns it
 $script:InstallLock = $null
 $script:MachineTemp = $null          # machine mode's temporary folder, and TMP and TEMP before it
+$script:RuntimeBlock = $false        # this run keeps the runtime firewall rules (#111 B7b)
 $RegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Unminute"
+# Managed policy, read (never written) by a machine install that blocks the runtime's
+# network (#111 B7b), to warn while downloads are still allowed. Set once, here, so the
+# tests can point it at a throwaway key (tests/powershell/Isolation.ps1, scratch_text).
+$PolicyKey = "HKLM:\SOFTWARE\Policies\Unminute"
 # The Start menu's Programs folder, for the shortcut. Read once, here, like $RegKey, so
 # the tests can point both at scratch places (tests/powershell/Isolation.ps1).
 $ProgramsFolder = [Environment]::GetFolderPath("Programs")
@@ -806,10 +827,13 @@ function Get-SlotRecord($Was, [string[]]$Order, [string]$Fresh) {
 
 # Machine mode adds "mode": "machine". The app believes it only when its machine
 # trust test passes (workspace/update.py, machine_trusted): a per-user install that
-# writes it into its own current.json gains nothing (#111 B6b).
+# writes it into its own current.json gains nothing (#111 B6b). A machine install
+# that blocks the runtime's network also records "block_runtime_network": true (#111
+# B7b), so later runs keep its firewall rules without the switch; the app ignores it.
 function Write-CurrentRecord([string]$File, [string]$Version, [string]$Target, $Previous, [bool]$Managed, $Slots) {
     $record = [ordered]@{ format = 2; version = $Version; path = $Target; previous = $Previous; managed = $Managed }
     if ($Options.Machine) { $record.mode = "machine" }
+    if ($Options.Machine -and $script:RuntimeBlock) { $record.block_runtime_network = $true }
     $record.slots = $Slots
     Save-RecordFile $File ($record | ConvertTo-Json -Depth 5)
 }
@@ -1240,6 +1264,38 @@ function Get-EventMessageFile {
     return $null
 }
 
+# The runtime firewall rule (#111 B7b): the group that holds the outbound block rules
+# for each installed version's runtime\python.exe and runtime\pythonw.exe, in this
+# computer's own firewall rules (the persistent store). Set once, here, so the tests
+# can point it at a throwaway group (scratch_text, tests/powershell/Isolation.ps1).
+# Windows Firewall is reached only through Get-RuntimeRule, Remove-RuntimeRule and,
+# in install.ps1, Add-RuntimeRule and Get-FirewallProfileState, which the Pester tests
+# stand in (Isolation.ps1 refuses a script that reaches it anywhere else).
+$FirewallGroup = "Unminute runtime"
+$FirewallStore = "PersistentStore"
+
+# The group's rules, as a table of each rule's name and the program it names (null when
+# Windows gives none). No rule there is an empty table; any other failure throws.
+function Get-RuntimeRule {
+    $found = @{}
+    try { $rules = @(Get-NetFirewallRule -Group $FirewallGroup -PolicyStore $FirewallStore -ErrorAction Stop) }
+    catch {
+        if ($_.CategoryInfo.Category -eq [Management.Automation.ErrorCategory]::ObjectNotFound) { return $found }
+        throw
+    }
+    foreach ($rule in $rules) {
+        $program = $null
+        try { $program = [string](Get-NetFirewallApplicationFilter -AssociatedNetFirewallRule $rule -ErrorAction Stop).Program } catch { }
+        $found[[string]$rule.Name] = $program
+    }
+    return $found
+}
+
+# Removes one of the group's rules, by its name.
+function Remove-RuntimeRule([string]$Name) {
+    Remove-NetFirewallRule -Name $Name -PolicyStore $FirewallStore -ErrorAction Stop
+}
+
 # -- end of the shared machine section ----------------------------------------------------
 
 # -- machine mode: the install (#111 B6b) ---------------------------------------------
@@ -1283,6 +1339,10 @@ function Assert-MachineContext {
     }
     if (($Options.Rollback -or $Options.RemoveSlot) -and $Options.Package) {
         Stop-Install 2 "-Rollback and -RemoveSlot use what is installed, so -Package cannot be used with them."
+    }
+    if (($Options.Rollback -or $Options.RemoveSlot) -and $Options.BlockRuntimeNetwork) {
+        Stop-Install 2 ("-BlockRuntimeNetwork is chosen with an install (-Package); -Rollback and -RemoveSlot " +
+            "keep the choice an earlier install made.")
     }
     if (-not ($Options.Rollback -or $Options.RemoveSlot) -and -not $Options.Package) {
         Stop-Install 2 "A machine install takes a package zip with -Package (and its .sha256 file), never a folder."
@@ -1517,6 +1577,144 @@ function Register-Machine([string]$Target, [string]$Version) {
     Register-EventSource
 }
 
+# -- machine mode: the runtime firewall rule (#111 B7b) ----------------------------------
+
+# Opt-in (-BlockRuntimeNetwork, kept in current.json): two outbound block rules for each
+# installed version, one for its runtime\python.exe and one for runtime\pythonw.exe,
+# named by the version's real folder, never the current junction (a rule for a path
+# through a junction may not match the path Windows reports, and program rules take no
+# wildcards; both to confirm, #189). The app, its workers, the decode process and the
+# download process all run one of the two, so the rules block downloads too.
+$RuntimePrograms = @("python.exe", "pythonw.exe")
+# The policy values that must be 0 for nothing in the app to need the network.
+# AllowUserModels at 0 (#111 B7a) also stops model downloads on a machine install.
+$RuntimeBlockPolicies = @("AllowModelDownloads", "AllowGpuComponent")
+
+# Whether this run keeps the rules: the switch, or an earlier run's choice in the record.
+function Test-RuntimeBlockChosen($Was) {
+    if ($Options.BlockRuntimeNetwork) { return $true }
+    return [bool]($Was -and $Was.block_runtime_network -is [bool] -and $Was.block_runtime_network)
+}
+
+# A rule's name: the group, the version and the program, so a throwaway group in the
+# tests gives throwaway names too.
+function Get-RuntimeRuleName([string]$Version, [string]$Program) {
+    return "$FirewallGroup $Version $Program"
+}
+
+# The rules the versions in $Versions need: each name and the program it blocks.
+function Get-WantedRuntimeRule([string[]]$Versions) {
+    $wanted = [ordered]@{}
+    foreach ($version in $Versions) {
+        foreach ($program in $RuntimePrograms) {
+            $wanted[(Get-RuntimeRuleName $version $program)] =
+                [IO.Path]::Combine($Options.InstallDir, "versions", $version, "runtime", $program)
+        }
+    }
+    return $wanted
+}
+
+# Adds one rule: outbound, block, every profile and interface, for that program only.
+function Add-RuntimeRule([string]$Name, [string]$Program) {
+    New-NetFirewallRule -Name $Name -DisplayName $Name -Group $FirewallGroup -PolicyStore $FirewallStore `
+        -Description "Blocks the network for Unminute's runtime (install.ps1 -Machine -BlockRuntimeNetwork)." `
+        -Direction Outbound -Action Block -Program $Program -Profile Any -Enabled True -ErrorAction Stop | Out-Null
+}
+
+# The rules in step with the versions installed now (Get-InstalledSlot): a rule the
+# group lacks, or that names another program, is added (again); with -Prune, a rule
+# for a version no longer installed, or any other rule in the group, is removed.
+# A version an earlier run could not remove is still installed, so it keeps its rules.
+function Sync-RuntimeRule([switch]$Prune) {
+    $wanted = Get-WantedRuntimeRule @((Get-InstalledSlot).Keys)
+    $have = Get-RuntimeRule
+    foreach ($name in @($have.Keys)) {
+        $same = $wanted.Contains($name) -and
+            [string]::Equals([string]$have[$name], [string]$wanted[$name], [StringComparison]::OrdinalIgnoreCase)
+        if (-not $same -and ($Prune -or $wanted.Contains($name))) {
+            Remove-RuntimeRule $name
+            $have.Remove($name)
+        }
+    }
+    foreach ($name in $wanted.Keys) {
+        if (-not $have.ContainsKey($name)) { Add-RuntimeRule $name $wanted[$name] }
+    }
+}
+
+# Windows Firewall's state for each network profile as it applies now (the active
+# store: this computer's settings merged with any policy), as fixed words.
+function Get-FirewallProfileState {
+    return @(Get-NetFirewallProfile -PolicyStore ActiveStore -ErrorAction Stop | ForEach-Object {
+        [pscustomobject]@{ Name = [string]$_.Name; Enabled = [string]$_.Enabled
+                           AllowLocalFirewallRules = [string]$_.AllowLocalFirewallRules }
+    })
+}
+
+# A policy value as read, or $null when it is not set or cannot be read.
+function Get-PolicyValue([string]$Name) {
+    try { return (Get-ItemProperty -LiteralPath $PolicyKey -Name $Name -ErrorAction Stop).$Name } catch { return $null }
+}
+
+# One line in the installer log under the step "firewall", with fixed words only.
+function Write-FirewallLog([string]$Result) {
+    $step = $script:LogStep
+    $script:LogStep = "firewall"
+    Write-InstallLog $Result
+    $script:LogStep = $step
+}
+
+# Before the version switch: the rules for every installed version, the new one
+# included. Rules that cannot be added stop the run before it switches (exit 1).
+function Add-RuntimeBlock {
+    try { Sync-RuntimeRule }
+    catch {
+        $script:LogError = $_.Exception.GetType().Name
+        Stop-Install 1 ("The runtime firewall rules could not be added, so this version was not made current. " +
+            "Check that Windows Firewall is running, then run this again.")
+    }
+    Write-FirewallLog "ok"
+}
+
+# After the switch, once the versions no longer kept are gone: their rules go too, and
+# the run says when the rules cannot do their job. Only warns: the rules that matter
+# are in place, and the next run tries again.
+function Complete-RuntimeBlock {
+    try { Sync-RuntimeRule -Prune }
+    catch {
+        Write-Warn "The firewall rules of versions no longer installed could not be removed; the next install tries again."
+        Write-FirewallLog "prune_failed"
+    }
+    $allowed = @($RuntimeBlockPolicies | Where-Object {
+        $value = Get-PolicyValue $_
+        -not ($value -is [int] -and $value -eq 0)
+    })
+    if ($allowed -contains "AllowModelDownloads") {
+        $user = Get-PolicyValue "AllowUserModels"
+        if ($user -is [int] -and $user -eq 0) { $allowed = @($allowed | Where-Object { $_ -ne "AllowModelDownloads" }) }
+    }
+    if ($allowed.Count) {
+        Write-Warn ("The runtime firewall rules also block downloads, but managed policy still allows them " +
+            "($($allowed -join ', ') not set to 0), so people see downloads fail. Stage the models and set " +
+            "AllowModelDownloads and AllowGpuComponent to 0.")
+        Write-FirewallLog "downloads_allowed"
+    }
+    $profiles = @()
+    try { $profiles = @(Get-FirewallProfileState) } catch { }
+    if (-not $profiles.Count) {
+        Write-Warn "Whether Windows Firewall applies this computer's own rules could not be checked."
+        Write-FirewallLog "unchecked"
+        return
+    }
+    $ignored = @($profiles | Where-Object { $_.Enabled -ne "True" -or $_.AllowLocalFirewallRules -eq "False" })
+    if ($ignored.Count) {
+        $names = (@($ignored | ForEach-Object { $_.Name }) -join ", ")
+        Write-Warn ("Firewall rules not in effect: Windows Firewall is off, or ignores this computer's own " +
+            "rules, for these network profiles: $names. Deploy the same rules by Intune firewall policy instead " +
+            "(IT_DEPLOYMENT.md, ""Runtime firewall rule"").")
+        Write-FirewallLog "not_in_effect"
+    }
+}
+
 # The run's own temporary folder (review of a3ab563, L1): a new staging-<32 hex
 # digits> folder inside the install folder, which only administrators can change,
 # with the folder's permissions. TMP and TEMP point at it for the rest of the run, so
@@ -1609,8 +1807,17 @@ function Invoke-MachineInstall {
     $was = Read-InstallRecord ([IO.Path]::Combine($root, "current.json"))
     $wasVersion = if ($was) { Get-VersionValue $was.version } else { $null }
     $previous = if ($wasVersion -and $wasVersion -ceq $version) { Get-VersionValue $was.previous } else { $wasVersion }
+    # The runtime firewall rule (#111 B7b): the new version's rules before it becomes
+    # current, so it never runs unblocked; the removed versions' rules after.
+    $script:RuntimeBlock = Test-RuntimeBlockChosen $was
+    if ($script:RuntimeBlock) {
+        Set-InstallStep "firewall"
+        Add-RuntimeBlock
+        Set-InstallStep "switch"
+    }
     Set-CurrentLink $version
     Set-MachineVersion $version $previous $version
+    if ($script:RuntimeBlock) { Complete-RuntimeBlock }
     Set-InstallStep "register"
     Register-Machine $target $version
     $script:LogStep = "done"
@@ -1636,8 +1843,12 @@ function Invoke-MachineRollback {
     Test-PackageFile $target
     Copy-Item -LiteralPath (Join-Path $target "uninstall.ps1") -Destination (Join-Path $Options.InstallDir "uninstall.ps1") -Force
     Set-InheritedOnly (Join-Path $Options.InstallDir "uninstall.ps1")
+    # The runtime firewall rule (#111 B7b), as for an install.
+    $script:RuntimeBlock = Test-RuntimeBlockChosen $record
+    if ($script:RuntimeBlock) { Add-RuntimeBlock }
     Set-CurrentLink $previous
     Set-MachineVersion $previous $version $null
+    if ($script:RuntimeBlock) { Complete-RuntimeBlock }
     Register-Machine $target $previous
     $script:LogStep = "done"
     Write-InstallLog "ok" 0
@@ -1659,6 +1870,9 @@ function Invoke-MachineRemoveSlot {
         Stop-Install 1 "Version $name is not installed."
     }
     $script:LogVersion = $name
+    # The record keeps the runtime firewall choice (#111 B7b); the removed version's
+    # rules go once it is gone (a version still in use keeps them, exit 3).
+    $script:RuntimeBlock = Test-RuntimeBlockChosen $record
     $previous = Get-VersionValue $record.previous
     if ($previous -ceq $name) { $previous = $null }
     $seq = Get-SlotSeq $record
@@ -1671,6 +1885,7 @@ function Invoke-MachineRemoveSlot {
         if (Test-TransientLock $_.Exception) { Stop-Install 3 "A file of version $name is in use, so it was not removed yet. Run this again later." }
         throw
     }
+    if ($script:RuntimeBlock) { Complete-RuntimeBlock }
     $script:LogStep = "done"
     Write-InstallLog "ok" 0
     Write-Step "Version $name was removed."
@@ -1754,6 +1969,7 @@ try {
         exit 0
     }
     if ($Options.RemoveSlot) { Stop-Install 2 "-RemoveSlot is for a machine install (-Machine) only." }
+    if ($Options.BlockRuntimeNetwork) { Stop-Install 2 "-BlockRuntimeNetwork is for a machine install (-Machine) only." }
     # Not beside a machine install (#111 B6-1): one computer has one Unminute. A
     # failure to read the registry does not stop the install (this is a convenience,
     # not a control: an older package's installer has no such check).
