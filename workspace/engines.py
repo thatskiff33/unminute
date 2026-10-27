@@ -135,12 +135,14 @@ def _whisper_model(spec, cache_dir, threads):
     IT's copy passes on its record; one that then fails to load and fails a
     full check is kept as failed (asr_engines.check_machine), and the next
     copy is tried once: the user's own, where AllowUserModels allows one (#451)."""
-    from faster_whisper import WhisperModel
     for again in (False, True):
         folder = asr_engines.find_verified(spec, cache_dir)
         if folder is None:
             raise ModelLoadError(f"{asr_engines.label(spec.name)} is not installed or failed "
                                  f"verification. {_whisper_fix(spec)}")
+        # Imported only once a verified copy is found: a missing copy names the fix
+        # even where faster-whisper is not installed (review of 98d22c1, B2).
+        from faster_whisper import WhisperModel
         try:
             return WhisperModel(str(folder), device="cpu", compute_type="int8",
                                 cpu_threads=threads)

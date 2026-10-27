@@ -305,10 +305,14 @@ def model_dir(spec, cache_dir):
 MACHINE_RECORD = "models.verified.json"
 MACHINE_LINK = "the copy installed by your IT team is a link to somewhere else, so it was not used"
 _machine_root = []          # machine_root(), worked out once per process
-# Machine copies a full check found damaged in this process, {folder: (fingerprint,
-# problems)} (#451). IT's copy has no failure record: the app writes nothing in the machine
-# root and never reads a record from the user's cache for it. So a failure is kept
-# here, in memory, until the files change (IT repaired them) or the process ends.
+# Machine copies a full check found damaged in this process, {folder: (key, problems)}
+# (#451). IT's copy has no failure record: the app writes nothing in the machine root
+# and never reads a record from the user's cache for it. So a failure is kept here, in
+# memory, until the files or IT's record change, or the process ends. The key
+# (_machine_key) includes IT's record because a repair copies the files with the
+# package's own modification times, so a repaired file can match the damaged one's size
+# and time; every Install-Models.ps1 run writes the record afresh (review of 98d22c1, B3).
+# A changed record only goes back to trusting it, which only an administrator can write.
 # It can only refuse a copy. The window learns of a worker's from its message
 # (note_machine_damage), so Downloads stops showing the copy as ready.
 _machine_failed = {}
@@ -420,12 +424,24 @@ def _machine_record_ok(spec, folder):
         return False
 
 
+def _machine_key(folder, spec):
+    """What a kept failure is for: the files' sizes and modification times, and
+    IT's record's identity, size and modification time (None when there is none)."""
+    folder = Path(folder)
+    try:
+        st = (folder / MACHINE_RECORD).stat()
+        record = [st.st_ino, st.st_size, st.st_mtime_ns]
+    except OSError:
+        record = None
+    return (_fingerprint(folder, spec), record)
+
+
 def _machine_failure(spec, folder):
     """The problems a full check in this process found with these exact files
-    (same sizes and modification times), else []."""
+    and this record of IT's, else []."""
     try:
         failed = _machine_failed.get(str(folder))
-        return list(failed[1]) if failed and failed[0] == _fingerprint(Path(folder), spec) else []
+        return list(failed[1]) if failed and failed[0] == _machine_key(folder, spec) else []
     except OSError:
         return []
 
@@ -451,7 +467,7 @@ def check_machine(spec, folder, full=False, keep=None):
     problems = _hash_problems(spec, folder, keep)
     try:
         if problems:
-            _machine_failed[str(folder)] = (_fingerprint(folder, spec), list(problems))
+            _machine_failed[str(folder)] = (_machine_key(folder, spec), list(problems))
         else:
             _machine_failed.pop(str(folder), None)
     except OSError:
@@ -467,7 +483,7 @@ def note_machine_damage(message):
         folder = machine_copy(spec) if machine_damaged(spec) in message else None
         if folder is not None:
             try:
-                _machine_failed[str(folder)] = (_fingerprint(folder, spec), [MACHINE_FAILED])
+                _machine_failed[str(folder)] = (_machine_key(folder, spec), [MACHINE_FAILED])
             except OSError:
                 pass
 

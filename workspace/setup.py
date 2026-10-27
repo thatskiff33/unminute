@@ -86,6 +86,11 @@ INVALID_ASK_IT = "Damaged or incomplete. Ask your IT team to repair it."
 # session (#111 B7a design 3.2, #451). Only IT can repair it.
 IT_COPY_DAMAGED = ("The copy your IT team installed is damaged or incomplete. Ask your IT "
                    "team to repair it.")
+# The same, where Downloads offers Repair (AllowUserModels on), which downloads the
+# user's own copy: both ways are named (review of 98d22c1, nit 3).
+IT_COPY_DAMAGED_OR_REPAIR = ("The copy your IT team installed is damaged or incomplete. Ask "
+                             "your IT team to repair it, or use Repair to download your own "
+                             "copy.")
 
 
 def status(name, cache_dir):
@@ -107,9 +112,13 @@ def status(name, cache_dir):
 def shown_status(card, repair_offered):
     """A card's Details text as Downloads shows it: a damaged copy names Repair
     only where Downloads offers it (managed policy decides, the window passes
-    repair_offered), and IT otherwise (#451)."""
-    if card["state"] != "invalid" or repair_offered or card["status"] == IT_COPY_DAMAGED:
-        return card["status"]
+    repair_offered), and IT otherwise (#451). IT's damaged copy names IT, and
+    Repair too where it is offered."""
+    status = card.get("status")
+    if status == IT_COPY_DAMAGED and repair_offered:
+        return IT_COPY_DAMAGED_OR_REPAIR
+    if card.get("state") != "invalid" or repair_offered or status == IT_COPY_DAMAGED:
+        return status
     return INVALID_ASK_IT
 
 

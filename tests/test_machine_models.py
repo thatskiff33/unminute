@@ -432,12 +432,44 @@ class DamagedCopyTests(TinyParakeetFixture):
             self.assertEqual(setup.status(ae.PARAKEET_V2, self.cache)[:2],
                              ("ready", setup.INSTALLED_BY_IT))
 
+    def test_a_repair_with_the_same_times_clears_it_by_its_fresh_record(self):
+        # Review of 98d22c1, B3: Install-Models.ps1 repairs with [IO.File]::Copy,
+        # which keeps the package's modification times, so the repaired files can
+        # have the damaged ones' sizes and times. Its fresh record clears the failure.
+        self.stage_parakeet()
+        main = ae.PARAKEET_MODELS[ae.PARAKEET_V2]
+        folder = ae.machine_model_dir(main, self.root)
+        weights = folder / "weights.onnx"
+        good, before = weights.read_bytes(), weights.stat()
+        fooled(folder)
+        damaged = ae._fingerprint(folder, main)
+        with machine(self.root), user_models(False):
+            self.assertIn("checksum", ae.check_machine(main, folder, full=True)[0])
+            self.assertFalse(ae.machine_ready(ae.PARAKEET_V2))
+            # IT's repair: the package's bytes with the same time, and the record
+            # written to a temporary name and renamed into place, as the script does.
+            weights.write_bytes(good)
+            os.utime(weights, ns=(before.st_atime_ns, before.st_mtime_ns))
+            self.assertEqual(ae._fingerprint(folder, main), damaged)
+            record = folder / ae.MACHINE_RECORD
+            old = record.stat()
+            temp = folder / (ae.MACHINE_RECORD + ".tmp")
+            temp.write_bytes(record.read_bytes())
+            record.unlink()
+            temp.rename(record)
+            later = old.st_mtime_ns + 5_000_000_000
+            os.utime(record, ns=(later, later))
+            self.assertTrue(ae.machine_ready(ae.PARAKEET_V2))
+            self.assertEqual(setup.status(ae.PARAKEET_V2, self.cache)[:2],
+                             ("ready", setup.INSTALLED_BY_IT))
+            self.assertEqual(ae.check_machine(main, folder), [])
+
     def test_a_passing_full_check_clears_it(self):
         self.stage_parakeet()
         main = ae.PARAKEET_MODELS[ae.PARAKEET_V2]
         folder = ae.machine_model_dir(main, self.root)
         with machine(self.root):
-            ae._machine_failed[str(folder)] = (ae._fingerprint(folder, main), ["x"])
+            ae._machine_failed[str(folder)] = (ae._machine_key(folder, main), ["x"])
             self.assertFalse(ae.machine_ready(ae.PARAKEET_V2))
             self.assertEqual(ae.check_machine(main, folder, full=True), [])
             self.assertTrue(ae.machine_ready(ae.PARAKEET_V2))
@@ -604,6 +636,18 @@ class DamagedCopyTests(TinyParakeetFixture):
                                  "Whisper large-v3 turbo is not installed or failed "
                                  f"verification. {ae.machine_damaged(whisper)}")
 
+    def test_a_missing_whisper_copy_names_the_fix_without_faster_whisper(self):
+        # Review of 98d22c1, B2: faster-whisper is imported only once a verified
+        # copy is found, so where it is not installed a missing copy still names
+        # its fix rather than raising ModuleNotFoundError.
+        from workspace import engines
+        whisper = make_spec(name=ae.WHISPER_TURBO)
+        with mock.patch.dict(ae.WHISPER_MODELS, {ae.WHISPER_TURBO: whisper}), \
+                mock.patch.dict(sys.modules, faster_whisper=None), \
+                self.assertRaises(ae.ModelLoadError) as caught:
+            engines._whisper_model(whisper, self.cache, 1)
+        self.assertIn("is not installed or failed verification.", str(caught.exception))
+
     def test_downloads_names_repair_only_where_it_is_offered(self):
         invalid = {"state": "invalid", "status": setup.INVALID}
         self.assertEqual(setup.shown_status(invalid, True), setup.INVALID)
@@ -612,8 +656,14 @@ class DamagedCopyTests(TinyParakeetFixture):
                        "a fresh, verified copy; the damaged copy is kept aside."}
         self.assertEqual(setup.shown_status(gpu_invalid, False), setup.INVALID_ASK_IT)
         it = {"state": "invalid", "status": setup.IT_COPY_DAMAGED}
-        for offered in (True, False):
-            self.assertEqual(setup.shown_status(it, offered), setup.IT_COPY_DAMAGED)
+        self.assertEqual(setup.shown_status(it, False), setup.IT_COPY_DAMAGED)
+        # Where Repair is offered (AllowUserModels on), it names both (review of
+        # 98d22c1, nit 3).
+        self.assertEqual(setup.shown_status(it, True), setup.IT_COPY_DAMAGED_OR_REPAIR)
+        self.assertIn("Ask your IT team", setup.IT_COPY_DAMAGED_OR_REPAIR)
+        self.assertIn("Repair", setup.IT_COPY_DAMAGED_OR_REPAIR)
+        # A card without a status (a stand-in in test_queries) does not raise (B1).
+        self.assertIsNone(setup.shown_status({"state": "ready"}, False))
         for state in ("ready", "missing"):
             card = {"state": state, "status": "Not downloaded yet."}
             self.assertEqual(setup.shown_status(card, False), "Not downloaded yet.")

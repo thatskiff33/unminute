@@ -2936,8 +2936,9 @@ class FolderInUseTests(unittest.TestCase):
 
         def run(attempt, place=None):
             # The item refused is in this test's own folder, where the run can write,
-            # so access denied there is taken for a file in use (#451).
-            place = place or self.root / "item"
+            # so access denied there is taken for a file in use (#451). "" passes no
+            # path at all (review of 98d22c1, nit 2).
+            place = self.root / "item" if place is None else place
             script.write_text(
                 '$ErrorActionPreference = "Stop"\n'
                 '$Options = @{ Silent = $false }\n'
