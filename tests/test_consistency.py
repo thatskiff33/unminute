@@ -945,6 +945,73 @@ class ControlMatrixTests(unittest.TestCase):
         self.assertEqual([], sorted(missing), "CONTROL_MATRIX.md names paths that do not exist")
 
 
+# Planned code work in SECURITY_MODEL.md: a #111 slice (B7) or an issue (#299). Owner,
+# IT and Python-version entries in a Planned cell are not code work the app owes.
+PLANNED_WORK = re.compile(rf"{SLICE.pattern}|#\d+")
+
+
+class SecuritySummaryTests(unittest.TestCase):
+    """The Summary of docs/SECURITY_MODEL.md lists as "Not protected today, planned"
+    exactly the work the threat rows still plan, threat by threat (#409), so a slice
+    that lands or a newly planned control cannot leave the Summary out of date."""
+
+    @classmethod
+    def setUpClass(cls):
+        text = read("docs/SECURITY_MODEL.md")
+        cls.summary = section(text, "Summary")
+        cls.rows = table_rows(section(text, "Threats and controls"), r"T\d+")
+        cls.merged = re.search(r"\(merged so far: ([^)]*)\)", text).group(1)
+
+    @staticmethod
+    def add(found, work, threat):
+        found.setdefault(work, set()).add(threat)
+
+    def planned_by_rows(self):
+        # A Planned cell is "; "-separated entries; code work is an entry that starts
+        # "B7:" or "#299:". Anything else (IT:, Owner:, None) is not code work.
+        found = {}
+        for threat, cells in self.rows.items():
+            for entry in cells[4].split("; "):
+                head = entry.split(":", 1)[0].strip()
+                if ":" in entry and PLANNED_WORK.fullmatch(head):
+                    self.add(found, head, threat)
+        return found
+
+    def planned_by_summary(self):
+        # Each item under the heading ends "(B7: T9, T10)." naming its work and threats.
+        block = self.summary.split("- **Not protected today, planned.**", 1)[1]
+        block = block.split("\n- **", 1)[0]
+        items = [line for line in block.splitlines() if line.startswith("  - ")]
+        self.assertTrue(items, "the Summary's planned list no longer matches")
+        found = {}
+        for item in items:
+            match = re.search(r"\(([^()]+): (T\d+(?:, T\d+)*)\)\.$", item)
+            self.assertIsNotNone(match, f"a planned item does not end (work: threats): {item}")
+            work = PLANNED_WORK.findall(match.group(1))
+            self.assertTrue(work, f"a planned item names no slice or issue: {item}")
+            for name in work:
+                for threat in re.findall(r"T\d+", match.group(2)):
+                    self.add(found, name, threat)
+        return found
+
+    def test_planned_list_matches_the_rows(self):
+        rows = self.planned_by_rows()
+        self.assertTrue(rows, "no row plans code work: rewrite the Summary and this test")
+        self.assertEqual(self.planned_by_summary(), rows,
+                         "the Summary's 'Not protected today, planned' items differ from "
+                         "the work the threat rows still plan (slice or issue: threats)")
+
+    def test_planned_work_is_not_listed_as_merged(self):
+        # "A0 to A7" style ranges in the merged list count every slice in between.
+        merged = set(SLICE.findall(self.merged))
+        for letter, first, last in re.findall(r"\b([A-D])(\d+) to \1(\d+)\b", self.merged):
+            merged.update(f"{letter}{n}" for n in range(int(first), int(last) + 1))
+        self.assertIn("C7", merged, "the merged-slices sentence no longer matches")
+        still_planned = set(self.planned_by_rows()) & merged
+        self.assertEqual(set(), still_planned,
+                         "slices listed as merged are still planned in a threat row")
+
+
 class DeploymentGuideTests(unittest.TestCase):
     """docs/IT_DEPLOYMENT.md: its policy list is the ADMX template's, and its incident
     runbook reaches the withdrawal runbook and --health (#111 D1, folded from #121)."""
