@@ -233,8 +233,9 @@ changes; or GitHub owner settings.
   `tools/accessibility_check.py`, which open real windows on the user's screen (say so first).
 - Budgets: lower one when it improves; raise one only with a reason in the PR, and never from a
   single quick run on a development laptop (use `tools/perf_check.py` medians).
-- Required CI time is a budget too: "Unit tests (Windows)" took 4.5 minutes from push (#386). A
-  PR that noticeably slows it fixes that or gives its reason in the PR; raising it needs the owner.
+- Required CI time is a budget too (#386): `python tools/dev_status.py --ci-time` prints how long
+  "Unit tests (Windows)" took from push in the latest runs. A PR that noticeably slows it fixes
+  that or gives its reason in the PR; raising it needs the owner.
 - Dependencies change as a compatible set with Windows wheels only (especially torch,
   torchaudio, pyannote.audio and huggingface_hub): edit `requirements.in` and run
   `python tools/lock.py`; never edit a lock by hand. Engine, model or dependency changes also need

@@ -372,6 +372,75 @@ class LimitTests(unittest.TestCase):
                          [(t["path"], reason) for t, reason in stale])
 
 
+class RegisterTests(unittest.TestCase):
+    """#411: the release register is printed from the issues and PRs themselves,
+    not kept by hand in a #121 comment."""
+
+    def test_gate_and_next_step_lines(self):
+        body = ("Some text.\n\n**Release gate:** next preview\n- Next step: the owner\n"
+                "Release gate: a second line is ignored\n")
+        self.assertEqual(("next preview", "the owner"), dev_status.register_fields(body))
+        self.assertEqual(("Later", None), dev_status.register_fields("* Release gate: Later"))
+        self.assertEqual((None, None), dev_status.register_fields(
+            "The release gate: mid-sentence is not a register line\n"))
+        self.assertEqual((None, None), dev_status.register_fields(None))
+
+    def test_rows_name_the_gate_and_the_state(self):
+        issues = [{"number": 9, "title": "Later work", "body": "Release gate: Later"},
+                  {"number": 5, "title": "Blocker", "body": "Release gate: next preview\n"
+                                                             "Next step: orchestrator"},
+                  {"number": 7, "title": "Not gated", "body": "Nothing here"}]
+        prs = [pr(20, body="Closes #5"),
+               pr(21, body="Fixes #5.\nRelease gate: next preview", isDraft=True,
+                  statusCheckRollup=[check("Ruff", "FAILURE")])]
+        rows = dev_status.register_rows(issues, prs, REQUIRED)
+        self.assertEqual([("issue", 5), ("issue", 9), ("PR", 21)],
+                         [(r["kind"], r["number"]) for r in rows])
+        self.assertEqual("open PR #20 #21", rows[0]["state"])
+        self.assertEqual("orchestrator", rows[0]["next"])
+        self.assertEqual("no open PR closes it", rows[1]["state"])
+        self.assertEqual("not named", rows[1]["next"])
+        self.assertEqual("draft; clean; failing: Ruff; 1 required not reported",
+                         rows[2]["state"])
+
+    def test_closing_words_link_an_issue_only_by_its_number(self):
+        prs = [pr(30, body="Part of #5; resolves #50"), pr(31, body="closed #5")]
+        rows = dev_status.register_rows(
+            [{"number": 5, "title": "x", "body": "Release gate: Later"}], prs, REQUIRED)
+        self.assertEqual("open PR #31", rows[0]["state"])
+
+
+class CiTimeTests(unittest.TestCase):
+    """#411: AGENTS.md points at the measured CI time instead of a fixed figure."""
+
+    RUN = {"id": 1, "run_attempt": 1, "created_at": "2026-10-27T02:00:00Z"}
+
+    def test_minutes_from_push_to_the_required_job_end(self):
+        jobs = [{"name": "Windows tests, chunk 1 of 8", "conclusion": "success",
+                 "completed_at": "2026-10-27T02:09:00Z"},
+                {"name": "Unit tests (Windows)", "conclusion": "success",
+                 "completed_at": "2026-10-27T02:04:30Z"}]
+        self.assertEqual(4.5, dev_status.ci_minutes(self.RUN, jobs))
+
+    def test_reruns_failures_and_missing_jobs_are_not_measured(self):
+        done = {"name": "Unit tests (Windows)", "conclusion": "success",
+                "completed_at": "2026-10-27T02:04:30Z"}
+        self.assertIsNone(dev_status.ci_minutes({**self.RUN, "run_attempt": 2}, [done]))
+        self.assertIsNone(dev_status.ci_minutes(self.RUN, [{**done, "conclusion": "failure"}]))
+        self.assertIsNone(dev_status.ci_minutes(self.RUN, [{**done, "name": "Ruff"}]))
+
+    def test_median(self):
+        self.assertEqual(4, dev_status.median([5, 3, 4]))
+        self.assertEqual(3.5, dev_status.median([4, 3]))
+
+    def test_the_job_measured_is_the_required_one(self):
+        workflow = (ROOT / ".github" / "workflows" / dev_status.CI_WORKFLOW).read_text(
+            encoding="utf-8")
+        self.assertIn(f"name: {dev_status.CI_TIME_JOB}\n", workflow)
+        self.assertIn("python tools/dev_status.py --ci-time",
+                      (ROOT / "AGENTS.md").read_text(encoding="utf-8"))
+
+
 class SkillTests(unittest.TestCase):
     def test_each_shared_skill_has_a_matching_claude_pointer(self):
         shared = sorted(p.name for p in SHARED.iterdir() if p.is_dir())
