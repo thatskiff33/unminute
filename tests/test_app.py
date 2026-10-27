@@ -387,6 +387,32 @@ class WorkspaceTests(unittest.TestCase):
                 self.assertNotIn(str(self.root), error)            # P3: no paths
                 self.assertGreater(ws.transcript(mid)["total"], 20)
 
+    def test_a_model_that_is_not_ready_names_it_models_when_only_they_are_used(self):
+        # #451: on a machine install with downloads on and AllowUserModels at
+        # 0, downloads are not turned off, so the stored error says that only
+        # IT's models are used. Through the real worker, for speech and for
+        # speaker identification; the window alone reads the policy.
+        it_root = self.root / "Program Files" / "Unminute"        # synthetic: no models
+        read = ({"AllowUserModels": False}, ())
+        with mock.patch.object(asr_engines, "_machine_root", [it_root]):
+            ws = self.open_under_policy("it-speech", read, model="speech_not_ready")
+            self.imported(ws)
+            [m] = ws.meetings()
+            self.assertIn("Parakeet v2 is not ready. Your organisation uses only the models "
+                          "your IT team installs on this computer. Choose another speech model "
+                          "in Settings, or ask your IT team to install or repair it. (",
+                          m["error"])
+            ws = self.open_under_policy("it-speaker", read, speaker_model="speaker_not_ready")
+            mid = self.imported(ws)
+            error = ws.detail(mid)["speakers"]["error"]
+            self.assertIn("failed verification. Your organisation uses only the models your IT "
+                          "team installs on this computer. Ask your IT team to install or "
+                          "repair it.", error)
+        for text in (m["error"], error):
+            self.assertNotIn("Downloads are turned off", text)
+            self.assertNotIn("Manage downloads", text)
+            self.assertNotIn(str(self.root), text)                 # P3: no paths
+
     def test_search_finds_edited_text(self):
         ws = self.open()
         mid = self.imported(ws)

@@ -40,19 +40,31 @@ MANAGED_SPEECH_FIX = ("Downloads are turned off by your organisation. Choose ano
                       "model in Settings, or ask your IT team to install it.")
 MANAGED_SPEAKER_FIX = ("Downloads are turned off by your organisation. Ask your IT team to "
                        "install or repair it.")
+# A machine install whose AllowUserModels is 0 while downloads are allowed (#111
+# B7a, #451): downloads are not turned off there, but a model in the user's own
+# cache would not be used, so the advice names the models IT installs, in the
+# sense of app.USER_MODELS_OFF (which is USER_MODELS_SPEAKER_FIX).
+USER_MODELS_ONLY = ("Your organisation uses only the models your IT team installs on this "
+                    "computer.")
+USER_MODELS_SPEECH_FIX = (f"{USER_MODELS_ONLY} Choose another speech model in Settings, or ask "
+                          "your IT team to install or repair it.")
+USER_MODELS_SPEAKER_FIX = f"{USER_MODELS_ONLY} Ask your IT team to install or repair it."
 
 
-def advice_without_downloads(message):
+def advice_without_downloads(message, only_it_models=False):
     """A worker's model error with the Manage downloads advice replaced by the
-    IT wording, for when managed policy turns downloads off (#257). Only the
-    fixed advice written here, in asr_engines and in speaker_load is replaced;
-    the rest of the message is kept as it was. Every speech model gets the
-    same wording (#246: Manage downloads offers them all)."""
+    IT wording, for when managed policy turns downloads off (#257), or, with
+    only_it_models, when a machine install uses only IT's models (#451). Only
+    the fixed advice written here, in asr_engines and in speaker_load is
+    replaced; the rest of the message is kept as it was. Every speech model
+    gets the same wording (#246: Manage downloads offers them all)."""
+    speech, speaker = ((USER_MODELS_SPEECH_FIX, USER_MODELS_SPEAKER_FIX) if only_it_models
+                       else (MANAGED_SPEECH_FIX, MANAGED_SPEAKER_FIX))
     for name in (*asr_engines.PARAKEET_MODELS, *asr_engines.WHISPER_MODELS):
         for repair_only in (False, True):
-            message = message.replace(fix_speech(name, repair_only), MANAGED_SPEECH_FIX)
-    message = message.replace(asr_engines.PARAKEET_FIX, MANAGED_SPEECH_FIX)
-    return message.replace(SPEAKER_FIX, MANAGED_SPEAKER_FIX)
+            message = message.replace(fix_speech(name, repair_only), speech)
+    message = message.replace(asr_engines.PARAKEET_FIX, speech)
+    return message.replace(SPEAKER_FIX, speaker)
 
 
 def _test_factory(name, allow_test):
@@ -81,8 +93,8 @@ def load_engine(name, cache_dir, threads, allow_test=False, device="cpu"):
     if asr_engines.is_parakeet(name):
         state, detail = asr_engines.parakeet_status(name, cache_dir)
         if state != "ready":
-            raise ModelLoadError(f"{asr_engines.label(name)} is not ready. {fix_speech(name)} "
-                                 f"({detail})")
+            raise ModelLoadError(f"{asr_engines.label(name)} is not ready. "
+                                 f"{_parakeet_fix(name)} ({detail})")
         # No decoder: the worker passes decoded arrays. faster_whisper's
         # decoder would load faster_whisper, and CTranslate2 with it, into
         # every Parakeet worker (R12, #133).
@@ -90,13 +102,7 @@ def load_engine(name, cache_dir, threads, allow_test=False, device="cpu"):
 
     if asr_engines.is_whisper(name):
         spec = asr_engines.WHISPER_MODELS[name]
-        folder = asr_engines.find_verified(spec, cache_dir)
-        if folder is None:
-            raise ModelLoadError(f"{asr_engines.label(name)} is not installed or failed "
-                                 f"verification. {fix_speech(name)}")
-        from faster_whisper import WhisperModel
-        model = WhisperModel(str(folder), device="cpu", compute_type="int8",
-                             cpu_threads=threads)
+        model = _whisper_model(spec, cache_dir, threads)
         problem = asr_engines.feature_width_problem(model, spec)
         if problem:
             raise ModelLoadError(f"{problem}. {fix_speech(name, repair_only=True)}")
@@ -104,6 +110,48 @@ def load_engine(name, cache_dir, threads, allow_test=False, device="cpu"):
         return asr_engines.WhisperEngine(model, name, "int8", "en")
 
     raise ModelLoadError(f"Unknown model: {asr_engines.label(name)}")
+
+
+def _parakeet_fix(name):
+    """How to fix a Parakeet model that is not ready: IT, when IT's copy of it
+    or of its speech detector is there but not usable (#451), or Manage
+    downloads."""
+    for spec in (asr_engines.PARAKEET_MODELS[name], asr_engines.SILERO_VAD):
+        if asr_engines.machine_unusable(spec):
+            return asr_engines.machine_damaged(spec)
+    return fix_speech(name)
+
+
+def _whisper_fix(spec):
+    """How to fix a Whisper model that cannot be used: IT, when IT installed it
+    (#451; only IT can repair that copy), or Manage downloads."""
+    if asr_engines.machine_copy(spec) is not None:
+        return asr_engines.machine_damaged(spec)
+    return fix_speech(spec.name)
+
+
+def _whisper_model(spec, cache_dir, threads):
+    """faster-whisper's model on the processor from the first verified copy.
+    IT's copy passes on its record; one that then fails to load and fails a
+    full check is kept as failed (asr_engines.check_machine), and the next
+    copy is tried once: the user's own, where AllowUserModels allows one (#451)."""
+    from faster_whisper import WhisperModel
+    for again in (False, True):
+        folder = asr_engines.find_verified(spec, cache_dir)
+        if folder is None:
+            raise ModelLoadError(f"{asr_engines.label(spec.name)} is not installed or failed "
+                                 f"verification. {_whisper_fix(spec)}")
+        try:
+            return WhisperModel(str(folder), device="cpu", compute_type="int8",
+                                cpu_threads=threads)
+        except Exception as exc:
+            if not (asr_engines._is_machine(spec, folder)
+                    and asr_engines.check_machine(spec, folder, full=True)):
+                raise
+            if again:
+                raise ModelLoadError(f"{asr_engines.label(spec.name)} failed to load. "
+                                     f"{asr_engines.machine_damaged(spec)} "
+                                     f"({type(exc).__name__})") from exc
 
 
 def load_draft_engine(name, cache_dir, threads, allow_test=False):
@@ -137,7 +185,7 @@ def _load_whisper_gpu(name, cache_dir, threads):
     folder = asr_engines.find_verified(spec, cache_dir)
     if folder is None:
         raise ModelLoadError(f"{asr_engines.label(name)} is not installed or failed "
-                             f"verification. {fix_speech(name)}")
+                             f"verification. {_whisper_fix(spec)}")
     import ctranslate2
     if ctranslate2.get_cuda_device_count() < 1:
         raise GpuUnavailable(f"graphics card unavailable (needs NVIDIA driver "
@@ -192,8 +240,11 @@ def diarize_audio(model, cache_dir, audio, hint, threads, device="cpu", allow_te
     # same bytes: no model file is opened again after its check (#111 B9).
     blobs = asr_engines.read_verified(asr_engines.SPEAKER_MODEL, cache_dir)
     if blobs is None:
+        # Only IT can repair IT's copy, which comes first (#451).
+        fix = (asr_engines.machine_damaged(asr_engines.SPEAKER_MODEL)
+               if asr_engines.machine_copy(asr_engines.SPEAKER_MODEL) is not None else SPEAKER_FIX)
         raise ModelLoadError("The speaker identification model is not installed or failed "
-                             f"verification. {SPEAKER_FIX}")
+                             f"verification. {fix}")
     import torch
     torch.set_num_threads(threads)
     label = "cpu"

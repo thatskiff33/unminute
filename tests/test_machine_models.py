@@ -328,7 +328,7 @@ class AllowUserModelsTests(unittest.TestCase):
         self.assertIn("AllowUserModels", policy.UNREADABLE)
 
 
-class StatusTests(MachineFixture):
+class TinyParakeetFixture(MachineFixture):
     def setUp(self):
         super().setUp()
         # Tiny stand-ins for Parakeet v2, v3 and the speech detector, so no
@@ -346,6 +346,8 @@ class StatusTests(MachineFixture):
         self.stage(ae.PARAKEET_MODELS[name])
         self.stage(ae.SILERO_VAD, OTHER)
 
+
+class StatusTests(TinyParakeetFixture):
     def test_setup_shows_a_machine_copy_as_installed_by_it(self):
         self.stage_parakeet()
         with machine(self.root), user_models(False):
@@ -379,6 +381,243 @@ class StatusTests(MachineFixture):
         with machine(self.root), user_models(False):
             self.assertIsNone(ae._quick_status(other, self.cache))
 
+
+def fooled(folder, name="weights.onnx", data=b"\x07\x07" * 500):
+    """Other bytes of the same size, with the modification time put back: IT's
+    record still matches, so only a full check (or a load) finds it."""
+    p = Path(folder) / name
+    before = p.stat()
+    p.write_bytes(data)
+    os.utime(p, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+
+class DamagedCopyTests(TinyParakeetFixture):
+    """#451 (review of 317a3d4, nit 3): IT's copy that passes the quick checks
+    but fails a full check, or fails to load, is kept as failed in memory until
+    its files change. Downloads then shows it as damaged with IT's wording, and
+    the worker names IT, not Manage downloads, which offers nothing for it."""
+
+    def setUp(self):
+        super().setUp()
+        patch = mock.patch.dict(ae._machine_failed, clear=True)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_a_full_check_failure_is_kept_until_the_files_change(self):
+        self.stage_parakeet()
+        main = ae.PARAKEET_MODELS[ae.PARAKEET_V2]
+        folder = ae.machine_model_dir(main, self.root)
+        fooled(folder)
+        with machine(self.root), user_models(False):
+            self.assertEqual(setup.status(ae.PARAKEET_V2, self.cache)[:2],
+                             ("ready", setup.INSTALLED_BY_IT))
+            self.assertIn("checksum", ae.check_machine(main, folder, full=True)[0])
+            # Kept: no quick check trusts IT's record for it now.
+            self.assertFalse(ae.machine_ready(ae.PARAKEET_V2))
+            with mock.patch.object(ae, "_sha256", side_effect=AssertionError("hashed")):
+                self.assertIn("checksum", ae.check_machine(main, folder)[0])
+                self.assertIn("checksum", ae.locate(main, self.cache)[1][0])
+            self.assertEqual(setup.status(ae.PARAKEET_V2, self.cache)[:2],
+                             ("invalid", setup.IT_COPY_DAMAGED))
+            # The speech detector's own copy is still fine, and IT did not
+            # install Parakeet v3, so that one is not IT's to repair.
+            self.assertFalse(ae.machine_damaged_model(ae.PARAKEET_V3))
+            # IT replaces the files (a new modification time and record).
+            write_files(folder, GOOD)
+            later = time.time() + 5
+            for n in GOOD:
+                os.utime(folder / n, (later, later))
+            write_record(main, folder)
+            self.assertTrue(ae.machine_ready(ae.PARAKEET_V2))
+            self.assertEqual(setup.status(ae.PARAKEET_V2, self.cache)[:2],
+                             ("ready", setup.INSTALLED_BY_IT))
+
+    def test_a_passing_full_check_clears_it(self):
+        self.stage_parakeet()
+        main = ae.PARAKEET_MODELS[ae.PARAKEET_V2]
+        folder = ae.machine_model_dir(main, self.root)
+        with machine(self.root):
+            ae._machine_failed[str(folder)] = (ae._fingerprint(folder, main), ["x"])
+            self.assertFalse(ae.machine_ready(ae.PARAKEET_V2))
+            self.assertEqual(ae.check_machine(main, folder, full=True), [])
+            self.assertTrue(ae.machine_ready(ae.PARAKEET_V2))
+
+    def test_a_quick_check_failure_shows_it_wording(self):
+        self.stage_parakeet()
+        (ae.machine_model_dir(ae.SILERO_VAD, self.root) / "weights.onnx").unlink()
+        with machine(self.root), user_models(True):
+            state, plain, detail = setup.status(ae.PARAKEET_V2, self.cache)
+        self.assertEqual((state, plain), ("invalid", setup.IT_COPY_DAMAGED))
+        self.assertIn("speech detector", detail)
+
+    def test_check_every_file_keeps_the_failure_for_downloads(self):
+        # The Downloads check runs in the window process: its failure is the
+        # one Downloads then shows, with nothing written in the machine root.
+        self.stage_parakeet()
+        fooled(ae.machine_model_dir(ae.PARAKEET_MODELS[ae.PARAKEET_V2], self.root))
+        before = listing(self.root)
+        downloads = setup.Downloads(self.cache)
+        with machine(self.root), user_models(False):
+            downloads.state[ae.PARAKEET_V2] = {}
+            downloads._verify(ae.PARAKEET_V2)
+            self.assertEqual(downloads.state[ae.PARAKEET_V2]["message"],
+                             "Some files do not match their checksums. Ask your IT team to "
+                             "repair it.")
+            self.assertEqual(setup.status(ae.PARAKEET_V2, self.cache)[:2],
+                             ("invalid", setup.IT_COPY_DAMAGED))
+        self.assertEqual(listing(self.root), before)
+
+    def test_the_window_learns_of_a_workers_failure_from_its_message(self):
+        self.stage_parakeet()
+        main = ae.PARAKEET_MODELS[ae.PARAKEET_V2]
+        with machine(self.root):
+            ae.note_machine_damage("ModelLoadError: Parakeet v2 failed to load. Repair it.")
+            self.assertTrue(ae.machine_ready(ae.PARAKEET_V2))
+            ae.note_machine_damage(f"ModelLoadError: Parakeet v2 failed to load. "
+                                   f"{ae.machine_damaged(main)} (RuntimeError)")
+            self.assertFalse(ae.machine_ready(ae.PARAKEET_V2))
+            self.assertEqual(ae.check_machine(main, ae.machine_model_dir(main, self.root)),
+                             [ae.MACHINE_FAILED])
+            # Only the copy named: the speech detector, which Parakeet v3
+            # shares, is not marked.
+            vad = ae.machine_model_dir(ae.SILERO_VAD, self.root)
+            self.assertEqual(ae._machine_failure(ae.SILERO_VAD, vad), [])
+        self.assertEqual(ae.machine_damaged(ae.SILERO_VAD),
+                         "Your IT team's copy of the speech detector is damaged. Ask your IT "
+                         "team to repair it.")
+        self.assertEqual(ae.machine_damaged(ae.SPEAKER_MODEL),
+                         "Your IT team's copy of the speaker identification model is damaged. "
+                         "Ask your IT team to repair it.")
+        self.assertEqual(ae.machine_damaged(ae.WHISPER_MODELS[ae.WHISPER_LARGE]),
+                         "Your IT team's copy of Whisper large-v3 is damaged. Ask your IT team "
+                         "to repair it.")
+
+    def fake_onnx(self, fails):
+        """onnx_asr and onnxruntime stand-ins: loading a model from a folder in
+        fails raises, as the runtime does for a damaged model."""
+        import types
+        onnx_asr = types.ModuleType("onnx_asr")
+        loaded = []
+
+        def load_model(name, folder, **kwargs):
+            if Path(folder) in fails:
+                raise RuntimeError("synthetic: model is damaged")
+            loaded.append(Path(folder))
+            return mock.MagicMock()
+        onnx_asr.load_model = load_model
+        onnx_asr.load_vad = lambda name, folder, **kwargs: mock.MagicMock()
+        rt = types.ModuleType("onnxruntime")
+        rt.disable_telemetry_events = lambda: None
+        rt.SessionOptions = mock.MagicMock
+        return mock.patch.dict(sys.modules, onnx_asr=onnx_asr, onnxruntime=rt), loaded
+
+    def test_parakeet_names_it_when_its_copy_fails_to_load(self):
+        self.stage_parakeet()
+        main = ae.PARAKEET_MODELS[ae.PARAKEET_V2]
+        folder = ae.machine_model_dir(main, self.root)
+        fooled(folder)
+        modules, loaded = self.fake_onnx({folder})
+        with modules, machine(self.root), user_models(False), \
+                self.assertRaises(ae.ModelLoadError) as caught:
+            ae.ParakeetEngine(ae.PARAKEET_V2, self.cache, 1).load()
+        message = str(caught.exception)
+        # Tried again without IT's copy, which it now keeps as failed: with no
+        # copy of the user's allowed, the error names IT.
+        self.assertTrue(message.startswith(f"Parakeet v2 cannot be used. "
+                                           f"{ae.machine_damaged(main)} ("), message)
+        self.assertNotIn("Manage downloads", message)
+        self.assertEqual(loaded, [])
+
+    def test_parakeet_falls_back_to_the_users_copy_when_allowed(self):
+        self.stage_parakeet()
+        main = ae.PARAKEET_MODELS[ae.PARAKEET_V2]
+        folder = ae.machine_model_dir(main, self.root)
+        fooled(folder)
+        write_files(ae.model_dir(main, self.cache), GOOD)
+        modules, loaded = self.fake_onnx({folder})
+        with modules, machine(self.root), user_models(True):
+            ae.ParakeetEngine(ae.PARAKEET_V2, self.cache, 1).load()
+        self.assertEqual(loaded, [ae.model_dir(main, self.cache)])
+
+    def test_a_load_failure_of_a_sound_copy_keeps_its_advice(self):
+        # The files hash correctly, so the runtime failed, not IT's copy.
+        self.stage_parakeet()
+        folder = ae.machine_model_dir(ae.PARAKEET_MODELS[ae.PARAKEET_V2], self.root)
+        modules, _ = self.fake_onnx({folder})
+        with modules, machine(self.root), user_models(False), \
+                self.assertRaises(ae.ModelLoadError) as caught:
+            ae.ParakeetEngine(ae.PARAKEET_V2, self.cache, 1).load()
+        self.assertIn(f"failed to load. {ae.PARAKEET_FIX} (RuntimeError", str(caught.exception))
+        with machine(self.root):
+            self.assertTrue(ae.machine_ready(ae.PARAKEET_V2))
+
+    def test_whisper_and_the_speaker_model_name_it(self):
+        from workspace import engines
+        whisper = make_spec(name=ae.WHISPER_TURBO)
+        speaker = make_spec(name=ae.SPEAKER_MODEL.name)
+        damaged = {**GOOD, "weights.onnx": b"\x09" * 1000}
+        with mock.patch.dict(ae.WHISPER_MODELS, {ae.WHISPER_TURBO: whisper}), \
+                mock.patch.object(ae, "SPEAKER_MODEL", speaker):
+            for spec in (whisper, speaker):
+                self.stage(spec, damaged, record=False)
+            import types
+            fw = types.ModuleType("faster_whisper")
+            fw.WhisperModel = mock.MagicMock(side_effect=AssertionError("loaded"))
+            with machine(self.root), user_models(False), \
+                    mock.patch.dict(sys.modules, faster_whisper=fw):
+                with self.assertRaises(ae.ModelLoadError) as caught:
+                    engines.load_engine(ae.WHISPER_TURBO, self.cache, 1)
+                self.assertEqual(str(caught.exception),
+                                 "Whisper large-v3 turbo is not installed or failed "
+                                 f"verification. {ae.machine_damaged(whisper)}")
+                with self.assertRaises(ae.ModelLoadError) as caught:
+                    engines.diarize_audio("pyannote", self.cache, [0.0] * 16, None, 1)
+                self.assertEqual(str(caught.exception),
+                                 "The speaker identification model is not installed or failed "
+                                 f"verification. {ae.machine_damaged(speaker)}")
+
+    def test_whisper_falls_back_when_its_copy_fails_to_load(self):
+        from workspace import engines
+        whisper = make_spec(name=ae.WHISPER_TURBO)
+        with mock.patch.dict(ae.WHISPER_MODELS, {ae.WHISPER_TURBO: whisper}):
+            folder = self.stage(whisper)
+            fooled(folder)
+            write_files(ae.model_dir(whisper, self.cache), GOOD)
+            import types
+            fw = types.ModuleType("faster_whisper")
+            opened = []
+
+            def model(path, **kwargs):
+                if Path(path) == folder:
+                    raise RuntimeError("synthetic: model is damaged")
+                opened.append(Path(path))
+                return "model"
+            fw.WhisperModel = model
+            with machine(self.root), mock.patch.dict(sys.modules, faster_whisper=fw):
+                with user_models(True):
+                    self.assertEqual(engines._whisper_model(whisper, self.cache, 1), "model")
+                self.assertEqual(opened, [ae.model_dir(whisper, self.cache)])
+                ae._machine_failed.clear()
+                with user_models(False), self.assertRaises(ae.ModelLoadError) as caught:
+                    engines._whisper_model(whisper, self.cache, 1)
+                self.assertEqual(str(caught.exception),
+                                 "Whisper large-v3 turbo is not installed or failed "
+                                 f"verification. {ae.machine_damaged(whisper)}")
+
+    def test_downloads_names_repair_only_where_it_is_offered(self):
+        invalid = {"state": "invalid", "status": setup.INVALID}
+        self.assertEqual(setup.shown_status(invalid, True), setup.INVALID)
+        self.assertEqual(setup.shown_status(invalid, False), setup.INVALID_ASK_IT)
+        gpu_invalid = {"state": "invalid", "status": "Damaged or incomplete. Repair downloads "
+                       "a fresh, verified copy; the damaged copy is kept aside."}
+        self.assertEqual(setup.shown_status(gpu_invalid, False), setup.INVALID_ASK_IT)
+        it = {"state": "invalid", "status": setup.IT_COPY_DAMAGED}
+        for offered in (True, False):
+            self.assertEqual(setup.shown_status(it, offered), setup.IT_COPY_DAMAGED)
+        for state in ("ready", "missing"):
+            card = {"state": state, "status": "Not downloaded yet."}
+            self.assertEqual(setup.shown_status(card, False), "Not downloaded yet.")
+        self.assertNotIn("Repair", setup.INVALID_ASK_IT + setup.IT_COPY_DAMAGED)
 
 if __name__ == "__main__":
     unittest.main()

@@ -305,6 +305,24 @@ def model_dir(spec, cache_dir):
 MACHINE_RECORD = "models.verified.json"
 MACHINE_LINK = "the copy installed by your IT team is a link to somewhere else, so it was not used"
 _machine_root = []          # machine_root(), worked out once per process
+# Machine copies a full check found damaged in this process, {folder: (fingerprint,
+# problems)} (#451). IT's copy has no failure record: the app writes nothing in the machine
+# root and never reads a record from the user's cache for it. So a failure is kept
+# here, in memory, until the files change (IT repaired them) or the process ends.
+# It can only refuse a copy. The window learns of a worker's from its message
+# (note_machine_damage), so Downloads stops showing the copy as ready.
+_machine_failed = {}
+MACHINE_FAILED = "the copy installed by your IT team failed a full check"
+_PART_NAMES = {"silero-vad": "the speech detector",
+               "speaker-diarization-community-1": "the speaker identification model"}
+
+
+def machine_damaged(spec):
+    """A worker's advice when IT's copy of spec cannot be used (#451): only IT can
+    repair it, so Manage downloads is not named (Downloads offers nothing for it).
+    The window finds it in the worker's message by this exact text."""
+    what = _PART_NAMES.get(spec.name, label(spec.name))
+    return f"Your IT team's copy of {what} is damaged. Ask your IT team to repair it."
 
 
 def machine_root():
@@ -402,9 +420,20 @@ def _machine_record_ok(spec, folder):
         return False
 
 
+def _machine_failure(spec, folder):
+    """The problems a full check in this process found with these exact files
+    (same sizes and modification times), else []."""
+    try:
+        failed = _machine_failed.get(str(folder))
+        return list(failed[1]) if failed and failed[0] == _fingerprint(Path(folder), spec) else []
+    except OSError:
+        return []
+
+
 def check_machine(spec, folder, full=False, keep=None):
     """check_files for a machine copy: IT's record or a full hash, and never a
-    write. A link anywhere in it refuses the copy."""
+    write. A link anywhere in it refuses the copy. A full hash's outcome is kept
+    in memory (_machine_failed), and a quick check honours a failure kept there."""
     folder = Path(folder)
     if _machine_linked(spec, folder):
         return [MACHINE_LINK]
@@ -413,21 +442,60 @@ def check_machine(spec, folder, full=False, keep=None):
     problems = _quick_problems(spec, folder)
     if problems:
         return problems
-    if not full and keep is None and _machine_record_ok(spec, folder):
-        return []
-    return _hash_problems(spec, folder, keep)
+    if not full and keep is None:
+        failed = _machine_failure(spec, folder)
+        if failed:
+            return failed
+        if _machine_record_ok(spec, folder):
+            return []
+    problems = _hash_problems(spec, folder, keep)
+    try:
+        if problems:
+            _machine_failed[str(folder)] = (_fingerprint(folder, spec), list(problems))
+        else:
+            _machine_failed.pop(str(folder), None)
+    except OSError:
+        pass
+    return problems
+
+
+def note_machine_damage(message):
+    """The window process: a worker's message says IT's copy of a model is
+    damaged (machine_damaged), so that copy is kept as failed here too, as its
+    files are now (#451). Downloads then shows it as damaged, not ready."""
+    for spec in (*MANAGED_MODELS.values(), SILERO_VAD):
+        folder = machine_copy(spec) if machine_damaged(spec) in message else None
+        if folder is not None:
+            try:
+                _machine_failed[str(folder)] = (_fingerprint(folder, spec), [MACHINE_FAILED])
+            except OSError:
+                pass
 
 
 def machine_ready(name):
     """True when a machine copy of this model (with its speech detector, for
-    Parakeet) is there and passes the quick checks: Setup shows it as
-    installed by IT, with nothing to download, repair or remove."""
+    Parakeet) is there and passes the quick checks, with no failure kept in
+    memory: Setup shows it as installed by IT, with nothing to download, repair
+    or remove."""
     specs = [MANAGED_MODELS[name]] + ([SILERO_VAD] if is_parakeet(name) else [])
-    for spec in specs:
-        folder = machine_copy(spec)
-        if folder is None or _machine_linked(spec, folder) or _quick_problems(spec, folder):
-            return False
-    return True
+    return all(machine_copy(s) is not None and not machine_unusable(s) for s in specs)
+
+
+def machine_unusable(spec):
+    """True when IT's copy of spec is there but fails the quick checks (a link,
+    a missing file, a wrong size) or a full check this process kept (#451). No
+    hashing."""
+    folder = machine_copy(spec)
+    return folder is not None and bool(
+        _machine_linked(spec, folder) or _quick_problems(spec, folder)
+        or _machine_failure(spec, folder))
+
+
+def machine_damaged_model(name):
+    """True when IT installed this model on a machine install but its copy (or,
+    for Parakeet, its speech detector's) is not usable (#451): Downloads then
+    names IT, which alone can repair it."""
+    return machine_copy(MANAGED_MODELS[name]) is not None and not machine_ready(name)
 
 
 def staging_dir(spec, cache_dir):
@@ -578,7 +646,7 @@ def _quick_status(spec, cache_dir):
     for folder in hub_candidates(spec, cache_dir):
         if _is_machine(spec, folder):
             problems = ([MACHINE_LINK] if _machine_linked(spec, folder)
-                        else _quick_problems(spec, folder))
+                        else _quick_problems(spec, folder) or _machine_failure(spec, folder))
         else:
             problems = (_quick_problems(spec, folder)
                         or _recorded_failure(spec, folder, _marker_for(spec, cache_dir, folder)))
@@ -1052,41 +1120,61 @@ class ParakeetEngine:
                 f"revision {self.spec.revision[:7]})")
 
     def load(self):
-        """Verify then load, entirely from local files. Raises ModelLoadError."""
+        """Verify then load, entirely from local files. Raises ModelLoadError.
+        IT's copy passes on its record; one that then fails to load and fails a
+        full check is kept as failed (check_machine), and the load is tried once
+        more without it: with the user's own copy, where AllowUserModels allows
+        one, or an error that names IT (#451)."""
+        for again in (False, True):
+            folders = self._locate()
+            try:
+                return self._load(folders)
+            except Exception as exc:
+                parts = (self.spec, SILERO_VAD)
+                damaged = [s for s, f in zip(parts, folders, strict=True)
+                           if _is_machine(s, f) and check_machine(s, f, full=True)]
+                if damaged and not again:
+                    continue
+                fix = machine_damaged(damaged[0]) if damaged else PARAKEET_FIX
+                raise ModelLoadError(
+                    f"{label(self.spec.name)} failed to load. {fix} "
+                    f"({type(exc).__name__}: {exc})") from exc
+
+    def _locate(self):
         folders = []
         for spec in (self.spec, SILERO_VAD):
             folder, problems = locate(spec, self.cache_dir)     # IT's copy first (#111 B7a)
             if problems:
+                # Only IT can repair IT's copy, which comes first (#451).
+                fix = machine_damaged(spec) if machine_copy(spec) is not None else PARAKEET_FIX
                 raise ModelLoadError(
-                    f"{label(spec.name)} cannot be used. {PARAKEET_FIX} "
+                    f"{label(spec.name)} cannot be used. {fix} "
                     f"({'; '.join(problems)})")
             folders.append(folder)
-        try:
-            import onnx_asr
-            import onnxruntime as rt
-            rt.disable_telemetry_events()   # before any session, in every process
-            opts = rt.SessionOptions()
-            opts.intra_op_num_threads = self.threads
-            opts.inter_op_num_threads = 1
-            # Idle ONNX Runtime threads busy-wait by default. On a Core Ultra 7
-            # 255H (performance and efficiency cores) that made 14 threads 3 to
-            # 4 times slower than 4. Without spinning, extra threads no longer
-            # hurt and 4 threads are slightly faster too.
-            opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
-            cpu = ["CPUExecutionProvider"]
-            # An existing local folder makes onnx-asr load offline, with no downloads.
-            asr = onnx_asr.load_model(
-                self.spec.onnx_asr_name, folders[0],
-                quantization=self.spec.quantization, sess_options=opts, providers=cpu)
-            vad = onnx_asr.load_vad(SILERO_VAD.onnx_asr_name, folders[1],
-                                    sess_options=opts, providers=cpu)
-            self._asr = asr.with_vad(vad, batch_size=1,
-                                     max_speech_duration_s=MAX_SEGMENT_SECONDS,
-                                     min_silence_duration_ms=VAD_MIN_SILENCE_MS).with_timestamps()
-        except Exception as exc:
-            raise ModelLoadError(
-                f"{label(self.spec.name)} failed to load. {PARAKEET_FIX} "
-                f"({type(exc).__name__}: {exc})") from exc
+        return folders
+
+    def _load(self, folders):
+        import onnx_asr
+        import onnxruntime as rt
+        rt.disable_telemetry_events()   # before any session, in every process
+        opts = rt.SessionOptions()
+        opts.intra_op_num_threads = self.threads
+        opts.inter_op_num_threads = 1
+        # Idle ONNX Runtime threads busy-wait by default. On a Core Ultra 7
+        # 255H (performance and efficiency cores) that made 14 threads 3 to
+        # 4 times slower than 4. Without spinning, extra threads no longer
+        # hurt and 4 threads are slightly faster too.
+        opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
+        cpu = ["CPUExecutionProvider"]
+        # An existing local folder makes onnx-asr load offline, with no downloads.
+        asr = onnx_asr.load_model(
+            self.spec.onnx_asr_name, folders[0],
+            quantization=self.spec.quantization, sess_options=opts, providers=cpu)
+        vad = onnx_asr.load_vad(SILERO_VAD.onnx_asr_name, folders[1],
+                                sess_options=opts, providers=cpu)
+        self._asr = asr.with_vad(vad, batch_size=1,
+                                 max_speech_duration_s=MAX_SEGMENT_SECONDS,
+                                 min_silence_duration_ms=VAD_MIN_SILENCE_MS).with_timestamps()
         return self
 
     def transcribe(self, audio):

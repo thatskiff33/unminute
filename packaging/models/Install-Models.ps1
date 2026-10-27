@@ -14,13 +14,18 @@
     (exit 4). Takes the installer's install.lock, so it never runs beside an install,
     update or uninstall of the app.
   - Checks the package: models.json, and every model file in it by exact name,
-    size and SHA-256 (exit 4). A link anywhere stops it.
+    size and SHA-256 (exit 4). A link anywhere stops it. A model that an installed
+    version of the app pins (the same family, folder and revision in its
+    model-manifest.json) must list exactly the files that version lists, by name, size
+    and SHA-256 (exit 4).
   - For each model, into models\<family>\<folder>\<revision> under the install folder:
     a copy of the same revision already there that matches every name, size and
     SHA-256 is kept and only its record rewritten; otherwise the package's copy goes
     into models\.staging-<32 hex digits>, is checked again, and replaces the old folder
     by two renames. A folder in use (the app may hold a model open) is left as it is
-    and the run exits 3 for Intune to try again.
+    and the run exits 3 for Intune to try again. Access denied counts as in use only
+    while the run can still write beside the folder; otherwise it is a permission
+    fault and the run fails (exit 1), rather than Intune trying again without end.
   - Writes models.verified.json in each model folder: repository, revision, folder,
     "ok", and every file's size and modification time (nanoseconds since 1 January
     1970 UTC, as Python's st_mtime_ns). The app trusts a copy only through this record,
@@ -32,13 +37,17 @@
   - Logs fixed words and numbers only to the install folder's logs\install.log.
 
   -Uninstall removes the models folder (links as links, never followed) and with it the
-  detection file.
+  detection file: first renamed aside in one step, so a file in use refuses it with
+  nothing removed (exit 3), then removed. With Unminute no longer installed for everyone
+  (its machine uninstall removes the models too), or no models folder, there is nothing
+  to remove, and it exits 0.
 
   Exit codes: 0 done, 1 failed (including another install still running after 10
-  minutes), 2 not allowed (a 32-bit or non-elevated run, or Unminute not installed for
-  everyone on this computer), 3 a model folder is in use (Intune tries again), 4 the
-  package failed its checks, or the install folder's permissions have changed or it
-  holds a link where models go.
+  minutes, or a permission fault), 2 not allowed (a 32-bit or non-elevated run, or, to
+  install, Unminute not installed for everyone on this computer), 3 a model folder is in
+  use (Intune tries again), 4 the package failed its checks (including against an
+  installed version's model list), or the install folder's permissions have changed or
+  it holds a link where models go.
 
 .EXAMPLE
   %SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File Install-Models.ps1
@@ -126,23 +135,44 @@ function Get-FileSha256([string]$Path) {
     (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
 }
 
-function Test-TransientLock([Exception]$Exception) {
+function Test-TransientLock([Exception]$Exception, [string]$LockPath = "") {
     for ($e = $Exception; $e; $e = $e.InnerException) {
-        if ($e -is [UnauthorizedAccessException]) { return $true }
-        if ($e -isnot [IO.IOException]) { continue }
-        # Access denied (0x80070005) or in use, a sharing violation (0x80070020).
-        if (@(0x80070005, 0x80070020) -contains $e.HResult) { return $true }
-        # Windows PowerShell's folder rename reports access denied as a plain
-        # IOException without the Windows code (0x80131620, "Access to the path ... is
-        # denied"). Other failures of that rename carry their own code.
-        if ($e.GetType() -eq [IO.IOException] -and $e.HResult -eq 0x80131620) { return $true }
+        if ($e -isnot [IO.IOException] -and $e -isnot [UnauthorizedAccessException]) { continue }
+        # In use: a sharing violation (0x80070020) or a lock violation (0x80070021).
+        if ($e -is [IO.IOException] -and @(0x80070020, 0x80070021) -contains $e.HResult) { return $true }
+        # Access denied: an UnauthorizedAccessException, an IOException with the Windows
+        # code (0x80070005), or Windows PowerShell's folder rename's plain IOException
+        # without it (0x80131620, "Access to the path ... is denied"). Windows gives it
+        # for a folder that holds an open file and for a running program, which pass, but
+        # also for a permission fault, which does not (#451): it counts as in use only
+        # when this run can still write and remove a file beside $LockPath.
+        if ($e -is [UnauthorizedAccessException] -or $e.HResult -eq 0x80070005 -or
+            ($e.GetType() -eq [IO.IOException] -and $e.HResult -eq 0x80131620)) {
+            return (Test-WriteBeside $LockPath)
+        }
     }
     return $false
 }
 
+# Whether this run can create, and delete, a file in the folder that holds $Path: a
+# probe .probe-<32 hex digits>.tmp, deleted when closed (so even a run stopped part
+# way leaves none). $false for no $Path, or when Windows refuses either.
+function Test-WriteBeside([string]$Path) {
+    if (-not $Path) { return $false }
+    try {
+        $parent = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Path))
+        if (-not $parent) { return $false }
+        $probe = [IO.Path]::Combine($parent, ".probe-" + [guid]::NewGuid().ToString("N") + ".tmp")
+        [IO.FileStream]::new($probe, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None, 1,
+            [IO.FileOptions]::DeleteOnClose).Dispose()
+        return $true
+    } catch { return $false }
+}
+
 # Runs $Action (which must not use the names below) until it succeeds, it fails for
-# any reason but a file in use, or $LockRetrySeconds have passed since its first refusal.
-function Invoke-LockRetry([scriptblock]$Action) {
+# any reason but a file in use (Test-TransientLock, for the item at $LockPath), or
+# $LockRetrySeconds have passed since its first refusal.
+function Invoke-LockRetry([scriptblock]$Action, [string]$LockPath = "") {
     $clock = $null
     $pause = 250
     $said = $false
@@ -153,7 +183,7 @@ function Invoke-LockRetry([scriptblock]$Action) {
         } catch {
             if ($null -eq $clock) { $clock = [Diagnostics.Stopwatch]::StartNew() }
             $left = $LockRetrySeconds * 1000 - $clock.ElapsedMilliseconds
-            if ($left -le 0 -or -not (Test-TransientLock $_.Exception)) { throw }
+            if ($left -le 0 -or -not (Test-TransientLock $_.Exception $LockPath)) { throw }
             if (-not $said) {
                 Write-Step "A file in the folder is in use, perhaps by a virus scan. Trying again for up to $LockRetrySeconds seconds..."
                 $said = $true
@@ -200,7 +230,7 @@ function Enter-InstallLock {
                 [IO.FileShare]::None, 1, [IO.FileOptions]::DeleteOnClose)
             return
         } catch {
-            if (-not (Test-TransientLock $_.Exception)) { throw }
+            if (-not (Test-TransientLock $_.Exception $path)) { throw }
             if ($clock.Elapsed.TotalSeconds -ge $LockWaitSeconds) {
                 Stop-Install 1 "Another install or update of $AppName is still running. Run this again when it has finished."
             }
@@ -420,10 +450,10 @@ function Install-ModelFolder([string]$Models, $Model) {
         $aside = $null
         if ([IO.Directory]::Exists($target)) {
             $aside = [IO.Path]::Combine($Models, ".retired-" + [guid]::NewGuid().ToString("N"))
-            Invoke-LockRetry { [IO.Directory]::Move($target, $aside) }
+            Invoke-LockRetry { [IO.Directory]::Move($target, $aside) } $target
         }
         try {
-            Invoke-LockRetry { [IO.Directory]::Move($staging, $target) }
+            Invoke-LockRetry { [IO.Directory]::Move($staging, $target) } $staging
         } catch {
             # The old copy goes back, so the model is not left missing until the next run.
             if ($aside -and -not [IO.Directory]::Exists($target)) { try { [IO.Directory]::Move($aside, $target) } catch { } }
@@ -454,6 +484,40 @@ function Get-PinnedRevision([string]$Root, $Manifest) {
         }
     }
     return , $pinned
+}
+
+# One model's files as one line: each "name|size|SHA-256", in name order.
+function Get-FileLine($Model) {
+    $lines = @(foreach ($file in @($Model.files)) { "$([string]$file.name)|$([string]$file.size)|$([string]$file.sha256)" })
+    return (($lines | Sort-Object -CaseSensitive) -join "/")
+}
+
+# What is wrong with the package against the installed versions' own model lists, or
+# $null (#451): a model that an installed version's model-manifest.json pins (the same
+# family, folder and revision) must have the same repository and exactly the same files,
+# by name, size and SHA-256. The app trusts IT's record for that revision without hashing
+# (except the speaker model), so the record never vouches for files that version's own
+# list does not name. A version whose list cannot be read is not compared here
+# (Get-PinnedRevision then removes no older model).
+function Get-PinProblem([string]$Root, $Manifest) {
+    $versions = [IO.DirectoryInfo]::new([IO.Path]::Combine($Root, "versions"))
+    if (-not $versions.Exists) { return $null }
+    foreach ($dir in $versions.GetDirectories()) {
+        if ((Test-Link $dir) -or $dir.Name -match '\.(partial|old|retired)\z') { continue }
+        $file = [IO.FileInfo]::new([IO.Path]::Combine($dir.FullName, "model-manifest.json"))
+        if (-not $file.Exists -or (Test-Link $file)) { continue }
+        try { $list = [IO.File]::ReadAllText($file.FullName) | ConvertFrom-Json } catch { continue }
+        foreach ($pin in @($list.models)) {
+            foreach ($model in $Manifest.models) {
+                if ([string]$pin.family -cne $model.family -or [string]$pin.folder -cne $model.folder -or
+                    [string]$pin.revision -cne $model.revision) { continue }
+                if ([string]$pin.repository -cne $model.repository -or (Get-FileLine $pin) -cne (Get-FileLine $model)) {
+                    return "$($model.family)/$($model.folder) does not match the files that installed version $($dir.Name) pins for it."
+                }
+            }
+        }
+    }
+    return $null
 }
 
 # Removes revision folders that nothing pins, and working folders left by a run that
@@ -507,7 +571,9 @@ function Set-DetectionFile([string]$Models, [string]$Sha) {
 # The checks every run makes before it writes anything: 64-bit and elevated; a machine
 # install of Unminute (its install folder with its record); that folder's permissions;
 # then, holding the installer's lock, nothing beneath it with permissions of its own.
-function Start-ModelRun {
+# -Removing (the uninstall): no install folder returns $null, as there is nothing to
+# remove, and the folder's record is not needed (#451).
+function Start-ModelRun([switch]$Removing) {
     if (-not (Test-64BitProcess)) {
         Stop-Install 2 ("The model package needs 64-bit Windows PowerShell, so nothing was changed. Start it with " +
             "%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe.")
@@ -516,7 +582,11 @@ function Start-ModelRun {
         Stop-Install 2 "The model package needs administrator rights (Intune's System context), so nothing was changed."
     }
     $root = Get-MachineRoot
-    if (-not $root -or -not [IO.Directory]::Exists($root) -or -not [IO.File]::Exists([IO.Path]::Combine($root, "current.json"))) {
+    if ($Removing -and (-not $root -or (-not [IO.Directory]::Exists($root) -and -not [IO.File]::Exists($root)))) {
+        return $null
+    }
+    if (-not $root -or -not [IO.Directory]::Exists($root) -or
+        (-not $Removing -and -not [IO.File]::Exists([IO.Path]::Combine($root, "current.json")))) {
         Stop-Install 2 "$AppName is not installed for everyone on this computer. Install it first (install.ps1 -Machine), then the models."
     }
     if (Test-Link ([IO.DirectoryInfo]::new($root))) { Stop-Install 4 $PermissionMessage }
@@ -559,6 +629,8 @@ function Invoke-ModelInstall {
     if ($null -eq $packaged -or $packaged.Count -ne $expected) {
         Stop-Install 4 "The model package failed its checks: it holds files that models.json does not list. Nothing was changed."
     }
+    $problem = Get-PinProblem $Options.InstallDir $manifest
+    if ($problem) { Stop-Install 4 "The model package failed its checks: $problem Nothing was changed." }
     $script:LogStep = "copy"
     Write-ModelLog "begun"
     [void][IO.Directory]::CreateDirectory($models)
@@ -573,7 +645,7 @@ function Invoke-ModelInstall {
             $result = Install-ModelFolder $models $model
             Write-Step "$($model.name): $result."
         } catch {
-            if (-not (Test-TransientLock $_.Exception)) { throw }
+            if (-not (Test-TransientLock $_.Exception (Get-ModelDir $models $model))) { throw }
             $busy++
         }
     }
@@ -590,18 +662,33 @@ function Invoke-ModelInstall {
     Write-Step "The models are installed for everyone on this computer. Package $sha"
 }
 
+# -Uninstall finishes or refuses cleanly (#451). With Unminute's install folder gone (the
+# app's machine uninstall removes the models with it) or no models folder, there is
+# nothing to remove: done. Otherwise the models folder, with the detection file, is
+# renamed aside in one step to staging-<32 hex digits> in the install folder, a name the
+# installer and the machine uninstall remove as a leftover. A file in use refuses that
+# rename, and nothing is removed (exit 3, Intune tries again). The app never sees part of
+# the models, and Intune's detection rule finds none from that rename on. The renamed
+# folder is then removed; what a scan still holds is left for the installer.
 function Invoke-ModelUninstall {
-    $models = Start-ModelRun
+    $models = Start-ModelRun -Removing
+    if (-not $models -or -not [IO.Directory]::Exists($models)) {
+        if ($models) { $script:LogStep = "done"; Write-ModelLog "ok" 0 }
+        Write-Step "There are no models installed for everyone on this computer, so nothing was removed."
+        return
+    }
     $script:LogStep = "remove"
-    $dir = [IO.DirectoryInfo]::new($models)
+    $aside = [IO.Path]::Combine($Options.InstallDir, "staging-" + [guid]::NewGuid().ToString("N"))
     try {
-        if ($dir.Exists) { Invoke-LockRetry { Remove-OwnFolder $models } }
+        Invoke-LockRetry { [IO.Directory]::Move($models, $aside) } $models
     } catch {
-        if (Test-TransientLock $_.Exception) {
-            Stop-Install 3 "A model file is in use, so the models were not all removed. Run this again later."
+        if (Test-TransientLock $_.Exception $models) {
+            Stop-Install 3 "A model file is in use, so nothing was removed. Run this again later (Intune tries again)."
         }
         throw
     }
+    try { Invoke-LockRetry { Remove-OwnFolder $aside } $aside }
+    catch { Write-Warn "Some removed model files were still in use; the next install or update of $AppName clears them." }
     $script:LogStep = "done"
     Write-ModelLog "ok" 0
     Write-Step "The models installed for everyone on this computer were removed."

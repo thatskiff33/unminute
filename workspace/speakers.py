@@ -33,14 +33,16 @@ class SpeakerResult:
 
 
 def run_speakers(store, mid, vid, handle, audio, *, threads, hint=None, model="pyannote",
-                 device="cpu", gpu_site=None, skips_seen=None, downloads_allowed=True):
+                 device="cpu", gpu_site=None, skips_seen=None, downloads_allowed=True,
+                 only_it_models=False):
     """Separate speakers for an already-transcribed version. Returns a SpeakerResult.
     audio: the meeting's media.AudioRef (the encrypted file, its key and
     context; the key reaches the worker only in the diarize request).
     skips_seen: the version's skip count when this pass was chosen; a skip
     since then means nothing starts (SKIPPED). downloads_allowed=False
     (managed policy, read by the caller) gives a speaker model that is not
-    ready the IT wording instead of Manage downloads (#257)."""
+    ready the IT wording instead of Manage downloads (#257); only_it_models (a
+    machine install using only IT's models) words it so (#451)."""
     if hint is not None and (isinstance(hint, bool) or not isinstance(hint, int)
                              or not 1 <= hint <= MAX_HINT):
         return SpeakerResult.BAD_HINT
@@ -61,9 +63,12 @@ def run_speakers(store, mid, vid, handle, audio, *, threads, hint=None, model="p
     except Exception as exc:
         from workspace.worker import safe_message
         why = f"{type(exc).__name__}: {safe_message(exc)}"
+        # IT's copy found damaged: Downloads shows it so (#451).
+        from workspace.asr_engines import note_machine_damage
+        note_machine_damage(why)
         if not downloads_allowed:
             from workspace.engines import advice_without_downloads
-            why = advice_without_downloads(why)
+            why = advice_without_downloads(why, only_it_models)
         _end(store, rid, "failed", why[:300])
         return SpeakerResult.FAILED
     try:

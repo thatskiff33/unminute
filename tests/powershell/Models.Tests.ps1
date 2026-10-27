@@ -511,4 +511,115 @@ Describe "Install-Models.ps1" {
         Get-Snapshot $script:Slot | Should -BeExactly $before
         Test-Path -LiteralPath (Join-Path $script:Root "current.json") | Should -BeTrue
     }
+
+    It "refuses a package whose model differs from what an installed version pins" {
+        # #451: the same family, folder and revision as an installed version's own
+        # list, but another file (or size, or SHA-256): IT's record would vouch for it.
+        $pinned = @(Get-Listed $script:Entries)
+        $pinned[0].files[2].sha256 = "f" * 64
+        [IO.File]::WriteAllText((Join-Path $script:Slot "model-manifest.json"), (@{ models = $pinned } | ConvertTo-Json -Depth 6))
+        { Invoke-TestInstall } | Should -Throw "STOP 4"
+        Test-Path -LiteralPath $script:Models | Should -BeFalse
+    }
+
+    It "installs a package that matches what an installed version pins" {
+        [IO.File]::WriteAllText((Join-Path $script:Slot "model-manifest.json"),
+            (@{ models = @(Get-Listed $script:Entries) } | ConvertTo-Json -Depth 6))
+        Invoke-TestInstall
+        [IO.File]::ReadAllText((Join-Path $script:One "sub\weights.bin")) | Should -BeExactly "weights one"
+    }
+
+    It "tells a permission fault from a file in use" {
+        # #451: a sharing violation is in use; access denied is in use only where the
+        # run can still write. The scratch folder denies this user creating files.
+        $open = New-TestFolder "w"
+        $closed = New-TestFolder "d"
+        $me = [Security.Principal.WindowsIdentity]::GetCurrent().User
+        $rule = [Security.AccessControl.FileSystemAccessRule]::new($me, "CreateFiles, WriteData", "Deny")
+        $acl = [IO.DirectoryInfo]::new($closed).GetAccessControl()
+        $acl.AddAccessRule($rule)
+        [IO.DirectoryInfo]::new($closed).SetAccessControl($acl)
+        try {
+            $inUse = [IO.IOException]::new("in use", -2147024864)
+            $denied = [UnauthorizedAccessException]::new("denied")
+            $folderDenied = [IO.IOException]::new("denied", -2147024891)
+            Test-TransientLock $inUse (Join-Path $closed "x") | Should -BeTrue
+            Test-TransientLock $inUse | Should -BeTrue
+            Test-TransientLock $denied (Join-Path $open "x") | Should -BeTrue
+            Test-TransientLock $folderDenied (Join-Path $open "x") | Should -BeTrue
+            Test-TransientLock $denied (Join-Path $closed "x") | Should -BeFalse
+            Test-TransientLock $folderDenied (Join-Path $closed "x") | Should -BeFalse
+            Test-TransientLock $denied | Should -BeFalse
+            Test-TransientLock ([IO.IOException]::new("other", -2147024784)) (Join-Path $open "x") | Should -BeFalse
+            @(Get-ChildItem -LiteralPath $open -Force).Count | Should -Be 0     # the probe never stays
+        } finally {
+            [void]$acl.RemoveAccessRule($rule)
+            [IO.DirectoryInfo]::new($closed).SetAccessControl($acl)
+        }
+    }
+
+    It "fails, rather than asking to be run again, when it cannot change a model folder" {
+        # #451: the old copy cannot be moved aside because this run may not change the
+        # folder (a permission fault), not because a file is in use: not exit 3, which
+        # Intune would try again without end. Nothing is lost.
+        Invoke-TestInstall
+        [IO.File]::WriteAllText((Join-Path $script:One "sub\weights.bin"), "weights 0ne")
+        Set-Variable -Name LockRetrySeconds -Value 0
+        Mock Get-AclChangeCount { 0 }
+        $parent = Split-Path -Parent $script:One
+        $me = [Security.Principal.WindowsIdentity]::GetCurrent().User
+        $rules = @(
+            @($parent, [Security.AccessControl.FileSystemAccessRule]::new($me, "CreateFiles, WriteData, DeleteSubdirectoriesAndFiles", "Deny")),
+            @($script:One, [Security.AccessControl.FileSystemAccessRule]::new($me, "Delete", "Deny")))
+        foreach ($r in $rules) {
+            $acl = [IO.DirectoryInfo]::new($r[0]).GetAccessControl(); $acl.AddAccessRule($r[1]); [IO.DirectoryInfo]::new($r[0]).SetAccessControl($acl)
+        }
+        try {
+            $caught = $null
+            try { Invoke-TestInstall } catch { $caught = $_ }
+            "$caught" | Should -Not -BeExactly "STOP 3"
+            $caught.Exception.GetBaseException() | Should -BeOfType [IO.IOException]
+        } finally {
+            foreach ($r in $rules) {
+                $acl = [IO.DirectoryInfo]::new($r[0]).GetAccessControl(); [void]$acl.RemoveAccessRule($r[1]); [IO.DirectoryInfo]::new($r[0]).SetAccessControl($acl)
+            }
+        }
+        [IO.File]::ReadAllText((Join-Path $script:One "sub\weights.bin")) | Should -BeExactly "weights 0ne"
+    }
+
+    It "-Uninstall removes nothing when a model file is in use, and exits 3" {
+        Invoke-TestInstall
+        $before = Get-Snapshot $script:Models
+        Set-Variable -Name LockRetrySeconds -Value 0
+        $open = [IO.File]::Open((Join-Path $script:One "sub\weights.bin"), "Open", "Read", "Read")
+        try {
+            { Invoke-TestInstall -Remove } | Should -Throw "STOP 3"
+        } finally { $open.Dispose() }
+        Get-Snapshot $script:Models | Should -BeExactly $before
+        @([IO.DirectoryInfo]::new($script:Root).GetDirectories() | Where-Object { $_.Name -like "staging-*" }).Count | Should -Be 0
+    }
+
+    It "-Uninstall finishes with nothing to remove: <Label>" -TestCases @(
+        @{ Label = "Unminute is no longer installed for everyone"; Change = "gone" }
+        @{ Label = "no models folder"; Change = "none" }
+        @{ Label = "the app's record is gone"; Change = "record" }
+    ) {
+        param($Label, $Change)
+        $null = $Label
+        $programFiles = Split-Path -Parent $script:Root
+        switch ($Change) {
+            "gone" { Remove-Item -LiteralPath $script:Root -Recurse -Force }
+            "record" { Invoke-TestInstall; [IO.File]::Delete((Join-Path $script:Root "current.json")) }
+        }
+        $before = Get-Snapshot $programFiles
+        Invoke-TestInstall -Remove
+        if ($Change -eq "record") {
+            # The models of an install whose record went still go.
+            Test-Path -LiteralPath $script:Models | Should -BeFalse
+        } else {
+            (Get-Snapshot $programFiles) -replace "\|?Unminute\\logs[^|]*", "" |
+                Should -BeExactly ($before -replace "\|?Unminute\\logs[^|]*", "")
+        }
+        Test-Path -LiteralPath (Join-Path $script:Root "install.lock") | Should -BeFalse
+    }
 }

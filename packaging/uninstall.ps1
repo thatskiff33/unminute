@@ -253,27 +253,51 @@ function Test-Install([string]$Dir) {
 # denied or in use is tried again, with a short back-off, for up to $LockRetrySeconds
 # from its first refusal; then its error stands. The wait starts at the first refusal,
 # not at the start of the step, because removing a large folder can take longer than
-# that before it reaches the file in use. Any other error is not retried. install.ps1
-# and uninstall.ps1 have the same functions (tests/test_hardening.py keeps them equal).
+# that before it reaches the file in use. Access denied counts as in use only while
+# this run can still write beside the item; otherwise it is a permission fault, which
+# is not retried and fails rather than asking to be run again later (#451). Any other
+# error is not retried. install.ps1 and uninstall.ps1 have the same functions
+# (tests/test_hardening.py keeps them equal).
 $LockRetrySeconds = 30
 
-function Test-TransientLock([Exception]$Exception) {
+function Test-TransientLock([Exception]$Exception, [string]$LockPath = "") {
     for ($e = $Exception; $e; $e = $e.InnerException) {
-        if ($e -is [UnauthorizedAccessException]) { return $true }
-        if ($e -isnot [IO.IOException]) { continue }
-        # Access denied (0x80070005) or in use, a sharing violation (0x80070020).
-        if (@(0x80070005, 0x80070020) -contains $e.HResult) { return $true }
-        # Windows PowerShell's folder rename reports access denied as a plain
-        # IOException without the Windows code (0x80131620, "Access to the path ... is
-        # denied"). Other failures of that rename carry their own code.
-        if ($e.GetType() -eq [IO.IOException] -and $e.HResult -eq 0x80131620) { return $true }
+        if ($e -isnot [IO.IOException] -and $e -isnot [UnauthorizedAccessException]) { continue }
+        # In use: a sharing violation (0x80070020) or a lock violation (0x80070021).
+        if ($e -is [IO.IOException] -and @(0x80070020, 0x80070021) -contains $e.HResult) { return $true }
+        # Access denied: an UnauthorizedAccessException, an IOException with the Windows
+        # code (0x80070005), or Windows PowerShell's folder rename's plain IOException
+        # without it (0x80131620, "Access to the path ... is denied"). Windows gives it
+        # for a folder that holds an open file and for a running program, which pass, but
+        # also for a permission fault, which does not (#451): it counts as in use only
+        # when this run can still write and remove a file beside $LockPath.
+        if ($e -is [UnauthorizedAccessException] -or $e.HResult -eq 0x80070005 -or
+            ($e.GetType() -eq [IO.IOException] -and $e.HResult -eq 0x80131620)) {
+            return (Test-WriteBeside $LockPath)
+        }
     }
     return $false
 }
 
+# Whether this run can create, and delete, a file in the folder that holds $Path: a
+# probe .probe-<32 hex digits>.tmp, deleted when closed (so even a run stopped part
+# way leaves none). $false for no $Path, or when Windows refuses either.
+function Test-WriteBeside([string]$Path) {
+    if (-not $Path) { return $false }
+    try {
+        $parent = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Path))
+        if (-not $parent) { return $false }
+        $probe = [IO.Path]::Combine($parent, ".probe-" + [guid]::NewGuid().ToString("N") + ".tmp")
+        [IO.FileStream]::new($probe, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None, 1,
+            [IO.FileOptions]::DeleteOnClose).Dispose()
+        return $true
+    } catch { return $false }
+}
+
 # Runs $Action (which must not use the names below) until it succeeds, it fails for
-# any reason but a file in use, or $LockRetrySeconds have passed since its first refusal.
-function Invoke-LockRetry([scriptblock]$Action) {
+# any reason but a file in use (Test-TransientLock, for the item at $LockPath), or
+# $LockRetrySeconds have passed since its first refusal.
+function Invoke-LockRetry([scriptblock]$Action, [string]$LockPath = "") {
     $clock = $null
     $pause = 250
     $said = $false
@@ -284,7 +308,7 @@ function Invoke-LockRetry([scriptblock]$Action) {
         } catch {
             if ($null -eq $clock) { $clock = [Diagnostics.Stopwatch]::StartNew() }
             $left = $LockRetrySeconds * 1000 - $clock.ElapsedMilliseconds
-            if ($left -le 0 -or -not (Test-TransientLock $_.Exception)) { throw }
+            if ($left -le 0 -or -not (Test-TransientLock $_.Exception $LockPath)) { throw }
             if (-not $said) {
                 Write-Step "A file in the folder is in use, perhaps by a virus scan. Trying again for up to $LockRetrySeconds seconds..."
                 $said = $true
@@ -769,7 +793,7 @@ function Remove-OwnPin([string[]]$Prefixes) {
                     if ($file.Attributes -band [IO.FileAttributes]::ReadOnly) {
                         $file.Attributes = $file.Attributes -bxor [IO.FileAttributes]::ReadOnly
                     }
-                    Invoke-LockRetry { $file.Delete() }
+                    Invoke-LockRetry { $file.Delete() } $file.FullName
                 } catch { $left++ }
             }
         } catch { $left++ }
@@ -797,7 +821,7 @@ function Enter-InstallLock {
             [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None, 1,
             [IO.FileOptions]::DeleteOnClose)
     } catch {
-        if (-not (Test-TransientLock $_.Exception)) { throw }
+        if (-not (Test-TransientLock $_.Exception ([IO.Path]::Combine($Options.InstallDir, $LockName)))) { throw }
         Stop-Uninstall 3 "An install or update of $AppName is running. Run this again when it has finished."
     }
 }
@@ -1164,14 +1188,14 @@ function Invoke-MachineUninstall {
         Remove-Junction ([IO.Path]::Combine($root, $JunctionName))
         foreach ($name in $JunctionNames) { Remove-Junction ([IO.Path]::Combine($root, $name)) }
         foreach ($dir in $folder.GetDirectories()) {
-            if ($dir.Name -cmatch $StagingPattern) { Invoke-LockRetry { Remove-OwnFolder $dir.FullName } }
+            if ($dir.Name -cmatch $StagingPattern) { Invoke-LockRetry { Remove-OwnFolder $dir.FullName } $dir.FullName }
         }
         # The models IT installed for everyone (#111 B7a), with the model package's
         # detection file, so Intune sees them gone too.
         foreach ($entry in @($ModelsFolderName, "versions", "current.json", "current.json.tmp")) {
             $path = [IO.Path]::Combine($root, $entry)
-            if ([IO.Directory]::Exists($path)) { Invoke-LockRetry { Remove-OwnFolder $path } }
-            elseif ([IO.File]::Exists($path)) { Invoke-LockRetry { Remove-Item -LiteralPath $path -Force } }
+            if ([IO.Directory]::Exists($path)) { Invoke-LockRetry { Remove-OwnFolder $path } $path }
+            elseif ([IO.File]::Exists($path)) { Invoke-LockRetry { Remove-Item -LiteralPath $path -Force } $path }
         }
         $logs = [IO.Path]::Combine($root, "logs")
         foreach ($name in $LogNames) {
@@ -1289,8 +1313,8 @@ try {
         # a link (#297): one inside a version is removed as a link.
         foreach ($name in "versions", "current.json", "current.json.tmp") {
             $path = [IO.Path]::Combine($Options.InstallDir, $name)
-            if ([IO.Directory]::Exists($path)) { Invoke-LockRetry { Remove-OwnFolder $path } }
-            elseif ([IO.File]::Exists($path)) { Invoke-LockRetry { Remove-Item -LiteralPath $path -Force } }
+            if ([IO.Directory]::Exists($path)) { Invoke-LockRetry { Remove-OwnFolder $path } $path }
+            elseif ([IO.File]::Exists($path)) { Invoke-LockRetry { Remove-Item -LiteralPath $path -Force } $path }
         }
         # The installer's log files, then their folder once empty (#111 B6a).
         $logs = [IO.Path]::Combine($Options.InstallDir, "logs")

@@ -307,6 +307,50 @@ class ModelNameTests(unittest.TestCase):
         kept = "Transcription failed: RuntimeError: synthetic"
         self.assertEqual(engines.advice_without_downloads(kept), kept)
 
+    def test_model_errors_name_it_models_when_only_they_are_used(self):
+        # #451 (review of 317a3d4, nit 2): a machine install with downloads on
+        # but AllowUserModels at 0 does not turn downloads off, so the advice
+        # says what is true there: only the models IT installs are used.
+        from workspace import app, engines, speaker_load
+        self.assertEqual(app.USER_MODELS_OFF, engines.USER_MODELS_SPEAKER_FIX)
+        self.assertEqual(engines.USER_MODELS_SPEAKER_FIX,
+                         "Your organisation uses only the models your IT team installs on this "
+                         "computer. Ask your IT team to install or repair it.")
+        for name in (*asr_engines.PARAKEET_MODELS, *asr_engines.WHISPER_MODELS):
+            for repair_only in (False, True):
+                said = engines.advice_without_downloads(
+                    f"Synthetic problem. {engines.fix_speech(name, repair_only)}",
+                    only_it_models=True)
+                self.assertEqual(said, "Synthetic problem. Your organisation uses only the "
+                                 "models your IT team installs on this computer. Choose another "
+                                 "speech model in Settings, or ask your IT team to install or "
+                                 "repair it.")
+        self.assertEqual(engines.advice_without_downloads(
+            f"A. {asr_engines.PARAKEET_FIX} (x)", only_it_models=True),
+            f"A. {engines.USER_MODELS_SPEECH_FIX} (x)")
+        said = engines.advice_without_downloads(
+            f"WorkerError: ModelLoadError: {speaker_load.LOAD_FAILED} (code U-2)",
+            only_it_models=True)
+        self.assertEqual(said, "WorkerError: ModelLoadError: The speaker identification model "
+                         "did not pass its safety checks and was not loaded. Your organisation "
+                         "uses only the models your IT team installs on this computer. Ask your "
+                         "IT team to install or repair it. (code U-2)")
+        for text in (said, engines.USER_MODELS_SPEECH_FIX):
+            self.assertNotIn("Downloads are turned off", text)
+            self.assertNotIn("Manage downloads", text)
+        # The note beside the picker, and Transcribe again's refusal.
+        self.assertEqual(app._model_note(asr_engines.PARAKEET_V2, "missing", False, True),
+                         "Parakeet v2 is not installed, and your organisation uses only the "
+                         "models your IT team installs on this computer. Choose another speech "
+                         "model, or ask your IT team to install or repair it.")
+        self.assertEqual(app._model_note(asr_engines.PARAKEET_V2, "invalid", False, True),
+                         "Parakeet v2 is damaged, and your organisation uses only the models "
+                         "your IT team installs on this computer. Choose another speech model, "
+                         "or ask your IT team to install or repair it.")
+        self.assertIn("downloads are turned off",
+                      app._model_note(asr_engines.PARAKEET_V2, "missing", False))
+        self.assertIsNone(app._model_note(asr_engines.PARAKEET_V2, "ready", False, True))
+
     def test_the_design_fixture_speech_cards_match_the_app(self):
         # #246 round 1 review: the design check's fake bridge showed turbo with
         # Parakeet's licence, source and revision, and the large-v3 card text

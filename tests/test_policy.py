@@ -404,6 +404,53 @@ class WorkspacePolicyTests(unittest.TestCase):
             self.assertTrue(ws._user_models_allowed())
             self.assertTrue(ws._model_downloads_allowed())
 
+    def test_only_it_models_words_what_is_true(self):
+        # #451 (review of 317a3d4, nit 2): downloads on, AllowUserModels at 0
+        # on a machine install: a model that is not ready says only IT's models
+        # are used, not that downloads are turned off. With downloads off too,
+        # the downloads wording stands (it is true); a per-user install never
+        # reads AllowUserModels.
+        from workspace import asr_engines
+        ws = self.open(AllowUserModels=False)
+        it_root = Path(self.tmp.name) / "machine"          # synthetic: holds no models
+        with mock.patch.object(asr_engines, "_machine_root", [it_root]):
+            self.assertTrue(ws._only_it_models())
+            ws._forget_display()
+            notes = {c["name"]: c["note"] for c in ws.get_settings()["choices"]}
+            self.assertTrue(notes[asr_engines.PARAKEET_V2].startswith(
+                "Parakeet v2 is not installed, and your organisation uses only the models "
+                "your IT team installs on this computer."), notes)
+            self.assertNotIn("downloads are turned off", notes[asr_engines.PARAKEET_V2])
+        with mock.patch.object(asr_engines, "_machine_root", [None]):
+            self.assertFalse(ws._only_it_models())
+        ws.close()
+        ws = self.open(AllowUserModels=False, AllowModelDownloads=False)
+        with mock.patch.object(asr_engines, "_machine_root", [it_root]):
+            self.assertFalse(ws._only_it_models())
+            ws._forget_display()
+            notes = {c["name"]: c["note"] for c in ws.get_settings()["choices"]}
+            self.assertIn("downloads are turned off", notes[asr_engines.PARAKEET_V2])
+
+    def test_downloads_names_repair_only_where_it_is_offered(self):
+        # #451: a damaged copy's Details said "Repair downloads a fresh, verified
+        # copy" beside "Ask your IT team", where no Repair is offered.
+        from workspace import asr_engines, setup
+        cases = (({}, None, setup.INVALID),
+                 ({"AllowModelDownloads": False}, None, setup.INVALID_ASK_IT),
+                 ({"AllowUserModels": False}, "machine", setup.INVALID_ASK_IT),
+                 ({"AllowUserModels": False}, None, setup.INVALID))
+        for values, root, expected in cases:
+            with self.subTest(values=values, machine=root is not None):
+                ws = self.open(**values)
+                damaged = {"name": asr_engines.PARAKEET_V2, "role": "speech",
+                           "state": "invalid", "status": setup.INVALID}
+                machine_root = Path(self.tmp.name) / root if root else None
+                with mock.patch.object(setup, "cards", return_value=[damaged]), \
+                        mock.patch.object(asr_engines, "_machine_root", [machine_root]):
+                    [card] = ws.setup_state()["cards"]
+                self.assertEqual(card["status"], expected)
+                ws.close()
+
     def test_the_page_is_told_whether_user_models_apply(self):
         # #111 B7a, design 3.2: the page shows "Ask your IT team" for a model
         # when allow.AllowUserModels is false (the reviews of 317a3d4 and
