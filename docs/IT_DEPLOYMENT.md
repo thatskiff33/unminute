@@ -241,13 +241,21 @@ Coming from 0.4.3 or earlier is not an update in place: users finish with the ea
 
 On a machine install, IT can install the speech and speaker models for everyone, in `%ProgramFiles%\Unminute\models`, which only administrators can change. Staff then need no download and no Hugging Face token, and with the policy `AllowUserModels` at 0 the app uses no copy a user could change. The steps, the script's checks and its exit codes are in [PACKAGING.md](PACKAGING.md), "Models installed by IT". In short:
 
-1. Download the models once with the app's Setup on any computer, with IT's Hugging Face account for the speaker model.
+1. Download the models once with the app's Setup on any computer. The speaker model is gated on Hugging Face: whoever downloads it accepts its conditions with their own Hugging Face account, so IT accepts them with IT's own Hugging Face account and token (the gate asks to share that account's details, and pyannote may email it). Staff accept nothing.
 2. Verify the release with `Get-VerifiedRelease.ps1`, which prints the zip's SHA-256.
 3. Run `tools\intune\New-ModelPackage.ps1 -ReleaseZip <zip> -ExpectedSha256 <hash> -Source %LOCALAPPDATA%\Unminute\models -OutputFolder <new folder>`, from a copy of the repository at the release's tag. It checks the downloaded files against the verified release's own list, uses no network, and writes the package with its `README.txt`.
 4. Make a Win32 app of that folder: install behaviour **System**; install command `%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File Install-Models.ps1`, and the same with `-Uninstall` to remove; detection rule **File**, `package-<SHA-256 of models.json>.json` in `%ProgramFiles%\Unminute\models` exists, not associated with a 32-bit app (the script prints the hash); a **dependency** on the Unminute app; return code 3 to Retry, and 1, 2 and 4 to Failed.
 5. Set `AllowUserModels` to 0 where staff should use only these models ("Managed policy" below).
 
-Redistributing the model files inside your organisation, including the gated speaker model, is your organisation's decision; the package's `LICENCES.txt` lists each model's licence and source. Running the package through Intune on a managed device, with a standard user and no token, is still to be checked (#189).
+Before an app update, compare the new release's `model-manifest.json` revisions with the deployed package's `models.json`; if one differs, deploy the new model package first (it keeps the older revisions while an installed version pins them). Otherwise, with `AllowUserModels` at 0, staff see "Ask your IT team" for that model until it lands.
+
+Redistributing the model files inside your organisation, including the gated speaker model, is your organisation's decision. The package's `LICENCES.txt` lists each model's licence and source. For the speaker model, under CC BY 4.0 (the owner's decision DEC-074 of 28 October 2026), it also carries the credit (pyannote speaker-diarization-community-1, by pyannoteAI), the licence's link (https://creativecommons.org/licenses/by/4.0/), a statement that the files are unmodified (each checked by its SHA-256), that whoever downloads them accepts the gate with their own Hugging Face account, and the three citations on its model card:
+
+- Alexis Plaquet and Hervé Bredin. Powerset multi-class cross entropy loss for neural speaker diarization. Proc. INTERSPEECH 2023.
+- Hongji Wang, Chengdong Liang, Shuai Wang, Zhengyang Chen, Binbin Zhang, Xu Xiang, Yanlei Deng and Yanmin Qian. Wespeaker: A research and production oriented speaker embedding learning toolkit. ICASSP 2023, IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP), pages 1-5. IEEE, 2023.
+- Federico Landini, Ján Profant, Mireia Diez and Lukáš Burget. Bayesian HMM clustering of x-vector sequences (VBx) in speaker diarization: theory, implementation and analysis on standard tasks. Computer Speech & Language, 2022.
+
+Details are in [PACKAGING.md](PACKAGING.md), "Models installed by IT". Running the package through Intune on a managed device, with a standard user and no token, is still to be checked (#189).
 
 ## Managed policy
 

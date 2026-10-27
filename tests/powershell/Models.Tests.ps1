@@ -182,11 +182,43 @@ Describe "New-ModelPackage.ps1" {
             Should -BeExactly (Get-FileHash -LiteralPath (Join-Path $script:Repo "packaging\models\Install-Models.ps1")).Hash
     }
 
+    It "warns when this copy of the repository is not the release's version" {
+        Mock Get-RepositoryVersion { "0.9.0" }
+        Invoke-NewModelPackage
+        Should -Invoke Write-Host -Times 0 -Exactly -ParameterFilter { "$Object" -like "WARNING*" }
+        Mock Get-RepositoryVersion { "0.8.0" }
+        Remove-Item -LiteralPath $script:Out -Recurse -Force
+        Invoke-NewModelPackage
+        Should -Invoke Write-Host -Times 1 -Exactly -ParameterFilter { "$Object" -like "WARNING*'0.8.0'*0.9.0*release's tag*" }
+        Test-Path -LiteralPath (Join-Path $script:Out "models.json") | Should -BeTrue
+    }
+
     It "brings the speech detector with a Parakeet model" {
         $Options.Model = @("m-one")
         Invoke-NewModelPackage
         $manifest = Get-Content -LiteralPath (Join-Path $script:Out "models.json") -Raw | ConvertFrom-Json
         (@($manifest.models | ForEach-Object name) -join ",") | Should -BeExactly "m-one,silero-vad"
+    }
+
+    It "credits the speaker model in LICENCES.txt, and only the speaker model" {
+        # DEC-074 (#111): the credit, the CC BY 4.0 link, that the files are
+        # unmodified, the gate, and the three citations, in UTF-8 with their accents.
+        $script:Entries[0].repository = $SpeakerRepository
+        $script:Entries[0].licence = "CC BY 4.0 (gated)"
+        $script:Zip = New-TestZip $script:Entries
+        $Options.ReleaseZip = $script:Zip.Path; $Options.ExpectedSha256 = $script:Zip.Sha
+        Invoke-NewModelPackage
+        $text = [IO.File]::ReadAllText((Join-Path $script:Out "LICENCES.txt"), [Text.Encoding]::UTF8)
+        $text | Should -BeLike "*organisation's decision*"
+        $text | Should -BeLike "*Licence: Creative Commons Attribution 4.0 International, https://creativecommons.org/licenses/by/4.0/*"
+        $text | Should -BeLike "*Credit: pyannote speaker-diarization-community-1, by pyannoteAI.*"
+        $text | Should -BeLike "*The files are unmodified*"
+        $text | Should -BeLike "*their own Hugging Face account*"
+        $text | Should -BeLike ("*Alexis Plaquet and Herv" + [char]0x00E9 + " Bredin.*INTERSPEECH 2023.*")
+        $text | Should -BeLike "*Wespeaker: A research and production oriented speaker embedding*ICASSP 2023*"
+        $text | Should -BeLike ("*Luk" + [char]0x00E1 + [char]0x0161 + " Burget.*Computer Speech & Language, 2022.*")
+        ([regex]::Matches($text, "Credit: ")).Count | Should -Be 1
+        ([regex]::Matches($text, "creativecommons.org")).Count | Should -Be 1
     }
 
     It "refuses a zip whose SHA-256 is not the one given, and writes nothing" {
@@ -285,7 +317,10 @@ Describe "Install-Models.ps1" {
         $script:Entries = New-TestEntry
         $Options.Package = New-TestPackage $script:Entries
         $Options.Silent = $true; $Options.InstallDir = ""
-        Set-Variable -Name LockRetrySeconds -Value 0     # a folder in use is refused at once
+        # A short wait, so a brief hold on a file just written (Defender, the indexer)
+        # is waited out as in a real run; the test that holds a file open on purpose
+        # sets 0 itself (the review of 7461e04 found 0 here made 4 of 5 runs fail).
+        Set-Variable -Name LockRetrySeconds -Value 3
         $script:LogFile = $null; $script:LogStep = "start"
         $script:Models = Join-Path $script:Root "models"
         $script:One = [IO.Path]::Combine($script:Models, "parakeet", "m-one-int8", ("a" * 40))
@@ -345,7 +380,8 @@ Describe "Install-Models.ps1" {
         Invoke-TestInstall
         @(Get-ChildItem -LiteralPath $script:Models -Filter "package-*.json").Count | Should -Be 1
         [IO.File]::WriteAllText((Join-Path $script:One "sub\weights.bin"), "weights 0ne")
-        # As the app holds a model open: read, sharing reading only.
+        # As the app holds a model open: read, sharing reading only. Refused at once.
+        Set-Variable -Name LockRetrySeconds -Value 0
         $open = [IO.File]::Open((Join-Path $script:One "config.json"), "Open", "Read", "Read")
         try {
             { Invoke-TestInstall } | Should -Throw "STOP 3"

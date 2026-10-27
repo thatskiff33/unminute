@@ -1088,7 +1088,12 @@ class SecuritySummaryTests(unittest.TestCase):
         block = self.summary.split("- **Not protected today, planned.**", 1)[1]
         block = block.split("\n- **", 1)[0]
         items = [line for line in block.splitlines() if line.startswith("  - ")]
-        self.assertTrue(items, "the Summary's planned list no longer matches")
+        if not items:
+            # Nothing planned is said in words (since B7a and B7b, #111), so an empty
+            # list is a statement, not a list that went missing.
+            self.assertTrue(block.lstrip().startswith("None:"),
+                            "the Summary's planned list is empty but does not say None")
+            return {}
         found = {}
         for item in items:
             match = re.search(r"\(([^()]+): (T\d+(?:, T\d+)*)\)\.$", item)
@@ -1102,7 +1107,13 @@ class SecuritySummaryTests(unittest.TestCase):
 
     def test_planned_list_matches_the_rows(self):
         rows = self.planned_by_rows()
-        self.assertTrue(rows, "no row plans code work: rewrite the Summary and this test")
+        # The threat table was read, every row with its Planned cell, so an empty
+        # result means no row plans code work (since B7a and B7b, #111), not a table
+        # this test could no longer parse.
+        self.assertGreaterEqual(len(self.rows), 35, "the threat table no longer parses")
+        for threat, cells in self.rows.items():
+            self.assertGreaterEqual(len(cells), 6, f"{threat}'s row no longer parses")
+            self.assertTrue(cells[4], f"{threat} has no Planned cell")
         self.assertEqual(self.planned_by_summary(), rows,
                          "the Summary's 'Not protected today, planned' items differ from "
                          "the work the threat rows still plan (slice or issue: threats)")

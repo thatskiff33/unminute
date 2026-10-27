@@ -124,6 +124,66 @@ class NamesTests(unittest.TestCase):
                 self.assertIn(b'if ($MyInvocation.InvocationName -eq ".") { return }', data)
 
 
+class SpeakerAttributionTests(unittest.TestCase):
+    """The speaker model's CC BY 4.0 attribution ships in the package's LICENCES.txt
+    and is in both IT guides (the owner's decision DEC-074, 28 October 2026, #111): a
+    pyannoteAI credit, the licence's link, that the files are unmodified, and the three
+    citations on the model card. The script, PACKAGING.md and IT_DEPLOYMENT.md stay
+    equal to these."""
+
+    CITATIONS = (
+        "Alexis Plaquet and Herv\u00e9 Bredin. Powerset multi-class cross entropy loss for neural "
+        "speaker diarization. Proc. INTERSPEECH 2023.",
+        "Hongji Wang, Chengdong Liang, Shuai Wang, Zhengyang Chen, Binbin Zhang, Xu Xiang, Yanlei "
+        "Deng and Yanmin Qian. Wespeaker: A research and production oriented speaker embedding "
+        "learning toolkit. ICASSP 2023, IEEE International Conference on Acoustics, Speech and "
+        "Signal Processing (ICASSP), pages 1-5. IEEE, 2023.",
+        "Federico Landini, J\u00e1n Profant, Mireia Diez and Luk\u00e1\u0161 Burget. Bayesian HMM "
+        "clustering of x-vector sequences (VBx) in speaker diarization: theory, implementation "
+        "and analysis on standard tasks. Computer Speech & Language, 2022.",
+    )
+    CREDIT = "pyannote speaker-diarization-community-1, by pyannoteAI"
+    LICENCE = "https://creativecommons.org/licenses/by/4.0/"
+
+    @staticmethod
+    def flat(text):
+        return re.sub(r"\s+", " ", text)
+
+    def credit_text(self):
+        # Get-SpeakerCredit's lines as the package writes them, joined, with the
+        # accented letters it builds from their codes.
+        body = ps_function(read(PACKAGE_SCRIPT), "Get-SpeakerCredit")
+        lines = re.findall(r'^\s*"(.*)",?\)?\r?$', body, re.MULTILINE)
+        text = " ".join(line.strip() for line in lines)
+        for name, char in (("e", "\u00e9"), ("a", "\u00e1"), ("s", "\u0161")):
+            text = text.replace(f"$(${name})", char)
+        return self.flat(text)
+
+    def test_the_script_names_the_pinned_speaker_model(self):
+        self.assertEqual(ps_string(read(PACKAGE_SCRIPT), "SpeakerRepository"),
+                         ae.SPEAKER_MODEL.repo)
+        self.assertTrue(ae.SPEAKER_MODEL.gated)
+
+    def test_the_package_carries_the_credit_licence_and_citations(self):
+        text = self.credit_text()
+        self.assertIn(self.CREDIT, text)
+        self.assertIn("The files are unmodified", text)
+        self.assertIn("own Hugging Face account", text)
+        for citation in self.CITATIONS:
+            self.assertIn(citation, text)
+        licence = ps_function(read(PACKAGE_SCRIPT), "Get-LicenceText")
+        self.assertIn(self.LICENCE, licence)
+        self.assertIn("organisation's decision", licence)
+
+    def test_both_it_guides_carry_them(self):
+        for doc in ("docs/PACKAGING.md", "docs/IT_DEPLOYMENT.md"):
+            with self.subTest(doc=doc):
+                text = self.flat(read(ROOT / doc))
+                for piece in (self.CREDIT, self.LICENCE, "unmodified", "own Hugging Face account",
+                              "your organisation's decision", "DEC-074", *self.CITATIONS):
+                    self.assertIn(piece, text)
+
+
 @unittest.skipUnless(sys.platform == "win32", "Windows PowerShell writes the record")
 class RecordInteropTests(unittest.TestCase):
     """A record written by Install-Models.ps1's own functions is one the app trusts,

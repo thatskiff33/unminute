@@ -409,13 +409,13 @@ It reads counts and the logs only, never content. It writes nothing of its own, 
 
 On a machine install, IT can install the speech and speaker models for everyone, in `%ProgramFiles%\Unminute\models\<family>\<folder>\<revision>`, which only administrators can change. The app uses those copies first, checks them against the record IT's script writes in each folder or by hashing every file, and never writes there ([MODEL_MANIFEST.md](MODEL_MANIFEST.md), "Copies installed by IT"). Staff then need no Hugging Face token and no download. With `AllowUserModels` at 0 ("Managed settings (policy)" below), the app uses no other copy. The graphics card components stay in each user's profile.
 
-1. **Download the models once** with the app's own Setup on any computer (Downloads, or Setup's model cards). The speaker model needs a Hugging Face account that has accepted its terms; use IT's own. They land in `%LOCALAPPDATA%\Unminute\models` of the account that downloaded them.
+1. **Download the models once** with the app's own Setup on any computer (Downloads, or Setup's model cards). The speaker model is gated on Hugging Face: whoever downloads it accepts its conditions on its model page with their own Hugging Face account, so IT does this with IT's own Hugging Face account and token (the gate asks to share that account's Hugging Face details, and pyannote may email it about its products; the full wording shows only when signed in). Staff accept nothing and need no account. The models land in `%LOCALAPPDATA%\Unminute\models` of the account that downloaded them.
 2. **Verify the release** with `Get-VerifiedRelease.ps1` ("Verifying a release before packaging" above). It prints the zip's SHA-256.
 3. **Build the model package**, from a copy of this repository at the release's tag, in Windows PowerShell:
    ```
    powershell -NoProfile -File tools\intune\New-ModelPackage.ps1 -ReleaseZip <the verified zip> -ExpectedSha256 <its SHA-256> -Source %LOCALAPPDATA%\Unminute\models -OutputFolder <a new folder>
    ```
-   It uses no network. It re-hashes the zip and stops on a mismatch; reads `version.json` and `model-manifest.json` from inside the zip without unpacking it, and stops unless it is a release build (`"release": true`) whose model list gives each model's family and folder (releases from before #111 B7a do not); takes each model's folder from `-Source` only when it holds exactly the listed files, by exact name (Setup's own `.verified.json` aside), with no link; copies those files and checks each copy's size and SHA-256. `-Model <name>,...` picks models by their names in `model-manifest.json` (Parakeet's speech detector comes with any Parakeet model); by default every model found in `-Source` goes in. It writes `models.json` (the chosen models, the release and the zip's SHA-256), `Install-Models.ps1` (from `packaging\models`), `LICENCES.txt` (each model's licence, credit, source and revision; redistributing the models inside your organisation, the gated speaker model included, is your organisation's decision) and `README.txt` (the Intune settings below, with the detection file's name), then prints PACKAGE READY and the SHA-256 of `models.json`. Any problem prints NOT READY, removes what it wrote, and exits 1.
+   It uses no network. It warns when the repository copy's `VERSION` is not the release's version, since `Install-Models.ps1` comes from that copy. It re-hashes the zip and stops on a mismatch; reads `version.json` and `model-manifest.json` from inside the zip without unpacking it, and stops unless it is a release build (`"release": true`) whose model list gives each model's family and folder (releases from before #111 B7a do not); takes each model's folder from `-Source` only when it holds exactly the listed files, by exact name (Setup's own `.verified.json` aside), with no link; copies those files and checks each copy's size and SHA-256. `-Model <name>,...` picks models by their names in `model-manifest.json` (Parakeet's speech detector comes with any Parakeet model); by default every model found in `-Source` goes in. It writes `models.json` (the chosen models, the release and the zip's SHA-256), `Install-Models.ps1` (from `packaging\models`), `LICENCES.txt` (each model's licence, credit, source and revision, and the speaker model's attribution below; redistributing the models inside your organisation, the gated speaker model included, is your organisation's decision) and `README.txt` (the Intune settings below, with the detection file's name), then prints PACKAGE READY and the SHA-256 of `models.json`. Any problem prints NOT READY, removes what it wrote, and exits 1.
 4. **Make an Intune Win32 app** of that folder (Microsoft Win32 Content Prep Tool, `Install-Models.ps1` as the setup file):
    - **Install behaviour:** System.
    - **Install command:** `%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File Install-Models.ps1`
@@ -424,6 +424,21 @@ On a machine install, IT can install the speech and speaker models for everyone,
    - **Dependency:** the Unminute app (the machine install above), so Intune installs it first.
    - **Return codes:** map 3 (a model folder is in use) to Retry, and 1, 2 and 4 to Failed.
 5. **Set the policy** `AllowUserModels` to 0 if staff should use only these models.
+
+**The speaker model's attribution.** speaker-diarization-community-1 is licensed CC BY 4.0, which allows copying and redistributing it on condition of attribution (the owner's decision DEC-074 of 28 October 2026). With the speaker model, `LICENCES.txt` carries:
+
+- the credit: pyannote speaker-diarization-community-1, by pyannoteAI;
+- the licence: Creative Commons Attribution 4.0 International, https://creativecommons.org/licenses/by/4.0/;
+- the changes: none. The files are unmodified, byte for byte the files at the pinned revision, each checked by its SHA-256;
+- the access step: whoever downloads the files accepts the gate's conditions with their own Hugging Face account (IT, step 1);
+- the three citations on its model card:
+   - Alexis Plaquet and Hervé Bredin. Powerset multi-class cross entropy loss for neural speaker diarization. Proc. INTERSPEECH 2023.
+   - Hongji Wang, Chengdong Liang, Shuai Wang, Zhengyang Chen, Binbin Zhang, Xu Xiang, Yanlei Deng and Yanmin Qian. Wespeaker: A research and production oriented speaker embedding learning toolkit. ICASSP 2023, IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP), pages 1-5. IEEE, 2023.
+   - Federico Landini, Ján Profant, Mireia Diez and Lukáš Burget. Bayesian HMM clustering of x-vector sequences (VBx) in speaker diarization: theory, implementation and analysis on standard tasks. Computer Speech & Language, 2022.
+
+Whether to redistribute the models inside your organisation remains your organisation's decision.
+
+**When an app update pins a new model revision.** Each release's `model-manifest.json` lists the revision of every model it uses. Compare it with the `models.json` of the model package deployed now: if a revision differs, build and deploy the new release's model package first. It keeps the older revisions while an installed version still pins them, so it can land before the app update. With `AllowUserModels` at 0, an app version whose models IT has not installed shows "Ask your IT team" for them until the package lands.
 
 What `Install-Models.ps1` does, as SYSTEM in a 64-bit, elevated Windows PowerShell (exit code 2 otherwise, or when Unminute is not installed for everyone on the computer):
 

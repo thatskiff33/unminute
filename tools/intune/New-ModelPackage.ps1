@@ -67,6 +67,13 @@ function Get-ScriptsFolder {
     return Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) "packaging\models"
 }
 
+# The version of the repository copy this script runs from (its VERSION file), whose
+# Install-Models.ps1 goes into the package; "" when it cannot be read.
+function Get-RepositoryVersion {
+    $path = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) "VERSION"
+    try { return ([IO.File]::ReadAllText($path)).Trim() } catch { return "" }
+}
+
 function Stop-Package([string]$Message) {
     [Console]::Error.WriteLine("NOT READY: $Message")
     exit 1
@@ -215,6 +222,33 @@ function Write-Text([string]$Path, [string]$Text) {
     [IO.File]::WriteAllText($Path, $Text.Replace("`r`n", "`n").Replace("`n", "`r`n"), [Text.UTF8Encoding]::new($false))
 }
 
+# The speaker model's attribution under CC BY 4.0 (the owner's decision DEC-074 of 28
+# October 2026, #111): the credit, the licence's link, that the files are unmodified,
+# and the three citations on its model card (huggingface.co, read 28 October 2026).
+# Kept equal to docs/PACKAGING.md by tests/test_model_package.py. ASCII only: the
+# accented letters are written by their code (e acute, a acute, s caron).
+$SpeakerRepository = "pyannote/speaker-diarization-community-1"
+function Get-SpeakerCredit {
+    $e = [string][char]0x00E9; $a = [string][char]0x00E1; $s = [string][char]0x0161
+    return @(
+        "  Credit: pyannote speaker-diarization-community-1, by pyannoteAI.",
+        "  Changes: none. The files are unmodified, byte for byte the files at the revision above,",
+        "  each checked by its SHA-256.",
+        "  Access: the files are gated on Hugging Face. Whoever downloads them accepts the",
+        "  conditions there with their own Hugging Face account; for this package, the IT team",
+        "  that downloaded them did so.",
+        "  Citations (from the model card):",
+        "    Alexis Plaquet and Herv$($e) Bredin. Powerset multi-class cross entropy loss for neural",
+        "    speaker diarization. Proc. INTERSPEECH 2023.",
+        "    Hongji Wang, Chengdong Liang, Shuai Wang, Zhengyang Chen, Binbin Zhang, Xu Xiang, Yanlei",
+        "    Deng and Yanmin Qian. Wespeaker: A research and production oriented speaker embedding",
+        "    learning toolkit. ICASSP 2023, IEEE International Conference on Acoustics, Speech and",
+        "    Signal Processing (ICASSP), pages 1-5. IEEE, 2023.",
+        "    Federico Landini, J$($a)n Profant, Mireia Diez and Luk$($a)$($s) Burget. Bayesian HMM clustering of",
+        "    x-vector sequences (VBx) in speaker diarization: theory, implementation and analysis on",
+        "    standard tasks. Computer Speech & Language, 2022.")
+}
+
 # The licence and credit for each model, from the release's list (docs/MODEL_MANIFEST.md).
 function Get-LicenceText([string]$Version, $Chosen) {
     $lines = @("Models in this package (Unminute $Version)", "",
@@ -223,7 +257,10 @@ function Get-LicenceText([string]$Version, $Chosen) {
     foreach ($entry in $Chosen) {
         $lines += "$($entry.name): $($entry.licence). $($entry.attribution)."
         $lines += "  Source: https://huggingface.co/$($entry.repository) (revision $($entry.revision))"
-        if ([string]$entry.licence -like "CC BY 4.0*") { $lines += "  Licence: https://creativecommons.org/licenses/by/4.0/" }
+        if ([string]$entry.licence -like "CC BY 4.0*") {
+            $lines += "  Licence: Creative Commons Attribution 4.0 International, https://creativecommons.org/licenses/by/4.0/"
+        }
+        if ([string]$entry.repository -ceq $SpeakerRepository) { $lines += Get-SpeakerCredit }
         $lines += ""
     }
     return ($lines -join "`n")
@@ -263,6 +300,12 @@ function Invoke-NewModelPackage {
         Stop-Package "Install-Models.ps1 was not found in packaging\models. Run this script from a copy of the repository at the release's tag."
     }
     $release = Read-Release $zip $Options.ExpectedSha256
+    # Install-Models.ps1 comes from this copy of the repository, which should be the
+    # release's tag (a warning only: the package's checks do not depend on it).
+    $repository = Get-RepositoryVersion
+    if ($repository -cne [string]$release.Version) {
+        Write-Host "WARNING: this copy of the repository is version '$repository', not the release's $($release.Version). Install-Models.ps1 is taken from it; use a copy at the release's tag."
+    }
     $chosen = Select-Model $release.Models $from @($Options.Model)
     [void][IO.Directory]::CreateDirectory($out)
     # Whatever stops the run from here (a refusal, an error), what it wrote goes: the
