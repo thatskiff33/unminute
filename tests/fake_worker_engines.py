@@ -182,6 +182,73 @@ def fake_diarizer(audio, hint):
     return turns, exclusive, "cpu"
 
 
+def torch_dll_folders():
+    """The folders PyTorch 2.14.1's __init__ (_load_dll_libraries) and
+    TorchCodec 0.17.0's _core/ops.py add to the DLL search path from the
+    environment when they load in a speaker worker (#358): the user base's
+    Library\\bin (sysconfig, which reads PYTHONUSERBASE), %NVTOOLSEXT_PATH%\\bin\\x64,
+    %CUDA_PATH_V<version>%\\bin (any version here), their defaults under
+    %ProgramFiles% (NVIDIA Corporation\\NvToolsExt\\bin\\x64, and NVIDIA GPU
+    Computing Toolkit\\CUDA\\v<version>\\bin for any version here), and the
+    folder of the first ffmpeg shutil.which finds. Each only when it exists,
+    as they check; PyTorch takes a variable's folder or its default, this
+    takes both. A stand-in for those checks, read as the imports are, that
+    adds nothing, so the tests need neither library nor a graphics card."""
+    import glob
+    import shutil
+    import sysconfig
+    userbase = sysconfig.get_config_var("userbase")
+    found = [os.path.join(userbase, "Library", "bin")] if userbase else []
+    if os.environ.get("NVTOOLSEXT_PATH"):
+        found.append(os.path.join(os.environ["NVTOOLSEXT_PATH"], "bin", "x64"))
+    found += [os.path.join(value, "bin") for name, value in os.environ.items()
+              if name.upper().startswith("CUDA_PATH_V")]
+    pfiles = os.environ.get("ProgramFiles", "C:\\Program Files")
+    found.append(os.path.join(pfiles, "NVIDIA Corporation", "NvToolsExt", "bin", "x64"))
+    found += glob.glob(os.path.join(glob.escape(pfiles), "NVIDIA GPU Computing Toolkit",
+                                    "CUDA", "v*", "bin"))
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg:
+        found.append(os.path.dirname(os.path.abspath(ffmpeg)))
+    return [os.path.abspath(f) for f in found if os.path.isdir(f)]
+
+
+def planted_dll_environment(root):
+    """Scratch folders under root that PyTorch and TorchCodec would add to a
+    speaker worker's DLL search path (#358), and the environment that names
+    them: a user base, NVTOOLSEXT, a CUDA toolkit, a Program Files folder
+    holding PyTorch's default NVTOOLSEXT and CUDA folders (named by
+    ProgramFiles and by ProgramW6432, from which Windows sets a 64-bit
+    child's ProgramFiles), and a folder holding an (empty) ffmpeg.exe, put
+    first on PATH. Returns (environment, folders)."""
+    from pathlib import Path
+    root = Path(root)
+    pfiles = root / "Program Files"
+    folders = {"userbase": root / "userbase" / "Library" / "bin",
+               "nvtx": root / "nvtx" / "bin" / "x64",
+               "cuda": root / "cuda" / "bin",
+               "pfiles_nvtx": pfiles / "NVIDIA Corporation" / "NvToolsExt" / "bin" / "x64",
+               "pfiles_cuda": pfiles / "NVIDIA GPU Computing Toolkit" / "CUDA" / "v13.0" / "bin",
+               "ffmpeg": root / "ffmpeg"}
+    for folder in folders.values():
+        folder.mkdir(parents=True)
+    (folders["ffmpeg"] / "ffmpeg.exe").write_bytes(b"")
+    env = {"PYTHONUSERBASE": str(root / "userbase"),
+           "NVTOOLSEXT_PATH": str(root / "nvtx"),
+           "CUDA_PATH_V13_0": str(root / "cuda"),
+           "ProgramFiles": str(pfiles),
+           "ProgramW6432": str(pfiles),
+           "PATH": os.pathsep.join([str(folders["ffmpeg"]), os.environ.get("PATH", "")])}
+    return env, {name: os.path.abspath(f) for name, f in folders.items()}
+
+
+def dll_folders_diarizer(audio, hint):
+    """Speaker identification that reports, as its one speaker's label, the
+    folders torch_dll_folders finds in this worker (a JSON list)."""
+    import json
+    return [(0.0, 1.0, json.dumps(torch_dll_folders()))], [], "cpu"
+
+
 def diarizer_fails(audio, hint):
     raise RuntimeError("speaker model failed verification")
 

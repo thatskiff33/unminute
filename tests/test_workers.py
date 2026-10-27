@@ -233,6 +233,159 @@ class WorkerTests(unittest.TestCase):
             text = self.h.transcribe(np.zeros(10, np.float32))[0][0].text
         self.assertEqual(text, "folders []")
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows DLL search and executable lookup")
+    def test_speaker_identification_adds_no_dll_folder_named_by_the_environment(self):
+        # #358 (T25): PyTorch 2.14.1 and TorchCodec 0.17.0, which pyannote.audio
+        # loads in this worker, add the user base's Library\bin (PYTHONUSERBASE),
+        # %NVTOOLSEXT_PATH%\bin\x64, %CUDA_PATH_V*%\bin, their defaults under
+        # %ProgramFiles% (which Windows sets for the worker from ProgramW6432)
+        # and the folder of an ffmpeg on PATH to the DLL search path. Scratch
+        # folders named those ways are all found here, and none in the worker;
+        # the app keeps its own environment.
+        import json
+
+        import fake_worker_engines as fakes
+        from workspace import audiocrypt, media
+        from workspace.worker import diarize
+        path, key, context = Path(self.tmp.name) / "a.uma", bytes(range(32)), ("decoded", "m")
+        with audiocrypt.AudioWriter(path, key, context, "float32", 1, SR) as w:
+            w.write(np.zeros(SR, dtype=np.float32))
+        audio = media.AudioRef(path, key, context, SR)
+        with tempfile.TemporaryDirectory() as root:
+            env, planted = fakes.planted_dll_environment(root)
+            with mock.patch.dict(os.environ, env):
+                here = fakes.torch_dll_folders()       # this process is not cleared
+                for name in ("nvtx", "cuda", "pfiles_nvtx", "pfiles_cuda", "ffmpeg"):
+                    self.assertIn(planted[name], here)
+                turns, _, _, _ = diarize(self.h, fake("dll_folders_diarizer"), audio, None, 1)
+                self.assertEqual({k: os.environ.get(k) for k in env}, env)
+        found = json.loads(turns[0][2])
+        self.assertEqual([f for f in found if f.startswith(os.path.abspath(root))], [])
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows DLL search and executable lookup")
+    def test_the_dll_path_environment_is_cleared_and_ffmpeg_kept_off_path(self):
+        # #358 (T25): what every worker and --self-test clear. TorchCodec finds
+        # ffmpeg with shutil.which, which on Windows looks in the current folder
+        # first and treats an empty PATH entry as it: neither finds one after.
+        import shutil
+
+        from workspace import update, worker
+        cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as root:
+            here, keep = Path(root, "here"), Path(root, "keep")
+            here.mkdir()
+            keep.mkdir()
+            (here / "ffmpeg.exe").write_bytes(b"")
+            on_path = Path(root, "on-path")
+            on_path.mkdir()
+            (on_path / "ffmpeg.exe").write_bytes(b"")
+            env = {"HIP_PATH": root, "PYTHONUSERBASE": root, "NVTOOLSEXT_PATH": root,
+                   "CUDA_PATH_V13_0": root, "CUDA_PATH_V12_8": root, "CUDA_PATH": root,
+                   "ProgramFiles": root, "ProgramW6432": root,
+                   "PATH": os.pathsep.join([str(keep), "", str(on_path), ".", str(keep)])}
+            try:
+                os.chdir(here)
+                with mock.patch.dict(os.environ, env):
+                    self.assertIsNotNone(shutil.which("ffmpeg"))      # the current folder's
+                    worker.clear_dll_path_environment()
+                    self.assertIsNone(shutil.which("ffmpeg"))
+                    self.assertEqual(os.environ["PATH"], os.pathsep.join([str(keep), str(keep)]))
+                    gone = [name for name in env if name not in os.environ]
+                    self.assertEqual(sorted(gone), ["CUDA_PATH_V12_8", "CUDA_PATH_V13_0",
+                                                    "HIP_PATH", "NVTOOLSEXT_PATH",
+                                                    "PYTHONUSERBASE"])
+                    self.assertEqual(os.environ["CUDA_PATH"], root)   # read by no library here
+                    # PyTorch's defaults under ProgramFiles: the real folder,
+                    # from Windows' known-folder lookup, not the scratch one.
+                    real = update._program_files()
+                    self.assertNotEqual(os.path.normcase(real), os.path.normcase(root))
+                    self.assertEqual(os.environ["ProgramFiles"], real)
+                    self.assertEqual(os.environ["ProgramW6432"], real)
+            finally:
+                os.chdir(cwd)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows known folders")
+    def test_a_failed_program_files_lookup_fails_closed(self):
+        # #358 (T25): if Windows cannot say where Program Files is, the
+        # clearing raises (a worker then stops before any model library is
+        # imported, and --self-test fails) and leaves neither ProgramFiles nor
+        # ProgramW6432 as it came.
+        from workspace import worker
+
+        def broken():
+            raise OSError("known folder")
+        with tempfile.TemporaryDirectory() as root:
+            for lookup in (broken, lambda: None, lambda: "relative"):
+                with self.subTest(lookup=lookup), \
+                        mock.patch.dict(os.environ, {"ProgramFiles": root,
+                                                     "ProgramW6432": root}):
+                    with self.assertRaises(OSError):
+                        worker.clear_dll_path_environment(program_files=lookup)
+                    self.assertNotIn("ProgramFiles", os.environ)
+                    self.assertNotIn("ProgramW6432", os.environ)
+
+    def test_a_user_base_sysconfig_has_already_kept_is_cleared(self):
+        # #358 review of 3757d8b: sysconfig keeps the config variables it
+        # first works out, the user base from PYTHONUSERBASE among them, and
+        # PyTorch reads the user base from there. Coverage reads them at
+        # start-up in every child process it measures, and other code could
+        # too. In a fresh process that has read them first, the clearing still
+        # leaves no user base the environment named; if the reset did not
+        # take, it raises (fail closed).
+        import subprocess
+        import textwrap
+        code = textwrap.dedent("""
+            import os, sysconfig
+            from unittest import mock
+            sysconfig.get_config_vars()                 # read before the clearing
+            before = sysconfig.get_config_var("userbase")
+            from workspace import worker
+            worker.clear_dll_path_environment()
+            print(before)
+            print(sysconfig.get_config_var("userbase"))
+            os.environ["PYTHONUSERBASE"] = before
+            with mock.patch.object(sysconfig, "get_config_var", return_value=before):
+                try:
+                    worker.clear_dll_path_environment()
+                    print("not raised")
+                except OSError:
+                    print("raised")
+            """)
+        with tempfile.TemporaryDirectory() as scratch:
+            userbase = os.path.join(scratch, "userbase")
+            r = subprocess.run([sys.executable, "-B", "-c", code],
+                               cwd=str(Path(__file__).resolve().parents[1]),
+                               env=dict(os.environ, PYTHONUSERBASE=userbase),
+                               capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+        before, after, stale = r.stdout.strip().splitlines()[-3:]
+        self.assertEqual(before, userbase)               # kept before the clearing
+        self.assertNotEqual(after, userbase)
+        self.assertEqual(stale, "raised")
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows DLL search and executable lookup")
+    def test_an_ffmpeg_put_on_path_after_start_up_is_not_found_by_speaker_identification(self):
+        # #358 review of 6df1173: speaker identification loads lazily (D4),
+        # possibly long after the worker started. An ffmpeg put since then in
+        # a folder still on the worker's PATH is not found when TorchCodec
+        # loads: the worker clears again just before.
+        import json
+
+        from workspace import audiocrypt, media
+        from workspace.worker import diarize
+        path, key, context = Path(self.tmp.name) / "a.uma", bytes(range(32)), ("decoded", "m")
+        with audiocrypt.AudioWriter(path, key, context, "float32", 1, SR) as w:
+            w.write(np.zeros(SR, dtype=np.float32))
+        audio = media.AudioRef(path, key, context, SR)
+        with tempfile.TemporaryDirectory() as later:
+            with mock.patch.dict(os.environ, {
+                    "PATH": os.pathsep.join([later, os.environ.get("PATH", "")])}):
+                self.h.load(fake("echo"), 1)                 # the worker starts
+            Path(later, "ffmpeg.exe").write_bytes(b"")
+            turns, _, _, _ = diarize(self.h, fake("dll_folders_diarizer"), audio, None, 1)
+        found = json.loads(turns[0][2])
+        self.assertNotIn(os.path.abspath(later), found)
+
 
 class SlowToEnd:
     """A stand-in worker process that ends only after 8 s of waiting for it,

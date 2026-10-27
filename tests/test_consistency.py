@@ -125,20 +125,29 @@ class DependencyPinTests(unittest.TestCase):
                          "that it still needs no cuDNN (the package leaves cudnn64_9.dll "
                          "out, #176 D2), and update workspace/gpu.py's Whisper component")
 
-    def test_dll_path_variables_were_checked_against_the_ctranslate2_pin(self):
-        # #357 (T25): every worker removes the environment variables CTranslate2's
-        # __init__ reads to add a DLL folder (4.8.3: HIP_PATH only). The list is
-        # right only for the version it was checked against, so moving the pin
-        # fails here until someone reads the new __init__ again. Read from the
-        # source, as workspace/worker.py imports numpy.
-        checked = one(r'^DLL_PATH_CHECKED_CTRANSLATE2 = "([^"]+)"$',
-                      read("workspace/worker.py"), "DLL_PATH_CHECKED_CTRANSLATE2")
-        pinned = one(r"^ctranslate2==(\S+)", read("requirements.txt"), "ctranslate2 pin")
-        self.assertEqual(pinned, checked,
-                         "requirements.txt moved CTranslate2: read its __init__ for the "
-                         "environment variables it uses to add DLL folders, update "
-                         "worker.DLL_PATH_VARIABLES (and T25 in docs/SECURITY_MODEL.md), "
-                         "then set worker.DLL_PATH_CHECKED_CTRANSLATE2 to the new version")
+    def test_dll_path_variables_were_checked_against_the_library_pins(self):
+        # #357, #358 (T25): every worker clears the environment CTranslate2's
+        # __init__ (4.8.3: HIP_PATH), PyTorch's __init__ (2.14.1: PYTHONUSERBASE
+        # through sysconfig, NVTOOLSEXT_PATH, CUDA_PATH_V*) and TorchCodec's
+        # _core/ops.py (0.17.0: an ffmpeg on PATH) read to add a DLL folder.
+        # That is right only for the versions it was checked against, so moving
+        # a pin fails here until someone reads the new code again. Read from
+        # the source, as workspace/worker.py imports numpy.
+        source = read("workspace/worker.py")
+        requirements = read("requirements.txt")
+        for package, constant, where in (
+                ("ctranslate2", "DLL_PATH_CHECKED_CTRANSLATE2", "its __init__"),
+                ("torch", "DLL_PATH_CHECKED_TORCH", "its __init__ (_load_dll_libraries)"),
+                ("torchcodec", "DLL_PATH_CHECKED_TORCHCODEC", "its _core/ops.py")):
+            with self.subTest(package=package):
+                checked = one(rf'^{constant} = "([^"]+)"$', source, constant)
+                pinned = one(rf"^{package}==(\S+)", requirements, f"{package} pin")
+                self.assertEqual(pinned, checked,
+                                 f"requirements.txt moved {package}: read {where} for the "
+                                 "environment it uses to add DLL folders, update "
+                                 "worker.clear_dll_path_environment (and T25 in "
+                                 f"docs/SECURITY_MODEL.md), then set worker.{constant} to "
+                                 "the new version")
 
     # #427: the PowerShell modules CI uses come from the PowerShell Gallery as .nupkg
     # files pinned by version and SHA-256, and are kept in the Actions cache only under
