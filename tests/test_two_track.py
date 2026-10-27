@@ -1080,7 +1080,7 @@ class MixdownTests(unittest.TestCase):
 
     def test_two_loud_tracks_are_limited_not_clipped(self):
         # Different tones (the same tone in phase would be an echo, #376):
-        # where their peaks meet the sum nears 48000.
+        # where their peaks meet the sum nears 45700, well over the knee.
         mic = tone(4 * RATE, RATE, 220, amp=24000)
         comp = tone(4 * CRATE, CRATE, 330, amp=24000)
         journal = self.journal(mic, comp, [[0, 50.0, 1]], [[0, 50.0, 1]])
@@ -1465,6 +1465,32 @@ class EchoCancellationTests(unittest.TestCase):
             with self.assertRaises(audiocrypt.AudioCryptError):
                 recorder.open_recording(self.folder, journal, KEY, notes)
         self.assertEqual(notes, [])
+
+    def test_a_read_error_in_the_first_pass_closes_both_tracks(self):
+        # The first pass can now raise a read error out of Mix(), before
+        # open_recording returns anything for the import to close: both
+        # tracks' open chunk readers are closed here instead.
+        from workspace import audiocrypt, echo
+        journal, _, _ = self.tracks()
+        opened = []
+        real_open = recorder.open_track
+
+        def open_track(*args, **kwargs):
+            opened.append(real_open(*args, **kwargs))
+            return opened[-1]
+
+        def read_then_fail(mic, ref, total):
+            mic(0, 100)
+            ref(0, 100)
+            raise audiocrypt.AudioCryptError("changed")
+
+        with mock.patch.object(recorder, "open_track", side_effect=open_track), \
+                mock.patch.object(echo.Canceller, "run", side_effect=read_then_fail):
+            with self.assertRaises(audiocrypt.AudioCryptError):
+                recorder.open_recording(self.folder, journal, KEY, [])
+        self.assertEqual([t.track for t in opened], list(BOTH))
+        for track in opened:
+            self.assertIsNone(track._open[1], track.track)
 
 
 # -- the recorder's two tracks ------------------------------------------------------------

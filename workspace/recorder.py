@@ -1237,7 +1237,13 @@ class RecordingAudio:
         self._mix = None
         if computer is not None:
             from workspace import mixdown
-            self._mix = mixdown.Mix(journal, mic, computer, notes)
+            try:
+                self._mix = mixdown.Mix(journal, mic, computer, notes)
+            except BaseException:
+                # A read error in the echo's first pass: nothing is returned
+                # for the import to close, so close both tracks here.
+                self.close()
+                raise
         self.echo_skipped = self._mix.echo_skipped if self._mix is not None else None
 
     @property
