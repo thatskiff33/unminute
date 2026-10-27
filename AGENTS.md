@@ -252,28 +252,28 @@ changes; or GitHub owner settings.
 - Shipped changes need a `changelog.d/` fragment (see its README) or the `no-changelog` label.
 - Update the README, user guide, docs and screenshots with the behaviour, and this file when a
   rule, guard or path it names changes, in the same PR.
-- Squash merge with linear history (`docs/RELEASING.md`). Review a fixed commit independently,
-  with a security review for anything under "Stop and ask"; verify fixes and record the review
-  on the PR. Inspect the final diff for unrelated edits, private material and invisible characters.
+- Squash merge with linear history (`docs/RELEASING.md`), after the review "Authority" asks
+  for, with fixes verified. Inspect the final diff for unrelated edits, private material and
+  invisible characters.
 - A PR may be a draft while work continues. Keep it moving (the user's decision, 26 October
-  2026): start the independent review as soon as the head is pushed, while CI runs. Once that
-  review approves the exact head (or a rebase of it with an identical range-diff recorded) and
-  no user decision is open, the agent that owns the PR records the review, runs
-  `gh pr ready <n>` and arms auto-merge pinned to that commit:
-  `gh pr merge <n> --auto --squash --match-head-commit <sha>`. GitHub then merges when the
-  required checks pass and deletes the branch. GitHub waits only for required checks: do not
-  arm while a check that is not required fails without its reason on the PR (with the
-  required checks green, arming merges at once), and disarm (`gh pr merge <n> --disable-auto`)
-  if one fails after arming; one that fails after the merge is fixed forward on `main`.
-  Disarm before pushing again; after any push to the PR, confirm auto-merge is off unless the
-  new head is reviewed, and re-arm on it once it is. A green, reviewed PR left in draft or
-  unarmed is a fault to fix at once. Watch PRs by events (`gh pr checks <n> --watch`, or a
-  monitor on their checks), not timed polls. Never call a draft "ready to merge": check
-  `gh pr view <n> --json isDraft,mergeStateStatus,autoMergeRequest` first.
+  2026): start the independent review as soon as the head is pushed, while CI runs. Once it
+  approves the exact head (or its rebase, with an identical range-diff recorded) and no user
+  decision is open, the owning agent records the review, runs `gh pr ready <n>` and arms
+  auto-merge pinned to that commit (`gh pr merge <n> --auto --squash --match-head-commit <sha>`).
+  GitHub merges once the required checks pass and waits for no other check: do not arm while
+  one fails without its reason on the PR (with the required checks green, arming merges at
+  once), and disarm (`gh pr merge <n> --disable-auto`) if one fails after arming; one failing
+  after the merge is fixed forward on `main`. Disarm before any push; keep it off until the
+  new head is reviewed. A green, reviewed PR left in draft or unarmed is a fault to fix at once.
+  Watch PRs by events (`gh pr checks <n> --watch`), not timed polls. Never call a draft "ready
+  to merge": check `gh pr view <n> --json isDraft,mergeStateStatus,autoMergeRequest` first.
 
 ## Several agents or sessions
 
 - One issue or slice, one branch, one worktree, one writer, named as the tracking issue says.
+- Keep work small (`tools/dev_status.py` checks): at most 3 release-path drafts; finish one
+  before starting another. Split a PR over about 1,000 lines outside `tests/` unless it says
+  why not. Rebase, split or park (with a reason) a draft conflicted with `main` over 2 days.
 - Announce the files you will touch, and message the owning session before editing a file in
   its open PR. The PR that lands second converts shared pieces such as changelog fragments.
 - Reviewers work on a fixed commit in a separate checkout and do not edit, push or comment

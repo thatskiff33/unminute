@@ -273,6 +273,105 @@ class AssessTests(unittest.TestCase):
                 self.assertIn(text, dev_status.NOT_CHECKED)
 
 
+class LimitTests(unittest.TestCase):
+    """The work-in-progress limits of AGENTS.md "Several agents or sessions" (#412)."""
+    NOW = dev_status.datetime(2026, 10, 27, 0, 0, tzinfo=dev_status.UTC)
+
+    @staticmethod
+    def sized(number, lines, tests=0, **fields):
+        files = [{"path": "workspace/a.py", "additions": lines - 10, "deletions": 10},
+                 {"path": "tests/test_a.py", "additions": tests, "deletions": 0},
+                 {"path": r"tests\fixtures\b.txt", "additions": tests, "deletions": 0}]
+        return {**pr(number, createdAt="2026-10-23T00:00:00Z", **fields), "files": files}
+
+    @staticmethod
+    def commits(*dates):
+        return [{"committedDate": d} for d in dates]
+
+    def test_size_counts_lines_changed_outside_tests(self):
+        self.assertEqual(1200, dev_status.non_test_lines(self.sized(1, 1200, tests=5000)))
+        self.assertEqual(0, dev_status.non_test_lines(pr(2)))
+
+    def test_age_in_days_and_unset_times(self):
+        self.assertEqual(4.0, dev_status.days_since("2026-10-23T00:00:00Z", self.NOW))
+        for stamp in ("", None, "0001-01-01T00:00:00Z"):
+            self.assertIsNone(dev_status.days_since(stamp, self.NOW))
+        latest = {"commits": self.commits("2026-10-20T00:00:00Z", "2026-10-24T12:00:00Z",
+                                          "0001-01-01T00:00:00Z")}
+        self.assertEqual(2.5, dev_status.last_commit_days(latest, self.NOW))
+        self.assertIsNone(dev_status.last_commit_days({}, self.NOW))
+
+    def test_a_large_draft_conflicting_for_days_gets_both_warnings(self):
+        stale = self.sized(1, 1500, isDraft=True, mergeable="CONFLICTING",
+                           commits=self.commits("2026-10-24T00:00:00Z"))
+        summary, warnings = dev_status.pr_shape(stale, self.NOW)
+        self.assertEqual("1,500 non-test lines, opened 4.0d ago, last commit 3.0d ago, "
+                         "conflicts with main", summary)
+        self.assertEqual(2, len(warnings))
+        self.assertIn("split it, or say on the PR why it cannot be", warnings[0])
+        self.assertIn("rebase it, split it, or park it with the reason on the PR", warnings[1])
+
+    def test_limits_are_not_flagged_before_they_are_passed(self):
+        cases = [  # at the size limit, conflicting but rebased a day ago, DIRTY but
+                   # not a draft (the rebase rule is for drafts), and commits not read
+            self.sized(1, 1000, tests=9000, isDraft=True, mergeable="MERGEABLE",
+                       commits=self.commits("2026-10-20T00:00:00Z")),
+            self.sized(2, 50, isDraft=True, mergeable="CONFLICTING",
+                       commits=self.commits("2026-10-26T00:00:00Z")),
+            self.sized(3, 50, mergeStateStatus="DIRTY",
+                       commits=self.commits("2026-10-20T00:00:00Z")),
+            self.sized(4, 50, isDraft=True, mergeable="CONFLICTING")]
+        for case in cases:
+            with self.subTest(pr=case["number"]):
+                summary, warnings = dev_status.pr_shape(case, self.NOW)
+                self.assertEqual([], warnings)
+        self.assertIn("conflict state clean", dev_status.pr_shape(cases[0], self.NOW)[0])
+        self.assertIn("conflicts with main", dev_status.pr_shape(cases[2], self.NOW)[0])
+        self.assertNotIn("last commit", dev_status.pr_shape(cases[3], self.NOW)[0])
+        self.assertIn("conflict state unknown", dev_status.pr_shape(pr(5), self.NOW)[0])
+
+    def test_a_pr_past_the_file_limit_gives_a_lower_bound(self):
+        big = pr(6, [f"f{i}" for i in range(100)])
+        self.assertTrue(dev_status.pr_shape(big, self.NOW)[0].startswith("0+ non-test lines"))
+
+    def test_more_than_three_open_drafts_is_noted(self):
+        self.assertIsNone(dev_status.draft_cap_note([pr(n, isDraft=True) for n in range(3)]
+                                                    + [pr(9)]))
+        note = dev_status.draft_cap_note([pr(n, isDraft=True) for n in range(4)])
+        self.assertIn("4 open drafts: at most 3", note)
+
+    def test_branches_whose_upstream_has_gone(self):
+        refs = "main\t\nfix/a\t[gone]\nfix/b\t[behind 3]\nfix/c\t[ahead 1, behind 2]\n"
+        self.assertEqual({"fix/a"}, dev_status.gone_branches(refs))
+
+    def test_stale_and_detached_worktrees(self):
+        def tree(name, branch, head="aaa"):
+            return {"path": f"C:/r/{name}", "head": head, "branch": branch}
+        trees = [tree("main", "main"), tree("merged", "fix/merged"),
+                 tree("newer", "fix/newer", head="ccc"), tree("closed", "fix/closed"),
+                 tree("gone", "fix/gone"), tree("open", "fix/open"), tree("live", "fix/live"),
+                 tree("review", None)]
+        closed = [{"number": 1, "headRefName": "fix/merged", "headRefOid": "zzz",
+                   "state": "MERGED"},
+                  {"number": 2, "headRefName": "fix/merged", "headRefOid": "aaa",
+                   "state": "MERGED"},
+                  {"number": 3, "headRefName": "fix/newer", "headRefOid": "bbb",
+                   "state": "MERGED"},
+                  {"number": 4, "headRefName": "fix/closed", "headRefOid": "aaa",
+                   "state": "CLOSED"},
+                  {"number": 5, "headRefName": "fix/open", "headRefOid": "aaa",
+                   "state": "CLOSED"},
+                  {"number": 6, "headRefName": "main", "headRefOid": "aaa", "state": "MERGED"}]
+        open_prs = [pr(7, headRefName="fix/open")]
+        stale = dev_status.stale_worktrees(trees, open_prs, closed, {"fix/gone", "fix/open"})
+        self.assertEqual([("C:/r/merged", "PR #2 merged"),
+                          ("C:/r/newer", "PR #3 merged, but the worktree's head is not that "
+                                         "PR's head"),
+                          ("C:/r/closed", "PR #4 closed"),
+                          ("C:/r/gone", "origin/fix/gone has gone")],
+                         [(t["path"], reason) for t, reason in stale])
+
+
 class SkillTests(unittest.TestCase):
     def test_each_shared_skill_has_a_matching_claude_pointer(self):
         shared = sorted(p.name for p in SHARED.iterdir() if p.is_dir())
