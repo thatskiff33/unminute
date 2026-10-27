@@ -1,0 +1,460 @@
+{
+ "_about": "Report-only quality baseline (#365). Written by: python tools/quality_report.py --update",
+ "max_complexity": 10,
+ "lines": {
+  ".github/workflows/audit.yml": 48,
+  ".github/workflows/changelog.yml": 52,
+  ".github/workflows/ci.yml": 422,
+  ".github/workflows/codeql.yml": 72,
+  ".github/workflows/quality.yml": 227,
+  ".github/workflows/release.yml": 380,
+  "packaging/install.cmd": 4,
+  "packaging/install.ps1": 1789,
+  "packaging/uninstall.ps1": 1232,
+  "tests/download_guard.py": 133,
+  "tests/fake_worker_engines.py": 435,
+  "tests/keyprotect.py": 53,
+  "tests/powershell/Installer.Tests.ps1": 581,
+  "tests/powershell/Isolation.ps1": 480,
+  "tests/powershell/Machine.Tests.ps1": 938,
+  "tests/profile_elsewhere.py": 26,
+  "tests/schema_v1.py": 185,
+  "tests/test_accessibility_check.py": 829,
+  "tests/test_accessors.py": 810,
+  "tests/test_agent_guard.py": 2253,
+  "tests/test_app.py": 1876,
+  "tests/test_asr_engines.py": 841,
+  "tests/test_audiocrypt.py": 551,
+  "tests/test_audit.py": 1556,
+  "tests/test_changelog_tool.py": 415,
+  "tests/test_cleanup.py": 580,
+  "tests/test_cleanup_hardening.py": 312,
+  "tests/test_cloud_intake.py": 254,
+  "tests/test_compare_engines.py": 370,
+  "tests/test_consistency.py": 1312,
+  "tests/test_content_access.py": 1132,
+  "tests/test_dependency_locks.py": 367,
+  "tests/test_design_check.py": 108,
+  "tests/test_dev_workflow.py": 495,
+  "tests/test_diagnostics.py": 964,
+  "tests/test_discard_unfinished.py": 199,
+  "tests/test_download_guard.py": 191,
+  "tests/test_download_process.py": 295,
+  "tests/test_download_queue.py": 546,
+  "tests/test_dpapi.py": 136,
+  "tests/test_draft_scenario.py": 798,
+  "tests/test_drafts.py": 2228,
+  "tests/test_evidence.py": 2169,
+  "tests/test_gpu.py": 1173,
+  "tests/test_handoff.py": 897,
+  "tests/test_hardening.py": 4795,
+  "tests/test_holds.py": 352,
+  "tests/test_idle_wakeups.py": 177,
+  "tests/test_import_hygiene.py": 101,
+  "tests/test_intake.py": 787,
+  "tests/test_intake_isolation.py": 969,
+  "tests/test_integrity.py": 809,
+  "tests/test_launch.py": 1714,
+  "tests/test_level_meter.py": 225,
+  "tests/test_licence_texts.py": 533,
+  "tests/test_live_trial.py": 220,
+  "tests/test_locked.py": 765,
+  "tests/test_media_crypto.py": 539,
+  "tests/test_mic_list_refresh.py": 454,
+  "tests/test_minimise.py": 158,
+  "tests/test_model_integrity.py": 1021,
+  "tests/test_offboard.py": 801,
+  "tests/test_offline_guard.py": 283,
+  "tests/test_package.py": 1328,
+  "tests/test_perf_check.py": 1795,
+  "tests/test_playback_level.py": 222,
+  "tests/test_policy.py": 813,
+  "tests/test_power.py": 635,
+  "tests/test_quality_report.py": 245,
+  "tests/test_queries.py": 374,
+  "tests/test_recorder.py": 1874,
+  "tests/test_release_workflow.py": 228,
+  "tests/test_residue.py": 773,
+  "tests/test_run_tests.py": 372,
+  "tests/test_safe_paths.py": 209,
+  "tests/test_schema2.py": 1039,
+  "tests/test_settings_policy_names.py": 155,
+  "tests/test_setup.py": 433,
+  "tests/test_single_source.py": 830,
+  "tests/test_source_text.py": 45,
+  "tests/test_speaker_names.py": 229,
+  "tests/test_speakers.py": 188,
+  "tests/test_two_track.py": 1811,
+  "tests/test_type_check.py": 175,
+  "tests/test_ui_check_clipboard.py": 221,
+  "tests/test_ui_check_focus.py": 220,
+  "tests/test_ui_contrast.py": 334,
+  "tests/test_ui_idle_check.py": 427,
+  "tests/test_ui_page_audit.py": 377,
+  "tests/test_uninstall_offboard.py": 836,
+  "tests/test_update.py": 815,
+  "tests/test_vault.py": 319,
+  "tests/test_windows_powershell.py": 381,
+  "tests/test_workers.py": 451,
+  "tests/test_workspace_core.py": 497,
+  "tests/worker_exit.py": 20,
+  "tools/accessibility_check.py": 976,
+  "tools/audit.py": 77,
+  "tools/build_package.py": 1633,
+  "tools/capture_probe.py": 59,
+  "tools/changelog.py": 368,
+  "tools/collect_licences.py": 242,
+  "tools/compare_engines.py": 354,
+  "tools/design_check.py": 277,
+  "tools/design_check/fixtures.js": 1168,
+  "tools/design_check/frame.html": 18,
+  "tools/design_check/render.html": 22,
+  "tools/design_check/render.js": 135,
+  "tools/dev_status.py": 696,
+  "tools/draft_scenario.py": 538,
+  "tools/durable_core_check.py": 120,
+  "tools/evidence.py": 662,
+  "tools/gpu_trial.py": 182,
+  "tools/import_dialog_check.ps1": 126,
+  "tools/intune/Get-VerifiedRelease.ps1": 142,
+  "tools/live_trial.py": 552,
+  "tools/lock.py": 488,
+  "tools/make_icon.py": 88,
+  "tools/packaged_check.py": 811,
+  "tools/packaged_crash_check.py": 880,
+  "tools/perf_check.py": 1969,
+  "tools/process_listeners.py": 50,
+  "tools/quality_report.py": 298,
+  "tools/residue.py": 667,
+  "tools/run_pester.ps1": 129,
+  "tools/run_tests.py": 374,
+  "tools/type_check.py": 158,
+  "tools/ui_idle_check.py": 462,
+  "tools/vulture_whitelist.py": 80,
+  "tools/windows_powershell.py": 93,
+  "tools/worker_check.py": 86,
+  "tools/workspace_ui_check.py": 1572,
+  "workspace/__init__.py": 1,
+  "workspace/__main__.py": 780,
+  "workspace/api.py": 569,
+  "workspace/app.py": 3980,
+  "workspace/asr_engines.py": 1006,
+  "workspace/audiocrypt.py": 342,
+  "workspace/audit.py": 1087,
+  "workspace/chunking.py": 100,
+  "workspace/cleanup.py": 485,
+  "workspace/clipboard.py": 145,
+  "workspace/consent.py": 145,
+  "workspace/credentials.py": 127,
+  "workspace/decode_child.py": 367,
+  "workspace/diag.py": 907,
+  "workspace/dpapi.py": 125,
+  "workspace/drafts.py": 1151,
+  "workspace/engines.py": 223,
+  "workspace/gpu.py": 702,
+  "workspace/handoff.py": 698,
+  "workspace/holds.py": 271,
+  "workspace/instance.py": 90,
+  "workspace/intake.py": 667,
+  "workspace/jobs.py": 153,
+  "workspace/keystore.py": 216,
+  "workspace/launch.py": 420,
+  "workspace/launchcheck.py": 324,
+  "workspace/loopback.py": 1203,
+  "workspace/media.py": 678,
+  "workspace/mixdown.py": 273,
+  "workspace/offboard.py": 477,
+  "workspace/offline_guard.py": 355,
+  "workspace/policy.py": 314,
+  "workspace/power.py": 503,
+  "workspace/recorder.py": 1335,
+  "workspace/resources.py": 93,
+  "workspace/runner.py": 245,
+  "workspace/safe_paths.py": 175,
+  "workspace/setup.py": 956,
+  "workspace/shell.py": 1271,
+  "workspace/speaker_load.py": 594,
+  "workspace/speaker_names.py": 258,
+  "workspace/speakers.py": 130,
+  "workspace/store.py": 2388,
+  "workspace/ui/app.css": 1177,
+  "workspace/ui/app.js": 3431,
+  "workspace/ui/index.html": 773,
+  "workspace/ui/tokens.css": 169,
+  "workspace/update.py": 700,
+  "workspace/vault.py": 234,
+  "workspace/worker.py": 760
+ },
+ "complexity": {
+  ".claude/hooks/private_data_guard.py::_check_shell": [
+   20
+  ],
+  ".claude/hooks/private_data_guard.py::_closing_end": [
+   14
+  ],
+  ".claude/hooks/private_data_guard.py::_glob_reaches_data": [
+   12
+  ],
+  ".claude/hooks/private_data_guard.py::_recursive": [
+   13
+  ],
+  ".claude/hooks/private_data_guard.py::_substitute": [
+   11
+  ],
+  ".claude/hooks/private_data_guard.py::_value_end": [
+   11
+  ],
+  ".claude/hooks/private_data_guard.py::decide": [
+   19
+  ],
+  "tests/test_audiocrypt.py::test_reads_from_several_threads": [
+   11
+  ],
+  "tests/test_content_access.py::_with_names": [
+   16
+  ],
+  "tests/test_draft_scenario.py::start": [
+   25
+  ],
+  "tests/test_evidence.py::path_prepends": [
+   16
+  ],
+  "tests/test_hardening.py::check_scratch_run": [
+   18
+  ],
+  "tests/test_hardening.py::installer_reach": [
+   11
+  ],
+  "tests/test_hardening.py::installer_starts": [
+   24
+  ],
+  "tests/test_intake_isolation.py::encode": [
+   12
+  ],
+  "tests/test_model_integrity.py::__init__": [
+   16
+  ],
+  "tools/accessibility_check.py::findings": [
+   11
+  ],
+  "tools/build_package.py::build": [
+   11
+  ],
+  "tools/build_package.py::licence_component_problems": [
+   32
+  ],
+  "tools/build_package.py::notices": [
+   13
+  ],
+  "tools/build_package.py::prune": [
+   14
+  ],
+  "tools/changelog.py::read_fragment": [
+   17
+  ],
+  "tools/changelog.py::release": [
+   17
+  ],
+  "tools/dev_status.py::assess": [
+   11
+  ],
+  "tools/draft_scenario.py::draft_problems": [
+   25
+  ],
+  "tools/evidence.py::check": [
+   26
+  ],
+  "tools/live_trial.py::run_cut": [
+   14
+  ],
+  "tools/lock.py::main": [
+   16
+  ],
+  "tools/perf_check.py::child": [
+   39
+  ],
+  "tools/perf_check.py::drawing_report": [
+   11
+  ],
+  "tools/perf_check.py::drive": [
+   17
+  ],
+  "tools/perf_check.py::one_run": [
+   31
+  ],
+  "tools/perf_check.py::parent": [
+   28
+  ],
+  "tools/residue.py::user_name_at": [
+   12
+  ],
+  "tools/run_tests.py::main": [
+   14
+  ],
+  "tools/ui_idle_check.py::main": [
+   12
+  ],
+  "tools/workspace_ui_check.py::locked_problems": [
+   11
+  ],
+  "tools/workspace_ui_check.py::main": [
+   25
+  ],
+  "tools/workspace_ui_check.py::press": [
+   18
+  ],
+  "workspace/__main__.py::main": [
+   41
+  ],
+  "workspace/__main__.py::self_test": [
+   17
+  ],
+  "workspace/api.py::make_api": [
+   108
+  ],
+  "workspace/app.py::_draft_tick": [
+   11
+  ],
+  "workspace/app.py::_import_recording_folder": [
+   22
+  ],
+  "workspace/app.py::_next_work": [
+   11
+  ],
+  "workspace/app.py::_process_loop": [
+   14
+  ],
+  "workspace/app.py::_run": [
+   15
+  ],
+  "workspace/app.py::download_model": [
+   12
+  ],
+  "workspace/app.py::set_settings": [
+   21
+  ],
+  "workspace/app.py::update": [
+   11
+  ],
+  "workspace/asr_engines.py::install_model": [
+   13
+  ],
+  "workspace/audit.py::close": [
+   14
+  ],
+  "workspace/audit.py::compare_event_log": [
+   18
+  ],
+  "workspace/audit.py::read_tail": [
+   11
+  ],
+  "workspace/audit.py::verify": [
+   24
+  ],
+  "workspace/cleanup.py::run_job": [
+   12
+  ],
+  "workspace/clipboard.py::copy_text": [
+   12
+  ],
+  "workspace/decode_child.py::_decode": [
+   17
+  ],
+  "workspace/diag.py::where": [
+   11
+  ],
+  "workspace/drafts.py::_feed_loop": [
+   13
+  ],
+  "workspace/drafts.py::serve": [
+   28
+  ],
+  "workspace/gpu.py::_cache_bytecode_under": [
+   12
+  ],
+  "workspace/gpu.py::install": [
+   11
+  ],
+  "workspace/handoff.py::_build": [
+   12
+  ],
+  "workspace/handoff.py::open_templates": [
+   12
+  ],
+  "workspace/intake.py::_walk": [
+   14
+  ],
+  "workspace/intake.py::scan": [
+   41
+  ],
+  "workspace/keystore.py::transform_from_1": [
+   12
+  ],
+  "workspace/launch.py::start": [
+   12
+  ],
+  "workspace/loopback.py::_run_endpoint": [
+   15
+  ],
+  "workspace/loopback.py::_supervise": [
+   31
+  ],
+  "workspace/media.py::decode": [
+   23
+  ],
+  "workspace/mixdown.py::segments": [
+   16
+  ],
+  "workspace/offboard.py::_remove": [
+   17
+  ],
+  "workspace/policy.py::_parse": [
+   11
+  ],
+  "workspace/power.py::_restore_locked": [
+   14
+  ],
+  "workspace/power.py::override": [
+   13
+  ],
+  "workspace/recorder.py::_write_loop": [
+   15
+  ],
+  "workspace/runner.py::_run": [
+   20
+  ],
+  "workspace/safe_paths.py::validate_input_file": [
+   14
+  ],
+  "workspace/setup.py::_run": [
+   18
+  ],
+  "workspace/shell.py::_ask": [
+   43
+  ],
+  "workspace/shell.py::ask": [
+   42
+  ],
+  "workspace/shell.py::install_alert_guard": [
+   15
+  ],
+  "workspace/speaker_load.py::self_check": [
+   12
+  ],
+  "workspace/speaker_names.py::resolve": [
+   12
+  ],
+  "workspace/store.py::__init__": [
+   11
+  ],
+  "workspace/store.py::_migrate": [
+   17
+  ],
+  "workspace/worker.py::_request": [
+   16
+  ],
+  "workspace/worker.py::_worker_main": [
+   12
+  ]
+ }
+}
