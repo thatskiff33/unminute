@@ -21,9 +21,26 @@
 #     only ever holds the raw key in memory. No plain audio is written: not a
 #     chunk, not recording.wav.
 #   - Nothing is ever silently dropped or switched: an overrun, a full queue,
-#     a lost device or a full disk is recorded in the journal with its time and,
-#     where known, its length, and shown to the user. A lost device stops the
-#     recording; it never moves to another device.
+#     a lost device, a change of microphone or a full disk is recorded in the
+#     journal with its time and, where known, its length, and shown to the user.
+#   - The microphone follows Windows (#462, the owner's decisions of 28 Oct
+#     2026), when the app gives the recording a `follow` (the real devices;
+#     without one, a lost device stops the recording, as before). A follow
+#     thread asks Windows for its default microphone (workspace/loopback.py,
+#     our own ctypes WASAPI code) every DEFAULT_CHECK_S: when the default
+#     changes and stays changed for a second check, the recording switches to
+#     it. A microphone that is lost moves to whatever Windows now uses, or
+#     the recording stops as before if none can be opened within
+#     SWITCH_WAIT_S. The person may choose another microphone on the card
+#     (choose); the recording then stops following the default. A switch
+#     closes the stream, lists PortAudio's devices afresh (only possible with
+#     no stream open), opens the new one at the recording's rate (MME
+#     converts) and carries on in the same recording: the writer puts silence
+#     where nothing was captured (a `gap` event with its length, at most
+#     MAX_FILL_S) and a new timing segment starts at the new device's first
+#     block, so the mix lines it up as after a resume. Managed policy is read
+#     before every switch (K3). Events name no device (P3); the journal's
+#     device_name, already kept, becomes the new microphone's.
 #   - On stop, the chunks are opened and checked (open_recording) and streamed
 #     to the sandboxed decoder as one WAV over its stdin (workspace/media.py),
 #     then imported like any other recording (same review, cleanup and hold
@@ -93,6 +110,20 @@ JOURNAL_FORMAT = 2
 MARK_EVERY_S = 30            # a timing mark at least this often, per track
 TAP_REACH_S = 2.0            # live drafts' mix: a computer block this far from the
                              # latest microphone block is not handed on
+# Following the Windows default microphone (#462).
+FOLLOW_TICK_S = 0.25         # the follow thread looks for a lost microphone this often
+DEFAULT_CHECK_S = 1.0        # and asks Windows for its default microphone this often
+SWITCH_WAIT_S = 10.0         # a lost microphone: Windows has this long to offer another
+MAX_FILL_S = 30.0            # silence put in for one switch is never longer than this
+SWITCH_NOTES = {
+    "mic_switched": "Windows changed its default microphone, so the recording switched to it.",
+    "mic_chosen": "The recording switched to the microphone you chose.",
+    "mic_moved": "The microphone stopped responding or was disconnected, so the recording "
+                 "switched to the microphone Windows now uses.",
+    "mic_switch_failed": "The recording could not switch to the other microphone, so it "
+                         "carries on from the same microphone.",
+}
+SWITCH_GAP_NOTE = "Silence was recorded here while the microphone switched."
 MICROPHONE = "microphone"
 COMPUTER = "computer"
 MIC_PREFIX = "chunk-"        # the microphone track's chunk files
@@ -168,6 +199,34 @@ def _full_name(name, full):
     longer = {f for f in full if f.startswith(short) and len(f) > len(short)}
     # Only when it is unambiguous: two devices can share the first 31 characters.
     return (longer.pop() if len(longer) == 1 else short)[:120]
+
+
+def same_microphone(entry, name):
+    """Whether a list_devices entry is the microphone Windows calls name:
+    its full name, or its MME name cut at 31 characters, matches."""
+    want = _clean_name(name or "")[:120]
+    if not want:
+        return False
+    short = _clean_name(entry.get("name", ""))
+    return (entry.get("label") == want or short == want
+            or (len(str(entry.get("name", ""))) >= 31 and want.startswith(short)))
+
+
+def find_input(name, default=False):
+    """The PortAudio entry (list_devices) for the microphone Windows calls
+    name, listed afresh, or None (#462). Where two entries could match, the
+    one PortAudio marks as the Windows default is taken, else none: a
+    microphone is never guessed. default: with no entry matching, the
+    Windows default itself (for a recording that follows it)."""
+    try:
+        devices = list_devices()
+    except RecorderError:
+        return None
+    hits = [d for d in devices if same_microphone(d, name)]
+    if len(hits) == 1:
+        return hits[0]
+    pick = [d for d in (hits or (devices if default else [])) if d.get("default")]
+    return pick[0] if len(pick) == 1 else None
 
 
 # Open PortAudio streams in this process; the device list is only refreshed
@@ -322,14 +381,20 @@ class Recording:
     a fake in tests."""
 
     def __init__(self, folder, device, device_name, rate, open_stream=_sounddevice_stream,
-                 clock=time.time, tick=time.monotonic, computer=None, *, key):
+                 clock=time.time, tick=time.monotonic, computer=None, *, key, follow=None):
         """computer: None (the microphone only), or a dict for a second
         track: {"open": open_loopback(source, callback, notify), "source":
         the loopback source, "rate": its rate, "block_s": how often it
         delivers a block (sizes its queue to QUEUE_S, as the microphone's)}.
         key: the recording's 32-byte key (#111 C3b). The app makes it and
         keeps it wrapped in the database; this class never sees the database
-        and holds the key in memory only, until the writer has finished."""
+        and holds the key in memory only, until the writer has finished.
+        follow (#462): None (a lost microphone stops the recording), or a
+        dict: {"watch": a factory, called on the follow thread, for an
+        object with default() ({"id", "name"} of the Windows default
+        microphone, or None) and close(); "resolve": find_input's shape;
+        "allowed": whether managed policy and the setting allow the
+        microphone now (read before every switch, K3)}."""
         from workspace import audiocrypt
         self.folder = Path(folder)
         self.rate = int(rate)
@@ -375,6 +440,21 @@ class Recording:
         # arrival times. Only while it is set; the saved tracks are unchanged.
         self.tap_computer = None
         self._tap_anchor = None          # (frame, stamp) of the latest microphone block
+        # Following the Windows default microphone (#462).
+        self._follow = follow
+        self._resolve = (follow or {}).get("resolve") or find_input
+        self.following = follow is not None      # until the person chooses one
+        self.switched = False                    # the microphone changed in this recording
+        self._switch_lock = threading.Lock()     # one switch at a time
+        self._gen = 0                            # the open stream's generation
+        self._lost_at = None                     # a lost microphone waits for another
+        self._moved_at = None                    # the loss the latest move followed
+        self._heard = True                       # a block came since the latest switch
+        self._mic_end = None                     # where the latest saved block ended (writer)
+        self._baseline = None                    # the Windows default last followed
+        self._seen = None                        # a new default seen once (settling)
+        self._tried = None                       # a default that would not open
+        self._follower = None
         self.journal = {
             "id": self.folder.name, "device": device, "device_name": device_name,
             "rate": self.rate, "started_at": clock(), "state": "recording",
@@ -402,6 +482,7 @@ class Recording:
         if frozen and not self.paused:
             self._slept()          # the first audio after a sleep: not joined on
             return
+        self._heard = True
         # The microphone went quiet for longer than the silence limit and came
         # back before the silence check ran: the gap is reported, never hidden.
         # (A hold-up of the whole app is the watchdog's "stall" instead.)
@@ -422,18 +503,22 @@ class Recording:
         # Display data is worked out only when the page asks (status), not for
         # every block; replaced whole, so a reader sees one block.
         self._display_block = (self._level_seq, block)
+        segment = self._mic.take_segment()
         try:
             # With its timing (the block's first frame, by when it arrived),
-            # used only to line up a computer track.
-            self._queue.put_nowait((block, now - len(block) / self.rate,
-                                    self._mic.take_segment()))
+            # used to line up a computer track and, after a switch of
+            # microphone, to fill the gap (FILL) with silence.
+            self._queue.put_nowait((block, now - len(block) / self.rate, segment))
         except queue.Full:
-            self._mic.new_segment()       # a gap in the saved track: time jumps here
+            # A gap in the saved track: time jumps here (a switch's gap, if
+            # this block was the first after one, is filled at the next).
+            self._mic.new_segment(fill=segment == FILL)
             self._event("dropped", seconds=len(block) / self.rate,
                         note="Saving fell behind; this audio was lost.")
 
     def _finished(self):
-        # PortAudio also calls this when we stop the stream ourselves.
+        # PortAudio also calls this when we stop the stream ourselves (a
+        # stream closed for a switch is no longer current: _open_mic).
         if not self._stopping.is_set() and not self._stop.is_set():
             self._device_lost()
 
@@ -535,9 +620,9 @@ class Recording:
         with self._queue.mutex:
             return sum(1 for item in self._queue.queue if item is not _PAUSED)
 
-    def _event(self, kind, seconds=None, note=""):
+    def _event(self, kind, seconds=None, note="", at=None):
         with self._lock:
-            at = self._position_s()
+            at = self._position_s() if at is None else at
             self.journal["events"].append({"kind": kind, "at_s": round(at, 1),
                                            "t": self._clock(),
                                            "seconds": None if seconds is None
@@ -617,7 +702,9 @@ class Recording:
                     self._tap_anchor = None      # and the time lines part until resumed
                 elif block is not None:
                     block, stamp, segment = block
+                    self._fill_switch(stamp, segment)
                     self._mic.note(self.journal["frames"] + self._buffered, stamp, segment)
+                    self._mic_end = stamp + len(block) / self.rate
                     self._tap_anchor = (self.journal["frames"] + self._buffered, stamp)
                     self._tap_block(block)       # live drafts: the block alone, not the tuple
                     self._buffer.append(block)
@@ -680,6 +767,29 @@ class Recording:
                 self._save_journal()
             except OSError:
                 pass        # the journal on disk still lists every saved chunk
+
+    def _fill_switch(self, stamp, segment):
+        """For the first block from a microphone switched to (segment FILL,
+        #462; any other block passes): the time since the last saved block
+        ended, when nothing was captured, is saved as silence (at most
+        MAX_FILL_S) and reported as a gap with its length, so the track keeps
+        time with the recording. Live drafts end their phrase here and carry
+        on after the silence (a jump in frames starts a new phrase), as after
+        a pause. Writer thread."""
+        if segment != FILL or self._mic_end is None:
+            return
+        seconds = min(MAX_FILL_S, max(0.0, stamp - self._mic_end))
+        frames = int(round(seconds * self.rate))
+        if not frames:
+            return
+        at = (self.journal["frames"] + self._buffered) / self.rate
+        self._tap_block(None)
+        self._tap_anchor = None
+        self._buffer.append(np.zeros(frames, dtype=np.int16))
+        self._buffered += frames
+        self._event("gap", seconds=frames / self.rate, note=SWITCH_GAP_NOTE, at=round(at, 1))
+        if self._buffered >= CHUNK_S * self.rate:
+            self._flush_chunk()
 
     def _tap_block(self, block):
         """Hand the block to live drafts (None: the recording paused here).
@@ -756,26 +866,51 @@ class Recording:
             # (froze_at is set only for a sleep-length freeze, never a stall)
             self._slept(paused_too=True)
             return
-        # Windows reports an overrun at the moment a device disappears; that is
-        # part of the disconnection, not the computer falling behind.
+        if self._follow is not None:
+            # #462: the follow thread moves the recording to the microphone
+            # Windows now uses, or stops it if none opens in SWITCH_WAIT_S.
+            with self._lock:
+                if self.journal["state"] != "recording":
+                    return
+                if self._lost_at is None:
+                    # A microphone switched to that never gave a block keeps
+                    # the first loss's time, so a dead device cannot hold the
+                    # recording open past SWITCH_WAIT_S by opening again.
+                    self._lost_at = tick if self._heard or self._moved_at is None \
+                        else self._moved_at
+            self._display_block = None
+            return
+        self._lose()
+
+    def _disconnect_overrun(self):
+        """Windows reports an overrun at the moment a device disappears; that
+        is part of the disconnection, not the computer falling behind. Takes
+        such an overrun off the events and says whether there was one. Call
+        with _lock held."""
+        events = self.journal["events"]
+        # The same clock the events use: audio the writer has not saved yet
+        # still counts, or a writer that is behind makes an old overrun look
+        # like part of the disconnection.
+        at_now = self._position_s()
+        during = bool(events and events[-1]["kind"] == "overrun"
+                      and at_now - events[-1]["at_s"] <= 1.0)
+        if during:
+            events.pop()
+        return during
+
+    def _lose(self):
+        """The microphone is lost and no other was taken: the recording stops."""
         with self._lock:
             if self.journal["state"] != "recording":
                 return                   # already stopped, slept or lost (checked once)
             self.journal["state"] = "device_lost"
-            events = self.journal["events"]
-            # The same clock the events use: audio the writer has not saved yet
-            # still counts, or a writer that is behind makes an old overrun look
-            # like part of the disconnection.
-            at_now = self._position_s()
-            during = bool(events and events[-1]["kind"] == "overrun"
-                          and at_now - events[-1]["at_s"] <= 1.0)
-            if during:
-                events.pop()
-        self._event("device_lost", note="The microphone stopped responding or was "
-                                        "disconnected. Recording stopped; it did not "
-                                        "switch to another device."
-                                        + (" A fraction of a second may be missing at the "
-                                           "moment it disconnected." if during else ""))
+            during = self._disconnect_overrun()
+        note = ("The microphone stopped responding or was disconnected, and no other "
+                "microphone could be used. Recording stopped." if self._follow is not None
+                else "The microphone stopped responding or was disconnected. Recording "
+                     "stopped; it did not switch to another device.")
+        self._event("device_lost", note=note + (" A fraction of a second may be missing at "
+                                                "the moment it disconnected." if during else ""))
         self._display_block = None
         self._stop.set()
 
@@ -791,8 +926,18 @@ class Recording:
         self._stop.set()
 
     def _close_stream(self):
-        if self._computer is not None:
-            self._computer.close()
+        # Under the switch lock: a switch in hand finishes first, and one
+        # that starts after a stop opens nothing (it checks _stopping).
+        with self._switch_lock:
+            if self._computer is not None:
+                self._computer.close()
+            self._close_mic()
+
+    def _close_mic(self):
+        """Close the microphone stream, if one is open. Its callbacks are no
+        longer the current stream's from here (#462): a block or an end it
+        reports while closing is ignored."""
+        self._gen += 1
         s, self._stream = self._stream, None
         if s is not None:
             try:
@@ -805,23 +950,209 @@ class Recording:
                 pass
             _stream_opened(-1)
 
+    def _open_mic(self, device):
+        """Open and start the microphone stream on this PortAudio device at
+        the recording's rate. Its callbacks count only while it is the
+        current stream. Raises if it does not open (nothing is left open)."""
+        self._gen += 1
+        gen = self._gen
+
+        def callback(indata, frames, time_info, status):
+            if gen == self._gen:
+                self._callback(indata, frames, time_info, status)
+
+        def finished():
+            if gen == self._gen:
+                self._finished()
+        # Counted before it opens, as measure_level does: a device listing
+        # meanwhile (the page asking again, #369) then never re-initialises
+        # PortAudio under the new stream.
+        _stream_opened(+1)
+        try:
+            self._stream = self._open_stream(device, self.rate, callback, finished)
+        except BaseException:
+            _stream_opened(-1)           # never opened: _close_mic has nothing to count
+            raise
+        try:
+            self._stream.start()
+        except BaseException:
+            self._close_mic()
+            raise
+
+    # -- following the Windows default microphone (#462) -----------------------------------
+
+    def _may_switch(self):
+        """Managed policy and the setting still allow the microphone (K3).
+        An answer that cannot be had allows nothing."""
+        allowed = (self._follow or {}).get("allowed")
+        if allowed is None:
+            return True
+        try:
+            return bool(allowed())
+        except Exception:
+            return False
+
+    def is_current(self, name):
+        """Whether Windows' name is the microphone recording now."""
+        return same_microphone({"name": self.journal["device_name"] or "",
+                                "label": self.journal["device_name"]}, name)
+
+    def _switch(self, name, kind, default=False):
+        """Switch the recording to the microphone Windows calls name (kind:
+        "mic_switched", "mic_chosen" or "mic_moved"), in the same recording.
+        The open stream is closed first (PortAudio lists devices afresh only
+        with none open). If the new one does not open, the previous one is
+        opened again (not for a lost microphone), with an event; if neither
+        opens, the microphone is lost and the follow thread waits for
+        another. Returns True if it switched. Never on the audio callback."""
+        with self._switch_lock:
+            if (self._stop.is_set() or self._stopping.is_set()
+                    or self.journal["state"] != "recording"):
+                return False
+            if not self._may_switch():
+                return False             # the policy check stops the recording itself
+            before = (self.journal["device"], self.journal["device_name"])
+            self._last_audio = self._tick()      # the silence check waits for the switch
+            self._close_mic()
+            self._display_block = None
+            # The next block saved starts a segment, after silence for the gap
+            # (cleared by a resume: paused time is never filled).
+            self._mic.new_segment(fill=True)
+            choice = self._resolve(name, default=default)
+            if choice is not None and self._try_open(choice["index"]):
+                with self._lock:
+                    if kind == "mic_moved":
+                        during = self._disconnect_overrun()
+                    else:
+                        during = False
+                    self.journal["device"] = choice["index"]
+                    self.journal["device_name"] = choice.get("label") or choice["name"]
+                    self._moved_at = self._lost_at
+                    self._lost_at = None
+                    self._heard = False
+                    self.switched = True
+                self._event(kind, note=SWITCH_NOTES[kind]
+                            + (" A fraction of a second may be missing at the moment it "
+                               "disconnected." if during else ""))
+                return True
+            if kind != "mic_moved":
+                back = self._resolve(before[1])
+                if back is not None and self._try_open(back["index"]):
+                    with self._lock:
+                        self.journal["device"] = back["index"]
+                        self._moved_at, self._heard = None, False
+                    self._event("mic_switch_failed", note=SWITCH_NOTES["mic_switch_failed"])
+                    return False
+            with self._lock:
+                if self._lost_at is None:
+                    self._lost_at = self._tick()
+            return False
+
+    def _try_open(self, device):
+        try:
+            self._open_mic(device)
+        except Exception:
+            return False
+        self._last_audio = self._tick()          # a full silence period from here
+        return True
+
+    def choose(self, name):
+        """The person chose this microphone on the card (#462): the recording
+        switches to it and no longer follows the Windows default. Raises
+        RecorderError (safe to show, names no device) if it could not."""
+        self.following = False
+        if self.is_current(name):
+            return
+        if not self._switch(name, "mic_chosen"):
+            if self._lost_at is not None:
+                raise RecorderError("That microphone could not be opened, and the one "
+                                    "recording before could not be opened again. The "
+                                    "recording is waiting for a microphone.")
+            raise RecorderError("That microphone could not be opened, so the recording "
+                                "carries on from the same microphone.")
+
+    def _follow_loop(self):
+        """The follow thread: polls Windows for its default microphone every
+        DEFAULT_CHECK_S, and every FOLLOW_TICK_S looks for a lost microphone.
+        A default that changed (and is the same at the next check) is
+        switched to while following; a lost microphone moves to the default,
+        or the recording stops after SWITCH_WAIT_S. The watcher (COM) is made
+        and closed on this thread."""
+        watcher = None
+        try:
+            try:
+                watcher = self._follow["watch"]()
+                first = watcher.default()
+            except Exception:
+                first = None             # Windows' default cannot be read: nothing to follow
+            self._baseline = first["id"] if first else None
+            due, handled = self._tick() + DEFAULT_CHECK_S, None
+            while not self._stop.wait(FOLLOW_TICK_S):
+                lost, now = self._lost_at, self._tick()
+                # A new loss is handled at once; then, like the default, once
+                # every DEFAULT_CHECK_S (each try lists PortAudio's devices).
+                fresh = lost is not None and lost != handled
+                if not fresh and (now < due or (lost is None and (
+                        not self.following or watcher is None))):
+                    continue
+                handled, due = lost, now + DEFAULT_CHECK_S
+                try:
+                    default = watcher.default() if watcher is not None else None
+                except Exception:
+                    default = None
+                if lost is not None:
+                    self._recover(default, lost, now)
+                else:
+                    self._follow_default(default)
+        finally:
+            if watcher is not None:
+                try:
+                    watcher.close()
+                except Exception:
+                    pass
+
+    def _follow_default(self, default):
+        """Windows' default microphone, at a check while following."""
+        ident = default["id"] if default else None
+        if ident is None or ident == self._baseline:
+            self._seen = None
+            return
+        if ident == self._tried:
+            return                       # would not open: not tried again until it changes
+        if self._seen != ident:
+            self._seen = ident           # Windows may still be settling: check once more
+            return
+        self._seen = None
+        if self.is_current(default["name"]):
+            self._baseline = ident       # the microphone already recording became the default
+            return
+        if self._switch(default["name"], "mic_switched"):
+            self._baseline, self._tried = ident, None
+        else:
+            self._tried = ident
+
+    def _recover(self, default, lost, now):
+        """A lost microphone: the stream is closed, and the recording moves to
+        Windows' default as soon as one opens (the same microphone back
+        counts), or stops after SWITCH_WAIT_S. lost is the first loss's time
+        until a microphone switched to gives a block, so a device that opens
+        but stays silent is not tried for ever."""
+        if self._stream is not None:
+            with self._switch_lock:
+                self._close_mic()
+        if now - lost > SWITCH_WAIT_S or not self._may_switch():
+            self._lose()
+            return
+        if default is not None and self._switch(default["name"], "mic_moved", default=True):
+            self._baseline, self._tried, self._seen = default["id"], None, None
+
     # -- controls -------------------------------------------------------------------
 
     def start(self):
         try:
             self.folder.mkdir(parents=True, exist_ok=False)
             self._save_journal()
-            # Counted before it opens, as measure_level does: a device listing
-            # meanwhile (the page asking again, #369) then never re-initialises
-            # PortAudio under the new stream.
-            _stream_opened(+1)
-            try:
-                self._stream = self._open_stream(self.journal["device"], self.rate,
-                                                 self._callback, self._finished)
-            except BaseException:
-                _stream_opened(-1)           # never opened: _close_stream has nothing to count
-                raise
-            self._stream.start()
+            self._open_mic(self.journal["device"])
         except Exception as exc:
             self._close_stream()
             shutil.rmtree(self.folder, ignore_errors=True)
@@ -848,6 +1179,10 @@ class Recording:
         self._watchdog = threading.Thread(target=self._watch_loop, name="recorder-watchdog",
                                           daemon=True)
         self._watchdog.start()
+        if self._follow is not None:
+            self._follower = threading.Thread(target=self._follow_loop,
+                                              name="recorder-follow", daemon=True)
+            self._follower.start()
 
     def pause(self):
         if not self.paused:
@@ -878,7 +1213,7 @@ class Recording:
     def resume(self):
         if self.paused:
             self._last_audio = self._tick()
-            self._mic.new_segment()       # the tracks are lined up again from here
+            self._mic.new_segment()       # the tracks are lined up again from here (no fill)
             if self._computer is not None:
                 self._computer.timing.new_segment()
             self.paused = False
@@ -890,6 +1225,8 @@ class Recording:
         self._close_stream()          # no more blocks arrive...
         self._stop.set()              # ...then the writer drains the queue and finishes
         self._display_block = self._viz_cache = None    # nothing of the sound kept for display
+        if self._follower is not None:
+            self._follower.join(10)      # a switch in hand finishes, then the thread ends
         if self._writer is not None:
             self._writer.join(60)
             if self._writer.is_alive():
@@ -929,6 +1266,9 @@ class Recording:
                 "levels": [list(x) for x in list(self._levels)],
                 "viz": self._display(),
                 "device": self.journal["device_name"],
+                # #462: the microphone changed in this recording (the card says
+                # "Now recording from"), and whether it follows the default.
+                "switched": self.switched, "following": self.following,
                 "computer": None if self._computer is None else {
                     "on": self._computer.on,
                     # The output being recorded, shown to the user like the
@@ -955,6 +1295,9 @@ class Recording:
         return viz
 
 
+FILL = 2                     # a segment that starts after a switch of microphone (#462)
+
+
 class _TrackTiming:
     """Timing marks for one track, to line the tracks up afterwards: [frame,
     stamp, segment] at a track's first block, at least every MARK_EVERY_S,
@@ -966,15 +1309,21 @@ class _TrackTiming:
     def __init__(self, rate):
         self.rate = int(rate)
         self._segment = True          # the next block starts a segment
+        self._fill = False            # ...after silence for a switch's gap (#462)
         self._last = None             # frame of the latest mark
         self._marks = []
 
-    def new_segment(self):
-        self._segment = True
+    def new_segment(self, fill=False):
+        """The next block starts a segment; fill: after a switch of
+        microphone, with silence put in for the gap (a resume clears it:
+        paused time is never filled)."""
+        self._segment, self._fill = True, bool(fill)
 
     def take_segment(self):
-        """For the capture thread: does the block being queued start a segment?"""
-        seg, self._segment = self._segment, False
+        """For the capture thread: does the block being queued start a
+        segment? 0 no, 1 yes, FILL yes, after silence for a switch's gap."""
+        seg = FILL if self._segment and self._fill else 1 if self._segment else 0
+        self._segment = self._fill = False
         return seg
 
     def note(self, frame, stamp, segment):

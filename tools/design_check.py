@@ -62,6 +62,10 @@ CASES = [
      "app": "recording-drafts", "dark": True},
     {"name": "recording-drafts-states", "board": "Recording-Drafts-States.dc.html", "app": "",
      "h": 1180},
+    # #462: the recording card after a switch of microphone, with the choice
+    # of microphone (no board yet: compared with the nearest one, for the
+    # owner's look).
+    {"name": "recording-switched", "board": "Recording.dc.html", "app": "recording-switched"},
     # Computer audio (#108): the line under Record, the card's second bar.
     {"name": "home-computer", "board": "Home.dc.html", "app": "home-computer",
      "props": {"computer": "true"}},

@@ -42,8 +42,17 @@
 # lost data, is filled the same way; shorter gaps are within the jitter of
 # estimating a block's start from when it arrived, and the mix's fit absorbs them.
 #
-# Imported only when a recording with computer audio starts, or by the probe
-# (tools/capture_probe.py): never at window start-up. Stdlib (ctypes) and numpy.
+# The microphone side (#462, the owner's decisions of 28 Oct 2026): a
+# recording follows the Windows default microphone. CaptureWatch asks Windows
+# for its default capture device (eCapture, eConsole) when the recorder's
+# follow thread polls it, and list_inputs lists the microphones Windows has
+# now, for the recording card's choice. Both only read the device list: the
+# microphone itself is still captured through PortAudio (workspace/recorder.py).
+#
+# Imported only when a recording starts (with computer audio, or to follow the
+# default microphone), when the card lists the microphones while recording,
+# or by the probe (tools/capture_probe.py): never at window start-up. Stdlib
+# (ctypes) and numpy.
 
 import math
 import sys
@@ -377,6 +386,7 @@ WAVE_FORMAT_IEEE_FLOAT = 3
 CLSCTX_ALL = 0x17
 COINIT_MULTITHREADED = 0x0
 E_RENDER, E_CONSOLE = 0, 0                    # EDataFlow eRender, ERole eConsole
+E_CAPTURE = 1                                 # EDataFlow eCapture (microphones, #462)
 DEVICE_STATE_ACTIVE = 0x1
 STGM_READ = 0
 VT_LPWSTR, VT_BLOB = 31, 65
@@ -587,9 +597,15 @@ def _default_id(api, enumerator):
 
 def _default_render(api, enumerator):
     """The default output device (IMMDevice pointer), or None when there is none."""
+    return _default_endpoint(api, enumerator, E_RENDER)
+
+
+def _default_endpoint(api, enumerator, flow):
+    """The default device of this flow (E_RENDER or E_CAPTURE) for the console
+    role, as an IMMDevice pointer, or None when there is none."""
     ct = api.ctypes
     device = ct.c_void_p()
-    hr = api.call(enumerator, _ENUM_DEFAULT, E_RENDER, E_CONSOLE, ct.byref(device),
+    hr = api.call(enumerator, _ENUM_DEFAULT, flow, E_CONSOLE, ct.byref(device),
                   argtypes=(ct.c_int, ct.c_int, ct.c_void_p))
     if hr == E_NOTFOUND:
         return None
@@ -616,9 +632,14 @@ def list_outputs():
 
 def _active_outputs(api, enumerator):
     """Every active output device as [(device id, name)], in Windows' order."""
+    return _active_endpoints(api, enumerator, E_RENDER)
+
+
+def _active_endpoints(api, enumerator, flow):
+    """Every active device of this flow as [(device id, name)], in Windows' order."""
     ct = api.ctypes
     collection = ct.c_void_p()
-    _check(api.call(enumerator, _ENUM_ENDPOINTS, E_RENDER, DEVICE_STATE_ACTIVE,
+    _check(api.call(enumerator, _ENUM_ENDPOINTS, flow, DEVICE_STATE_ACTIVE,
                     ct.byref(collection),
                     argtypes=(ct.c_int, api.wintypes.DWORD, ct.c_void_p)),
            "Windows audio is not available.")
@@ -1244,6 +1265,68 @@ class LoopbackStream:
                 self._say("output_added", self.device_name)
             if back:
                 self._say("reopened", self.device_name)
+
+
+# -- the microphone side (#462) ---------------------------------------------------------
+
+def list_inputs():
+    """The microphones Windows has now, as [{"id", "name", "default"}], for the
+    recording card's choice while recording (PortAudio cannot list them
+    afresh while its stream is open). Names are shown to the user only,
+    never logged. Opens nothing and records nothing."""
+    api = _com()
+    owned = _co_initialize(api)
+    enumerator = None
+    try:
+        enumerator = _enumerator(api)
+        default = _default_endpoint(api, enumerator, E_CAPTURE)
+        try:
+            default_id = _device_id(api, default) if default is not None else None
+        finally:
+            api.release(default)
+        return [{"id": ident, "name": name, "default": ident == default_id}
+                for ident, name in _active_endpoints(api, enumerator, E_CAPTURE)]
+    finally:
+        api.release(enumerator)
+        if owned:
+            api.ole32.CoUninitialize()
+
+
+class CaptureWatch:
+    """The Windows default microphone, for a recording that follows it
+    (#462). Made, asked and closed on one thread, the recorder's follow
+    thread, which owns its COM objects (multithreaded apartment). default()
+    reads the device list only: it never opens or records a device."""
+
+    def __init__(self):
+        self._api = _com()
+        self._owned = _co_initialize(self._api)
+        try:
+            self._enumerator = _enumerator(self._api)
+        except BaseException:
+            if self._owned:
+                self._api.ole32.CoUninitialize()
+            raise
+
+    def default(self):
+        """{"id", "name"} of the Windows default microphone, or None when
+        there is none. The name is shown to the user only, never logged."""
+        api = self._api
+        device = _default_endpoint(api, self._enumerator, E_CAPTURE)
+        if device is None:
+            return None
+        try:
+            return {"id": _device_id(api, device), "name": _friendly_name(api, device)}
+        finally:
+            api.release(device)
+
+    def close(self):
+        enumerator, self._enumerator = self._enumerator, None
+        if enumerator:
+            self._api.release(enumerator)
+            if self._owned:
+                self._owned = False
+                self._api.ole32.CoUninitialize()
 
 
 def open_loopback(source, callback, notify):

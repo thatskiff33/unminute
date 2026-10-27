@@ -531,6 +531,11 @@ class Workspace:
         self._hung = {}                    # folder name -> recording whose writer did not finish
         self.open_stream = recorder._sounddevice_stream     # tests use a fake
         self.open_loopback = None          # computer audio: loopback.open_loopback; tests a fake
+        # Following the Windows default microphone (#462): loopback.CaptureWatch
+        # and loopback.list_inputs for real devices; tests pass fakes.
+        self.watch_microphones = None
+        self.list_microphones = None
+        self._mic_choices = []             # (Windows id, name) the card last listed
         # Playback level (#108): (meeting, audio file id) -> gain, in memory
         # only, never logged or shown (P3); a new audio file gets a new id.
         self._playback_gains = {}
@@ -1094,11 +1099,84 @@ class Workspace:
                 "block_s": loopback.POLL_S}
 
     def microphone_devices(self):
+        """The microphones to choose from. While a recording is open (#462),
+        the ones Windows has now, for the card's choice (PortAudio cannot
+        list them afresh while its stream is open): each with its place in
+        the list as its index, which only switch_microphone takes, and
+        whether it is the one recording."""
         self._need_microphone()
+        rec = self._recording
+        if rec is not None:
+            return self._recording_microphones(rec)
         try:
             return recorder.list_devices()
         except recorder.RecorderError as exc:
             raise WorkspaceError(str(exc)) from exc
+
+    def _windows_microphones(self):
+        """[{"id", "name", "default"}] from Windows (loopback.list_inputs), or
+        the test's fake. Names go to the page only, never to a log (P3)."""
+        lister = self.list_microphones
+        if lister is None:
+            from workspace import loopback       # only while recording
+            lister = loopback.list_inputs
+        try:
+            return [d for d in lister() if isinstance(d.get("name"), str) and d["name"]]
+        except Exception as exc:
+            raise WorkspaceError("The list of microphones could not be read. The recording "
+                                 "carries on.") from exc
+
+    def _recording_microphones(self, rec):
+        listing = self._windows_microphones()
+        self._mic_choices = [(d["id"], d["name"][:120]) for d in listing]
+        return [{"index": i, "name": name, "label": name, "default": bool(d.get("default")),
+                 "current": rec.is_current(name)}
+                for i, ((_, name), d) in enumerate(zip(self._mic_choices, listing, strict=True))]
+
+    def _mic_allowed(self):
+        """Managed policy and the setting still allow the microphone: read
+        before every switch of microphone while recording (#462, K3). An
+        unreadable policy grants nothing."""
+        return bool(self.settings["microphone"] and self._allowed("AllowMicrophoneRecording"))
+
+    def _mic_follow(self):
+        """How a recording follows the Windows default microphone (#462), or
+        None. A test's fake stream has no Windows devices to follow unless
+        the test gives a fake watch too."""
+        watch = self.watch_microphones
+        if watch is None:
+            if self.open_stream is not recorder._sounddevice_stream:
+                return None
+            from workspace import loopback       # only when a recording starts
+            watch = loopback.CaptureWatch
+        return {"watch": watch, "resolve": recorder.find_input, "allowed": self._mic_allowed}
+
+    def switch_microphone(self, index, name):
+        """The person chose a microphone on the recording card (#462): the
+        recording switches to it, in the same recording, and stops following
+        the Windows default. index and name: an entry of the list
+        microphone_devices gave while recording, still connected now.
+        Managed policy is read first (K3)."""
+        self._not_locked()
+        rec = self._recording
+        if rec is None:
+            raise WorkspaceError("Nothing is being recorded.")
+        if not self._allowed("AllowMicrophoneRecording"):
+            raise WorkspaceError(MANAGED_OFF.format(what="Microphone recording"))
+        if not self.settings["microphone"]:
+            raise WorkspaceError("Microphone recording is turned off in Settings.")
+        choices = self._mic_choices
+        if not 0 <= index < len(choices) or choices[index][1] != name:
+            raise WorkspaceError("The list of microphones has changed. Choose the "
+                                 "microphone again.")
+        ident = choices[index][0]
+        if ident not in {d["id"] for d in self._windows_microphones()}:
+            raise WorkspaceError("That microphone is no longer connected. Choose another.")
+        try:
+            rec.choose(name)
+        except recorder.RecorderError as exc:
+            raise WorkspaceError(str(exc)) from exc
+        return rec.status()
 
     def _device(self, device, name=None):
         """The device at this index, if it is still the microphone the page
@@ -1175,7 +1253,7 @@ class Workspace:
                 rec = recorder.Recording(folder, choice["index"],
                                          choice.get("label") or choice["name"], choice["rate"],
                                          open_stream=self.open_stream,
-                                         computer=computer, key=key)
+                                         computer=computer, key=key, follow=self._mic_follow())
                 if consent is not None:
                     rec.journal["consent"] = dict(consent)     # saved with the journal
                 rec.start()

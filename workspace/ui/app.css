@@ -222,6 +222,10 @@ body[data-view="handoff"] .count { position: absolute; top: -4px; right: -4px; m
 .rec-computer-fill { display: block; height: 100%; background: var(--fill); transform: scaleX(0); transform-origin: left center; transition: transform 100ms linear; }
 .rec-computer.off .rec-computer-bar { opacity: 0.5; }
 @media (prefers-reduced-motion: reduce) { .rec-computer-fill { transition: none; } }
+/* The microphone choice while recording (#462), lined up with the computer audio bar. */
+.rec-mic { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 13px; font-weight: 600; color: var(--muted); }
+.rec-mic-label { flex: none; min-width: 150px; }
+.rec-mic select { flex: 1; min-width: 0; max-width: 420px; min-height: var(--control-h); font-size: 14px; font-weight: 600; color: var(--text); }
 .rec-icon { width: 44px; height: 44px; flex: none; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: var(--danger); color: var(--danger-fg); }
 .spinner { width: 28px; height: 28px; flex: none; border-radius: 50%; border: 3px solid var(--line); border-top-color: var(--fill); animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }

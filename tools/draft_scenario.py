@@ -1,10 +1,11 @@
 # tools/draft_scenario.py
 # Live drafts in the real-window checks (#370): a recording with draft text on
 # the Meetings page, with no microphone, speech model or audio. DraftFeed
-# stands in for the recording and its draft session by replacing two methods
+# stands in for the recording and its draft session by replacing three methods
 # on the check's own Workspace object, recording_status and recording_draft,
-# with invented sample sentences (SENTENCES). The page reaches them only
-# through the app's real bridge methods of the same names (workspace/api.py),
+# with invented sample sentences (SENTENCES), and microphone_devices, which the
+# recording card asks for its choice of microphone (#462). The page reaches them
+# only through the app's real bridge methods of the same names (workspace/api.py),
 # so the bridge, its argument checks and API_METHODS are unchanged (I3). The
 # feed exists only in this tool and the check's process: nothing in
 # workspace/ names it, and the shipped app cannot reach it.
@@ -52,9 +53,10 @@ REASONS = tuple(drafts.REASONS)
 class DraftFeed:
     """A recording with live drafts, for the check's Workspace only.
 
-    install() replaces ws.recording_status and ws.recording_draft on that
-    object; remove() puts the Workspace's own back. While no recording has
-    begun, or after end(), both answer exactly as the Workspace does. Every
+    install() replaces ws.recording_status, ws.recording_draft and
+    ws.microphone_devices on that object; remove() puts the Workspace's own
+    back. While no recording has begun, or after end(), each answers exactly
+    as the Workspace does. Every
     recording_draft call is counted in `fetches` (the `since` it asked for)."""
 
     def __init__(self, ws, clock=time.monotonic):
@@ -74,10 +76,11 @@ class DraftFeed:
     def install(self):
         self.ws.recording_status = self.recording_status
         self.ws.recording_draft = self.recording_draft
+        self.ws.microphone_devices = self.microphone_devices
         return self
 
     def remove(self):
-        for name in ("recording_status", "recording_draft"):
+        for name in ("recording_status", "recording_draft", "microphone_devices"):
             self.ws.__dict__.pop(name, None)
 
     @property
@@ -167,7 +170,17 @@ class DraftFeed:
         """recording_status's "recording", shaped as recorder.Recording.status()."""
         return {"state": "recording", "seconds": round(self.clock() - self.started, 1),
                 "level_db": -30.0, "id": self.recording, "levels": [], "viz": None,
-                "device": FEED_DEVICE, "computer": None, "events": []}
+                "device": FEED_DEVICE, "switched": False, "following": True,
+                "computer": None, "events": []}
+
+    def microphone_devices(self):
+        """While its recording is open, the recording card's list (#462): the
+        feed's microphone only, as the one recording. Otherwise, and while
+        locked, the Workspace's own answer."""
+        if self.recording is None or self.ws.locked is not None:
+            return type(self.ws).microphone_devices(self.ws)
+        return [{"index": 0, "name": FEED_DEVICE, "label": FEED_DEVICE, "default": True,
+                 "current": True}]
 
     def recording_status(self):
         """The Workspace's own answer, with this recording and its draft in

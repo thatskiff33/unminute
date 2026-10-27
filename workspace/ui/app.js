@@ -27,6 +27,7 @@ const state = {
   wasActive: false,              // ...at the poll before
   recordingLive: false,          // a recording is open and running
   recActive: false,              // a recording is open or saving: the microphone lists wait (#369)
+  lastRec: null,                 // the open recording at the latest poll (#462's choice)
   locked: null,                  // status().locked: the workspace opened locked (#111 C4b)
 };
 
@@ -2797,8 +2798,78 @@ function renderRecCard(rec, display, lidOverride, lidRefused) {
   const what = !comp ? "Only the microphone is recorded. Tell everyone present the meeting is being recorded."
     : comp.on ? "Microphone and computer audio are recorded. Tell everyone in the meeting, including people on the call."
     : "Only the microphone is recorded now. Tell everyone in the meeting, including people on the call.";
-  $("rec-note").textContent = lidNote + `${rec.device || "Microphone"}. ${what}`;
+  // #462: after a switch of microphone, which one records now (fixed text
+  // and the device's name, on the page only).
+  $("rec-note").textContent = lidNote + (rec.switched ? `Now recording from ${rec.device || "the microphone"}. `
+    : `${rec.device || "Microphone"}. `) + what;
+  renderRecMic(rec, kind);
   renderComputer(rec, kind);
+}
+
+// The microphone choice while recording (#462). The list is what Windows has
+// now (microphone_devices while recording), asked for when a recording's card
+// first shows, after its microphone changes, and when the list is focused
+// (not again within MIC_ASK_AGAIN_MS); never on idle polls. Choosing one
+// switches the recording to it, and it then stops following the default.
+const recMics = { id: null, device: null, sig: null, busy: null, at: -Infinity };
+
+function fillRecMics(devices, rec) {
+  const sel = $("rec-mic");
+  const sig = JSON.stringify([rec.device, devices.map((d) => [d.index, d.name, !!d.default, !!d.current])]);
+  if (sig === recMics.sig) return;
+  recMics.sig = sig;
+  const options = devices.map((d) => el("option", { value: String(d.index), "data-name": d.name,
+    textContent: d.name + (d.default ? " (Windows default)" : "") }));
+  const current = devices.find((d) => d.current);
+  // The microphone recording now, even when Windows no longer lists it.
+  if (!current) options.unshift(el("option", { value: "", disabled: true, textContent: rec.device || "Microphone" }));
+  sel.replaceChildren(...options);
+  sel.value = current ? String(current.index) : "";
+}
+
+function relistRecMics(rec) {
+  if (recMics.busy) return recMics.busy;
+  recMics.busy = (async () => {
+    try { fillRecMics(await call("microphone_devices"), rec); }
+    finally { recMics.at = performance.now(); recMics.busy = null; }
+  })();
+  return recMics.busy;
+}
+
+function renderRecMic(rec, kind) {
+  const shown = kind === "" || kind === "paused";
+  $("rec-mic-row").hidden = !shown;
+  if (!shown) return;
+  if (recMics.id !== rec.id || recMics.device !== rec.device) {
+    Object.assign(recMics, { id: rec.id, device: rec.device, sig: null });
+    relistRecMics(rec).then(() => pollOk("rec-mics"), (err) => pollError("rec-mics", err));
+  }
+}
+
+function wireRecMic() {
+  const sel = $("rec-mic");
+  sel.addEventListener("focus", () => {
+    if (performance.now() - recMics.at >= MIC_ASK_AGAIN_MS && state.lastRec)
+      attempt(() => relistRecMics(state.lastRec));
+  });
+  sel.addEventListener("change", () => attempt(async () => {
+    const opt = sel.selectedOptions[0];
+    if (!opt || !opt.value) return;
+    sel.disabled = true;
+    try {
+      const rec = await call("switch_microphone", Number(opt.value), opt.dataset.name);
+      state.lastRec = rec;
+      recMics.sig = null;
+      await relistRecMics(rec).catch(() => {});
+    } catch (err) {
+      recMics.sig = null;                 // show what is recording again
+      if (state.lastRec) relistRecMics(state.lastRec).catch(() => {});
+      throw err;
+    } finally {
+      sel.disabled = false;
+    }
+    renderRecorder();
+  }));
 }
 
 // Computer audio (#108): a thin second bar under the display, set at each
@@ -3012,8 +3083,9 @@ async function renderRecorder(tick = false) {
   $("mic-name").textContent = $("rec-start-device").textContent = deviceLabel() || "No microphone";
   $("mic-computer").hidden = !r.computer_audio;
   $("rec-start").disabled = $("rec-start-chosen").disabled = !sel.options.length;
+  state.lastRec = active ? rec : null;
   if (active) renderRecCard(rec, r.display, r.lid_override, r.lid_refused);
-  else stopViz();
+  else { stopViz(); $("rec-mic-row").hidden = true; }   // the choice goes with the card (#462)
   renderDraft(rec, r.draft).catch(() => {});
   $("rec-events").replaceChildren(...(rec ? rec.events.filter((e) => !["paused", "resumed"].includes(e.kind))
     .map((e) => el("li", { textContent: eventText(e) })) : []));
@@ -3076,6 +3148,7 @@ function wireRecorder() {
       : `Very quiet (loudest ${t.peak_db} dB). Speak, or check the microphone and its volume.`;
   }));
   $("rec-draft-toggle").addEventListener("click", toggleDraft);
+  wireRecMic();
   $("rec-pause").addEventListener("click", () => attempt(async () => { await call("pause_recording"); renderRecorder(); }));
   $("rec-resume").addEventListener("click", () => attempt(async () => { await call("resume_recording"); renderRecorder(); }));
   $("rec-discard").addEventListener("click", () => confirmDialog({

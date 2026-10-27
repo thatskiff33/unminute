@@ -122,6 +122,12 @@
         <div id="rec-computer-level" class="rec-computer-bar" role="meter" aria-label="Computer audio level" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="-60"><span id="rec-computer-fill" class="rec-computer-fill"></span></div>
       </div>
       <p id="rec-computer-hint" class="rec-note" role="status" aria-live="polite" hidden></p>
+      <!-- The microphone while recording (#462): it follows the Windows default
+           until the person chooses one here. -->
+      <div id="rec-mic-row" class="rec-mic" hidden>
+        <label class="rec-mic-label" for="rec-mic">Microphone</label>
+        <select id="rec-mic"></select>
+      </div>
       <p id="rec-note" class="rec-note"></p>
       <!-- Live drafts (#104): rough text while recording, memory only. Text only
            (textContent); not announced as it changes, only its state is. -->
