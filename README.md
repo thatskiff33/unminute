@@ -243,7 +243,7 @@ What a release must meet is in [docs/RELEASE_STANDARD.md](docs/RELEASE_STANDARD.
 
 ## For developers
 
-Both Codex and Claude Code read the shared [agent guidelines](AGENTS.md) natively (Claude Code 2.1.277 or later, which needs the repo to have no `CLAUDE.md`). Routine tooling traps are in [docs/DEVELOPER_NOTES.md](docs/DEVELOPER_NOTES.md).
+Both Codex and Claude Code read the shared [agent guidelines](AGENTS.md) natively (Claude Code 2.1.295 or later; the guidelines say which files the repo must not have). Routine tooling traps are in [docs/DEVELOPER_NOTES.md](docs/DEVELOPER_NOTES.md).
 
 | Path | Purpose |
 | --- | --- |

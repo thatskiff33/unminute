@@ -380,7 +380,7 @@ real time, and remove it when the cause is fixed.
   turns any exit but 0 into 2 (`if ($LASTEXITCODE -eq 0) { exit 0 }; exit 2`).
   `tests/test_agent_guard.py` runs the configured command through PowerShell to catch these
   mistakes.
-- **The guard fails closed** (owner, 25 Oct 2026). It blocks when `CLAUDE_PROJECT_DIR` is not
+- **The guard fails closed** (the owner's decision DEC-066, 25 Oct 2026). It blocks when `CLAUDE_PROJECT_DIR` is not
   an existing folder named by a drive or network path (unset, empty, relative, drive-only,
   device form or missing) or `python` is not on `PATH`, and the hook sets
   `"onFailure": "block"` with a 60 s timeout, so a hook that cannot start, fails or times out

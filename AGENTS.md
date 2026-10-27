@@ -40,7 +40,7 @@ Privacy
 - **P3** Errors, `--status`, receipts, diagnostics, and the audit log and its Event Log entries
   carry no content, names, identifying paths or tokens. The user's SID that Windows attaches to
   an Event Log entry is not text the app writes; the audit log's random ids stay in its local
-  file (DEC-019). Guard: `tests/test_workers.py`, `tests/test_app.py`,
+  file, never in its Event Log entries (DEC-019). Guard: `tests/test_workers.py`, `tests/test_app.py`,
   `tests/test_diagnostics.py`, `tests/test_audit.py`.
 
 Network, secrets and integrity
@@ -49,9 +49,10 @@ Network, secrets and integrity
   Guard: `tests/test_offline_guard.py`, `tests/test_workers.py`, `tests/test_import_hygiene.py`,
   `tests/test_drafts.py`.
 - **N2** Only the download process reaches the network: user-started (queued downloads, and one
-  cut off by closing the app, carry on at the next start, DEC-049), to the hosts in
-  `setup.DOWNLOAD_HOSTS` (plus files.pythonhosted.org for the Whisper GPU component only,
-  `setup.download_hosts`, DEC-010), every request and redirect checked. No background calls,
+  cut off by closing the app, are user-started too and carry on at the next start, DEC-049), to
+  the hosts in `setup.DOWNLOAD_HOSTS` (plus files.pythonhosted.org for the Whisper GPU
+  component's download only, `setup.download_hosts`, DEC-010), every request and redirect
+  checked. No background calls,
   update checks, telemetry or remote transcription. Opening a fixed or IT-set address in the
   user's browser on the user's click (help links; Copy and open) is the browser's network use,
   not Unminute's, and is allowed: Unminute sends nothing, and handoff text goes by the
@@ -252,7 +253,8 @@ changes, or GitHub owner settings.
   user decision is open, the owning agent records the review, marks the PR ready and arms
   auto-merge pinned to that commit. GitHub waits only for required checks, so never arm while
   another check fails without its reason on the PR (with required checks green, arming merges at
-  once); disarm if one fails after arming, and before any push until the new head is reviewed.
+  once); disarm if one fails after arming, and before any push, keeping it off until the new head
+  is reviewed.
   A green, reviewed PR left in draft or unarmed is a fault to fix at once. Watch PRs by events
   (`gh pr checks <n> --watch`), not timed polls. Never call a draft "ready to merge" without
   checking `gh pr view <n> --json isDraft,mergeStateStatus,autoMergeRequest`.
