@@ -57,8 +57,9 @@ class SharedWithTheInstallerTests(unittest.TestCase):
     """Install-Models.ps1 checks the install folder, takes the lock and removes
     folders exactly as install.ps1 does: the same functions, word for word."""
 
-    SHARED = ("Get-FileSha256", "Test-TransientLock", "Invoke-LockRetry", "Test-Link",
-              "Remove-OwnFolder", "Remove-FolderTree", "Enter-InstallLock", "Exit-InstallLock",
+    SHARED = ("Get-FileSha256", "Test-TransientLock", "Test-WriteBeside", "Invoke-LockRetry",
+              "Test-Link", "Remove-OwnFolder", "Remove-FolderTree", "Enter-InstallLock",
+              "Exit-InstallLock",
               "Test-Elevated", "Test-64BitProcess", "Get-ProgramFilesFolder",
               "Get-FolderSecurity", "Get-MachineRoot", "Get-MachineRule",
               "Test-MachineRootSecurity", "Test-AclChanged", "Get-AclChangeCount")

@@ -76,6 +76,21 @@ def _size(name):
 # A model IT installed for everyone on a machine install (#111 B7a): ready, with
 # nothing to download or repair; Remove takes only the user's own copies.
 INSTALLED_BY_IT = "Installed by your IT team."
+INVALID = ("Damaged or incomplete. Repair downloads a fresh, verified copy; the damaged copy "
+           "is kept aside, not deleted.")
+# Where Downloads offers no Repair (managed policy, K3), a damaged copy names IT
+# instead (#451): the page shows "Ask your IT team" beside it.
+INVALID_ASK_IT = "Damaged or incomplete. Ask your IT team to repair it."
+# IT's copy on a machine install fails its checks: a link, a missing file or a
+# wrong size, or a full check (Check every file, or a load that failed) this
+# session (#111 B7a design 3.2, #451). Only IT can repair it.
+IT_COPY_DAMAGED = ("The copy your IT team installed is damaged or incomplete. Ask your IT "
+                   "team to repair it.")
+# The same, where Downloads offers Repair (AllowUserModels on), which downloads the
+# user's own copy: both ways are named (review of 98d22c1, nit 3).
+IT_COPY_DAMAGED_OR_REPAIR = ("The copy your IT team installed is damaged or incomplete. Ask "
+                             "your IT team to repair it, or use Repair to download your own "
+                             "copy.")
 
 
 def status(name, cache_dir):
@@ -86,11 +101,25 @@ def status(name, cache_dir):
         state, detail = asr_engines.parakeet_status(name, cache_dir)
     else:
         state, detail = asr_engines.hub_model_status(name, cache_dir)
+    if state != "ready" and asr_engines.machine_damaged_model(name):
+        return "invalid", IT_COPY_DAMAGED, detail
     plain = {"ready": "Downloaded and verified.",
              "missing": "Not downloaded yet.",
-             "invalid": "Damaged or incomplete. Repair downloads a fresh, verified copy; "
-                        "the damaged copy is kept aside, not deleted."}[state]
+             "invalid": INVALID}[state]
     return state, plain, detail
+
+
+def shown_status(card, repair_offered):
+    """A card's Details text as Downloads shows it: a damaged copy names Repair
+    only where Downloads offers it (managed policy decides, the window passes
+    repair_offered), and IT otherwise (#451). IT's damaged copy names IT, and
+    Repair too where it is offered."""
+    status = card.get("status")
+    if status == IT_COPY_DAMAGED and repair_offered:
+        return IT_COPY_DAMAGED_OR_REPAIR
+    if card.get("state") != "invalid" or repair_offered or status == IT_COPY_DAMAGED:
+        return status
+    return INVALID_ASK_IT
 
 
 def _old_driver(info):

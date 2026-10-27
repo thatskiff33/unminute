@@ -2934,7 +2934,11 @@ class FolderInUseTests(unittest.TestCase):
         # 2-second limit for speed, with a first attempt that takes 3 seconds.
         script = self.root / "retry.ps1"
 
-        def run(attempt):
+        def run(attempt, place=None):
+            # The item refused is in this test's own folder, where the run can write,
+            # so access denied there is taken for a file in use (#451). "" passes no
+            # path at all (review of 98d22c1, nit 2).
+            place = self.root / "item" if place is None else place
             script.write_text(
                 '$ErrorActionPreference = "Stop"\n'
                 '$Options = @{ Silent = $false }\n'
@@ -2945,10 +2949,11 @@ class FolderInUseTests(unittest.TestCase):
                 '    Invoke-LockRetry {\n'
                 '        $script:tries++\n'
                 f'        {attempt}\n'
-                '    }\n'
+                f"    }} '{place}'\n"
                 '    Write-Output "DONE tries=$script:tries"\n'
                 '} catch { Write-Output "FAILED tries=$script:tries $($_.Exception.Message)" }\n',
                 encoding="utf-8")
+            self.addCleanup(lambda: [p.unlink() for p in self.root.glob(".probe-*.tmp")])
             r = subprocess.run([windows_powershell.executable(), "-NoProfile",
                                 "-ExecutionPolicy", "Bypass",
                                 "-File", str(script)], capture_output=True, text=True,
@@ -2968,6 +2973,16 @@ class FolderInUseTests(unittest.TestCase):
         self.assertIn("held", out)
         self.assertGreater(int(out.split("FAILED tries=")[1].split()[0]), 2)
         self.assertLess(time.monotonic() - start, 20)
+        # #451: a sharing violation is in use wherever it is; access denied where
+        # the run cannot write is a permission fault, refused at once, not retried.
+        out = run('if ($script:tries -eq 1) { throw [IO.IOException]::new("in use", '
+                  '-2147024864) }', place="")
+        self.assertIn("DONE tries=2", out)
+        out = run('throw [UnauthorizedAccessException]::new("denied")',
+                  place=self.root / "no-such-folder" / "item")
+        self.assertIn("FAILED tries=1 denied", out)
+        self.assertNotIn("Trying again", out)
+        self.assertEqual(list(self.root.glob(".probe-*")), [])     # the probe never stays
 
     def test_both_scripts_wait_the_same_way(self):
         block = lock_retry_block

@@ -111,9 +111,9 @@ RECORDING_DISPLAYS = ("flow", "spectrum", "wave")
 MANAGED_OFF = "{what} is turned off by your organisation. Ask your IT team if you need it."
 DOWNLOADS_OFF = ("Downloads are turned off by your organisation. Ask your IT team to install "
                  "the models.")
-# A machine install whose policy uses only the models IT installed (#111 B7a).
-USER_MODELS_OFF = ("Your organisation uses only the models your IT team installs on this "
-                   "computer. Ask your IT team to install or repair it.")
+# A machine install whose policy uses only the models IT installed (#111 B7a):
+# the speaker model's advice in that case too (#451).
+USER_MODELS_OFF = engines.USER_MODELS_SPEAKER_FIX
 # Every request refused while the workspace is locked (#111 C4a): the bridge
 # gate (api.LOCKED_METHODS) and the Workspace's own refusals give this.
 LOCKED_TEXT = ("Unminute is locked: Windows could not unlock its key on this computer. "
@@ -164,15 +164,23 @@ def _key_line(locked, code):
     return f"Key: locked ({', '.join(parts)})"
 
 
-def _model_note(name, state, downloads_allowed=True):
+def _model_note(name, state, downloads_allowed=True, only_it_models=False):
     """What Settings says beside the picker about a speech model that is not
     ready, and why Transcribe again refuses it (#244); None when it is ready.
     Manage downloads, which offers every speech model (#246), is named only
-    when managed policy allows downloads (K3)."""
+    when managed policy allows downloads (K3). only_it_models: downloads are
+    allowed, but this machine install uses only IT's models (AllowUserModels
+    at 0, #111 B7a), so the note says that rather than that downloads are off
+    (#451)."""
     if state == "ready":
         return None
     label = asr_engines.label(name)
     what = "damaged" if state == "invalid" else "not downloaded"
+    if only_it_models and not downloads_allowed:
+        what = "damaged" if state == "invalid" else "not installed"
+        return (f"{label} is {what}, and your organisation uses only the models your IT team "
+                "installs on this computer. Choose another speech model, or ask your IT "
+                "team to install or repair it.")
     if not downloads_allowed:
         return (f"{label} is {what}, and downloads are turned off by your organisation. "
                 "Choose another speech model, or ask your IT team to install it.")
@@ -786,6 +794,22 @@ class Workspace:
         """Model downloads (not the graphics card components) are allowed and
         of use: AllowModelDownloads, and _user_models_allowed."""
         return self._allowed("AllowModelDownloads") and self._user_models_allowed()
+
+    def _only_it_models(self):
+        """Downloads are allowed, but this machine install uses only IT's models
+        (AllowUserModels at 0 or unreadable, #111 B7a): a model that is not ready
+        then names IT's models, not downloads turned off (#451). With
+        AllowModelDownloads off too, the downloads wording stands, as it is true."""
+        return self._allowed("AllowModelDownloads") and not self._user_models_allowed()
+
+    def _repair_offered(self, card):
+        """Whether Downloads offers Download or Repair for this card, as the page
+        decides (downloadOff in app.js): the graphics card components by
+        AllowModelDownloads and AllowGpuComponent (B7-5, DEC-068), the models
+        by _model_downloads_allowed."""
+        if card.get("role") == "gpu":
+            return self._allowed("AllowModelDownloads") and self._allowed("AllowGpuComponent")
+        return self._model_downloads_allowed()
 
     def _not_locked(self):
         """Refuse a request that would read or write content while the
@@ -2058,6 +2082,7 @@ class Workspace:
         # managed policy turns downloads off (K3; unreadable: off). The worker
         # never reads the policy, so its error is reworded here (#257).
         downloads = self._model_downloads_allowed()
+        it_only = self._only_it_models()
         if kind == "rerun":
             vid, count, skips = ref
             with self._lock:
@@ -2074,7 +2099,10 @@ class Workspace:
                                                threads=threads, hint=count,
                                                model=self.speaker_model, device=device,
                                                gpu_site=site, skips_seen=skips,
-                                               downloads_allowed=downloads)
+                                               downloads_allowed=downloads,
+                                               only_it_models=it_only)
+                if result == speakers.SpeakerResult.FAILED:
+                    self._forget_display()     # IT's copy may now show as damaged (#451)
                 m = self.store.meeting_state(mid)
                 if result == speakers.SpeakerResult.STOPPED and m and m["paused"]:
                     with self._lock:          # paused mid-pass: kept, with its count,
@@ -2107,7 +2135,10 @@ class Workspace:
                     engine = WorkerEngine(self.handle, model, threads,
                                           note=device if device != "cpu" else None)
                 result = runner.run_version(self.store, mid, ref, reader, engine,
-                                            downloads_allowed=downloads)
+                                            downloads_allowed=downloads,
+                                            only_it_models=it_only)
+                if result == runner.RunResult.FAILED:
+                    self._forget_display()     # IT's copy may now show as damaged (#451)
             finally:
                 reader.close()               # release the handle before any cleanup
                 self._gpu_whisper_run = False
@@ -2122,9 +2153,11 @@ class Workspace:
             return
         device, site = self._choose_speaker_device()
         try:
-            speakers.run_speakers(self.store, mid, ref, self.handle, audio, threads=threads,
-                                  model=self.speaker_model, device=device, gpu_site=site,
-                                  skips_seen=0, downloads_allowed=downloads)
+            if speakers.run_speakers(self.store, mid, ref, self.handle, audio, threads=threads,
+                                     model=self.speaker_model, device=device, gpu_site=site,
+                                     skips_seen=0, downloads_allowed=downloads,
+                                     only_it_models=it_only) == speakers.SpeakerResult.FAILED:
+                self._forget_display()         # IT's copy may now show as damaged (#451)
         finally:
             self._gpu_pass = False
 
@@ -2422,7 +2455,7 @@ class Workspace:
         model = self.settings["model"]
         if model in SPEECH_MODELS:            # test engines have no download state
             note = _model_note(model, self._speech_states().get(model, "missing"),
-                               self._model_downloads_allowed())
+                               self._model_downloads_allowed(), self._only_it_models())
             if note:
                 raise WorkspaceError(note)
         v = self.store.active_version(mid)
@@ -3203,6 +3236,7 @@ class Workspace:
         self.policy.refresh()             # re-read on each poll while Settings or Downloads is open
         states = self._speech_states()
         downloads = self._model_downloads_allowed()
+        it_only = self._only_it_models()
         choices = [{"name": n, "label": asr_engines.label(n),
                     "recommended": n == asr_engines.RECOMMENDED_PARAKEET,
                     # The page labels a model that is not ready and shows the
@@ -3210,7 +3244,7 @@ class Workspace:
                     # policy allows downloads (#244, K3). The choice is still saved.
                     "state": states.get(n, "missing"),
                     "offered": downloads,
-                    "note": _model_note(n, states.get(n, "missing"), downloads)}
+                    "note": _model_note(n, states.get(n, "missing"), downloads, it_only)}
                    for n in SPEECH_MODELS]
         from workspace import update
         info = gpu.detected()
@@ -3647,6 +3681,8 @@ class Workspace:
         self._queue_policy()                   # the current policy, while Downloads is open
         waiting = self.downloads.queued()
         for c in cards:
+            # Repair is named only where it is offered (managed policy, #451).
+            c["status"] = setup.shown_status(c, self._repair_offered(c))
             dl = self.downloads.state.get(c["name"])
             # How far it is, as a number (R12): the page never reads it out of a message.
             c["download"] = dict(dl, percent=self.downloads.percent(c["name"])) if dl else None
