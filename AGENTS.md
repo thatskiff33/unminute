@@ -204,6 +204,10 @@ changes; or GitHub owner settings.
   (with `--strict-skips` on Windows) and `ruff check .`. Run tests only through
   `tools/run_tests.py`. The full suite runs on CI on every push, in parts, and is required
   before merge; do not run it on the shared laptop (the user's decision, 26 October 2026).
+- No test downloads a model: the runner refuses the real download process in every test
+  (`tests/download_guard.py`, #382). Fake it (a `Downloads` target, or patch
+  `setup._download_main`); a test of the download process itself, with no network, opts in
+  with `download_guard.real_download_process()`.
 - The shared laptop is for what CI cannot do: real windows, timings, real audio and installer
   runs, plus quick targeted tests. A heavy run (headless Edge batches, real windows, Pester,
   performance) holds `%USERPROFILE%\.umv\heavy.lock` (created with CreateNew, labelled,

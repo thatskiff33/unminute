@@ -27,6 +27,14 @@
 # full suite runs on CI on every push, in parts (the owner's decision, 26 October
 # 2026), so the shared laptop is kept for screen and timing work.
 #
+# No test starts a real model download (#382): before the first test the runner
+# installs tests/download_guard.py, which replaces workspace.setup._download_main
+# for the whole run. A test during which the real download process was called or
+# handed to a process is an error naming the cause, even when that happened in a
+# background thread or the exception was swallowed, and so is a test that left
+# the guard removed. The tests that check the real download process on purpose
+# opt in with download_guard.real_download_process().
+#
 #   python tools/run_tests.py                  # same as unittest discover
 #   python tools/run_tests.py --only test_drafts test_app.LockedPageTests
 #   python tools/run_tests.py --strict-skips   # Windows CI, in one go
@@ -180,16 +188,65 @@ def chunk_suite(suite, chunk, durations):
     return unittest.TestSuite(t for name, tests in grouped.items() if name in mine for t in tests)
 
 
+class GuardError:
+    """Stands for a test in an error the download guard reports (#382), so the
+    test's id shows in the output even after the test itself has finished."""
+
+    failureException = AssertionError
+
+    def __init__(self, test_id):
+        self._id = test_id or "no test running"
+
+    def id(self):
+        return self._id
+
+    def shortDescription(self):
+        return None
+
+    def __str__(self):
+        return f"{self._id} (download guard, #382)"
+
+
+def guard_errors(guard):
+    """The download guard's findings since the last call, as [(test id, error)]:
+    each attempt at the real download process, then a guard that a test left
+    removed (put back by check())."""
+    found = [(test, guard.RealDownloadRefused(f"{guard.MESSAGE} ({how})"))
+             for test, how in guard.take()]
+    removed = guard.check()
+    if removed:
+        found.append((guard.current, RuntimeError(removed)))
+    return found
+
+
 class TimedResult(unittest.TextTestResult):
     """Notes the seconds each class took, each test counted from the end of
-    the one before, so a class's setUpClass counts towards it."""
+    the one before, so a class's setUpClass counts towards it. With the
+    download guard (#382) it also reports each test that tried a real download
+    or left the guard removed as an error."""
+
+    guard = None                 # tests/download_guard.py, once installed
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.class_times = {}
         self._mark = time.perf_counter()
 
+    def startTest(self, test):
+        if self.guard is not None:
+            self.guard.current = test.id()
+        super().startTest(test)
+
+    def report_guard(self):
+        for test, error in guard_errors(self.guard) if self.guard is not None else ():
+            self.addError(GuardError(test), (type(error), error, None))
+
+    def stopTestRun(self):
+        self.report_guard()      # an attempt from a thread after its test ended
+        super().stopTestRun()
+
     def stopTest(self, test):
+        self.report_guard()
         super().stopTest(test)
         now = time.perf_counter()
         name = unit_of(test)
@@ -232,6 +289,19 @@ def gate(needs_json):
     return 0
 
 
+def install_download_guard(root):
+    """tests/download_guard.py, installed for this run, or None for a checkout
+    without one (the runner's own tests run it on stand-in checkouts)."""
+    tests = root / "tests"
+    if not (tests / "download_guard.py").is_file():
+        return None
+    if str(tests) not in sys.path:   # discovery has put it there already
+        sys.path.insert(0, str(tests))
+    import download_guard            # the same module the tests import by that name
+    download_guard.install()
+    return download_guard
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--strict-skips", action="store_true",
@@ -271,6 +341,8 @@ def main():
         suite = chunk_suite(suite, args.chunk, load_durations())
         print(f"Chunk {args.chunk[0]} of {args.chunk[1]}: {suite.countTestCases()} of the "
               f"suite's {everything} tests, in {len(units(suite))} classes.", flush=True)
+    # After discovery, so importing the tests runs as before; before any test.
+    TimedResult.guard = install_download_guard(ROOT)
     result = unittest.TextTestRunner(verbosity=2, resultclass=TimedResult).run(suite)
 
     unexpected = [(test, reason) for test, reason in result.skipped

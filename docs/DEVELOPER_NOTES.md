@@ -26,6 +26,16 @@ real time, and remove it when the cause is fixed.
   has run in the same process can fail there: reproduce with the same `--chunk`. When the
   chunks drift apart in time, refresh `tools/test_durations.json` with `--update-durations`
   and the chunks' saved CI logs.
+- **Tests never download a model (#382).** The runner replaces `setup._download_main`, the code
+  the download process runs, with `download_guard.REFUSED` (`tests/download_guard.py`) for the
+  whole run. A `Downloads` or `Workspace` built without a fake target is refused when its
+  download process starts, before the process is sent anything; the test it happened in
+  fails with an error naming the cause, even when the error came from a thread or was
+  swallowed. A test that patches `setup._download_main` and does not put it back fails too.
+  Fake the download process with a `Downloads` target or a patch from
+  `tests/fake_worker_engines.py`. A test of the real download process itself, with no network,
+  opts in with `with download_guard.real_download_process():`. The refused download process
+  prints an `EOFError` of its own: the refusal comes after Windows has started it.
 - **Join workers before removing a test's folder.** A worker that is still ending holds its
   `logs\worker.crash` open, and Windows will not delete an open file, so a tear-down that removes
   the folder first fails with `WinError 32` (#278). After closing a `Workspace` or `WorkerHandle`,
