@@ -324,6 +324,45 @@ class WorkerTests(unittest.TestCase):
                     self.assertNotIn("ProgramFiles", os.environ)
                     self.assertNotIn("ProgramW6432", os.environ)
 
+    def test_a_user_base_sysconfig_has_already_kept_is_cleared(self):
+        # #358 review of 3757d8b: sysconfig keeps the config variables it
+        # first works out, the user base from PYTHONUSERBASE among them, and
+        # PyTorch reads the user base from there. Coverage reads them at
+        # start-up in every child process it measures, and other code could
+        # too. In a fresh process that has read them first, the clearing still
+        # leaves no user base the environment named; if the reset did not
+        # take, it raises (fail closed).
+        import subprocess
+        import textwrap
+        code = textwrap.dedent("""
+            import os, sysconfig
+            from unittest import mock
+            sysconfig.get_config_vars()                 # read before the clearing
+            before = sysconfig.get_config_var("userbase")
+            from workspace import worker
+            worker.clear_dll_path_environment()
+            print(before)
+            print(sysconfig.get_config_var("userbase"))
+            os.environ["PYTHONUSERBASE"] = before
+            with mock.patch.object(sysconfig, "get_config_var", return_value=before):
+                try:
+                    worker.clear_dll_path_environment()
+                    print("not raised")
+                except OSError:
+                    print("raised")
+            """)
+        with tempfile.TemporaryDirectory() as scratch:
+            userbase = os.path.join(scratch, "userbase")
+            r = subprocess.run([sys.executable, "-B", "-c", code],
+                               cwd=str(Path(__file__).resolve().parents[1]),
+                               env=dict(os.environ, PYTHONUSERBASE=userbase),
+                               capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+        before, after, stale = r.stdout.strip().splitlines()[-3:]
+        self.assertEqual(before, userbase)               # kept before the clearing
+        self.assertNotEqual(after, userbase)
+        self.assertEqual(stale, "raised")
+
     @unittest.skipUnless(sys.platform == "win32", "Windows DLL search and executable lookup")
     def test_an_ffmpeg_put_on_path_after_start_up_is_not_found_by_speaker_identification(self):
         # #358 review of 6df1173: speaker identification loads lazily (D4),

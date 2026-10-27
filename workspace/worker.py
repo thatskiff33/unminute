@@ -152,12 +152,25 @@ def clear_dll_path_environment(program_files=None):
     removed rather than left as they came; the callers then import no model
     library (fail closed)."""
     import shutil
+    import sys
     pinned = {v.upper() for v in PROGRAM_FILES_VARIABLES} if os.name == "nt" else set()
     for name in list(os.environ):
         upper = name.upper()
         if (upper in DLL_PATH_VARIABLES or upper.startswith(DLL_PATH_PREFIXES)
                 or upper in pinned):
             os.environ.pop(name, None)
+    # PyTorch reads the user base from sysconfig's config variables, which
+    # sysconfig works out once and keeps, PYTHONUSERBASE included. Something
+    # may already have read them in this process (coverage does at start-up
+    # when it measures child processes, #358 review of 3757d8b), so the cached
+    # user base is worked out again now the variable is gone, whatever ran
+    # first. If it still differs, this raises (fail closed).
+    sysconfig = sys.modules.get("sysconfig")
+    cached = getattr(sysconfig, "_CONFIG_VARS", None)
+    if isinstance(cached, dict) and "userbase" in cached:
+        cached["userbase"] = user_base = sysconfig._getuserbase()
+        if sysconfig.get_config_var("userbase") != user_base:
+            raise OSError("The user base could not be cleared.")
     # shutil.which on Windows looks in the current folder first unless this is
     # set; then only PATH. Every PATH folder holding an ffmpeg that which would
     # return goes, as do empty entries (which mean the current folder).
@@ -187,7 +200,8 @@ def _start_up(log_dir, log_name, quiet, gpu_site=None, gpu_component=None):
     Returns (log, the device it runs speech models on)."""
     # First of all, before workspace.diag: importing it reads sysconfig's
     # paths, and sysconfig then keeps the user base it found, PYTHONUSERBASE
-    # included, for PyTorch to read later (#358). A failure here is raised
+    # included, for PyTorch to read later (#358; the clearing also resets a
+    # user base sysconfig has already kept). A failure here is raised
     # below, once it can be logged, before any model library is imported.
     try:
         clear_dll_path_environment()
