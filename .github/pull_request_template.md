@@ -10,7 +10,7 @@ Tick each item, or replace it with "n/a" and the reason. See docs/RELEASE_STANDA
 - [ ] A fragment in `changelog.d/` for anything a user or IT would notice (or: not release-worthy, because ...). See `changelog.d/README.md`.
 - [ ] The README, user guide, docs and screenshots are updated in this PR. They link to the source of truth instead of restating counts or lists that change.
 - [ ] Nothing in this PR contains meeting content, real names, real recordings, tokens or other private data: not in code, fixtures, logs, screenshots or this description.
-- [ ] No budget went up in `tests/budgets.json` or `docs/perf-budgets.json` (or: raised because ...). These files arrive with #123 and #124.
+- [ ] No budget went up in `tests/budgets.json` or `docs/perf-budgets.json` (or: raised because ...).
 - [ ] No new dependency, model or font (or: added, and its licence was checked: ...).
 - [ ] Changes to the bridge, file paths, network, installer, workflows or stored data have had a security review (or: none touched).
 - [ ] `AGENTS.md` is updated if this PR changes an invariant, a guard test, a check or a source of truth it names (or: none).

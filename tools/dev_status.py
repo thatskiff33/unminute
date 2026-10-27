@@ -18,6 +18,15 @@
 #   python tools/dev_status.py                     # the whole picture
 #   python tools/dev_status.py --files a.py b.md   # which open PRs change these files
 #   python tools/dev_status.py --pr 363            # what stops arming this PR (exit 1 if any)
+#   python tools/dev_status.py --register          # the release register (#121, #411)
+#   python tools/dev_status.py --ci-time           # how long the required CI took from push
+#
+# The release register is generated, not kept by hand: it lists every open issue
+# and PR whose description has a line "Release gate: <gate>" (and, optionally,
+# "Next step: <who or what>"), with each PR's state and the open PRs that close
+# each issue. --ci-time reads the latest completed first-attempt runs of ci.yml and
+# prints how long their "Unit tests (Windows)" job took from the push that started
+# each run: the measured figure behind AGENTS.md's CI-time budget (#386).
 #
 # --pr reads what the repository shows. It does not read a review's verdict,
 # unresolved review threads, code-scanning alerts or open owner decisions, and it
@@ -54,6 +63,17 @@ GH_FILE_LIMIT = 100          # gh returns at most this many files per pull reque
 PASSED = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 WAITING = {"", "PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED", "WAITING", "REQUESTED"}
 UNSET_TIME = "0001-"           # gh writes an unset time as 0001-01-01T00:00:00Z
+REGISTER_ISSUE_FIELDS = "number,title,body"
+REGISTER_PR_FIELDS = "number,title,body,isDraft,mergeStateStatus,statusCheckRollup"
+# A register line: "Release gate: ..." or "Next step: ...", at the start of a line of
+# the description, optionally as a list item or in bold ("**Release gate:** ..." or
+# "**Release gate**: ...").
+REGISTER_LINE = re.compile(r"(?im)^[ \t]*(?:[-*][ \t]+)?\**(release gate|next step)\**[ \t]*:"
+                           r"[ \t]*\**[ \t]*(\S.*?)[ \t]*$")
+CLOSES = re.compile(r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[ \t]+#(\d+)\b")
+CI_WORKFLOW = "ci.yml"
+CI_TIME_JOB = "Unit tests (Windows)"
+CI_TIME_RUNS = 10              # runs measured by default
 # Review records, one per line (the finish-pr skill asks for them). A commit is a
 # 7 to 40 character hex name not followed by a word character or "..", so a range's
 # end is never read as its start; [^\w\n] keeps the label and the commit on one line.
@@ -283,6 +303,80 @@ def assess(pr, required, notes):
     return blockers, info
 
 
+def register_fields(body):
+    """(gate, next step) from a description's register lines; the first of each
+    counts, and either is None when absent."""
+    found = {}
+    for label, value in REGISTER_LINE.findall(body or ""):
+        found.setdefault(label.lower(), value.rstrip("*").strip())
+    return found.get("release gate"), found.get("next step")
+
+
+def pr_state(pr, required):
+    """A PR's draft, merge and check state in a few words."""
+    failing, waiting, missing = check_summary(pr.get("statusCheckRollup"), required)
+    flags = ["draft" if pr.get("isDraft") else "ready",
+             (pr.get("mergeStateStatus") or "unknown").lower()]
+    if failing:
+        flags.append("failing: " + ", ".join(failing))
+    if waiting:
+        flags.append(f"{len(waiting)} running")
+    if missing:
+        flags.append(f"{len(missing)} required not reported")
+    return "; ".join(flags)
+
+
+def register_rows(issues, prs, required):
+    """The release register: one row per open issue or PR with a "Release gate:"
+    line, issues before PRs, each in number order. An issue's state names the
+    open PRs (gated or not) whose description closes it."""
+    closing = {}
+    for pr in prs:
+        for number in {int(n) for n in CLOSES.findall(pr.get("body") or "")}:
+            closing.setdefault(number, []).append(pr["number"])
+    rows = []
+    for kind, items in (("issue", issues), ("PR", prs)):
+        for item in sorted(items, key=lambda i: i["number"]):
+            gate, step = register_fields(item.get("body"))
+            if gate is None:
+                continue
+            if kind == "PR":
+                state = pr_state(item, required)
+            else:
+                linked = sorted(closing.get(item["number"], []))
+                state = ("open PR " + " ".join(f"#{n}" for n in linked) if linked
+                         else "no open PR closes it")
+            rows.append({"kind": kind, "number": item["number"], "title": item["title"],
+                         "gate": gate, "next": step or "not named", "state": state})
+    return rows
+
+
+def utc_seconds(stamp):
+    """Seconds since the epoch from a GitHub UTC time, such as 2026-10-27T02:37:34Z."""
+    return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+
+
+def ci_minutes(run_, jobs, job_name=CI_TIME_JOB):
+    """Minutes from the push that started a run to the end of its job_name job, or
+    None for a re-run (its push came long before its jobs) or a job that did not
+    succeed."""
+    if run_.get("run_attempt", 1) != 1:
+        return None
+    for job in jobs:
+        if job.get("name") == job_name:
+            if job.get("conclusion") != "success" or not job.get("completed_at"):
+                return None
+            return (utc_seconds(job["completed_at"]) - utc_seconds(run_["created_at"])) / 60
+    return None
+
+
+def median(values):
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    return (ordered[middle] if len(ordered) % 2
+            else (ordered[middle - 1] + ordered[middle]) / 2)
+
+
 def behind_ahead(counts):
     """(behind, ahead) from `git rev-list --left-right --count base...head`."""
     left, right = counts.split()
@@ -504,6 +598,60 @@ def show_pr(number, required):
     return 1 if blockers else 0
 
 
+def show_register(required):
+    issues = gh_json(["issue", "list", "--state", "open", "--limit", "200", "--search",
+                      '"release gate" in:body', "--json", REGISTER_ISSUE_FIELDS])
+    # Every open PR: an issue's state names the PRs that close it, gated or not.
+    prs = gh_json(["pr", "list", "--state", "open", "--limit", "100", "--json",
+                   REGISTER_PR_FIELDS])
+    rows = register_rows(issues, prs, required)
+    print(f"Release register ({len(rows)}): open issues and PRs whose description has a "
+          "'Release gate:' line")
+    for row in rows:
+        print(f"  {row['kind']} #{row['number']}  {row['title'][:90]}")
+        print(f"      gate: {row['gate']}")
+        print(f"      state: {row['state']}")
+        print(f"      next step: {row['next']}")
+    if not rows:
+        print("  none: an item joins with a 'Release gate: <gate>' line in its description")
+    return 0
+
+
+def show_ci_time(count):
+    runs = gh_json(["api", f"repos/{{owner}}/{{repo}}/actions/workflows/{CI_WORKFLOW}/runs"
+                    f"?status=completed&per_page={min(100, count * 3)}"])["workflow_runs"]
+    measured = []
+    for run_ in runs:
+        if len(measured) >= count:
+            break
+        if run_.get("run_attempt", 1) != 1:
+            continue
+        jobs = gh_json(["api", f"repos/{{owner}}/{{repo}}/actions/runs/{run_['id']}"
+                        "/jobs?per_page=100"])["jobs"]
+        minutes = ci_minutes(run_, jobs)
+        if minutes is not None:
+            measured.append((run_, minutes))
+    print(f"'{CI_TIME_JOB}' from push to its end, in the latest {len(measured)} successful "
+          f"first-attempt runs of {CI_WORKFLOW} (times UTC):")
+    for run_, minutes in measured:
+        print(f"  {minutes:5.1f} min  {run_['created_at']}  {run_['event']}  "
+              f"{run_['head_sha'][:7]}")
+    if measured:
+        values = [m for _, m in measured]
+        print(f"Median {median(values):.1f} min (fastest {min(values):.1f}, slowest "
+              f"{max(values):.1f}). Time waiting for a runner counts: it is time from push.")
+    return 0
+
+
+def run_count(text):
+    """--ci-time's RUNS: a whole number of at least 1 (0 or less measures nothing and
+    would send the API a bad page size)."""
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"RUNS must be 1 or more, not {value}")
+    return value
+
+
 def main(argv=None):
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")   # PR titles may hold any character
@@ -513,6 +661,13 @@ def main(argv=None):
     group.add_argument("--files", nargs="+", metavar="PATH",
                        help="list the open PRs that change these paths")
     group.add_argument("--pr", type=int, help="list what still stops this PR")
+    group.add_argument("--register", action="store_true",
+                       help="print the release register: open issues and PRs with a "
+                       "'Release gate:' line")
+    group.add_argument("--ci-time", nargs="?", type=run_count, const=CI_TIME_RUNS,
+                       metavar="RUNS",
+                       help=f"how long '{CI_TIME_JOB}' took from push in the latest RUNS "
+                       f"successful runs (default {CI_TIME_RUNS})")
     parser.add_argument("--no-fetch", action="store_true",
                         help="use origin's refs as they are")
     args = parser.parse_args(argv)
@@ -520,6 +675,10 @@ def main(argv=None):
         run(["git", "fetch", "origin", "--prune", "--quiet"])
     if args.pr:
         return show_pr(args.pr, required_checks())
+    if args.register:
+        return show_register(required_checks())
+    if args.ci_time is not None:
+        return show_ci_time(args.ci_time)
     prs = gh_json(["pr", "list", "--state", "open", "--limit", "100", "--json", PR_FIELDS])
     if args.files:
         show_files(prs, args.files)

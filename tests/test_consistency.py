@@ -1146,5 +1146,167 @@ class AccessibilityTargetTests(unittest.TestCase):
                 self.assertLessEqual(versions, {"2.2"}, f"{doc} names another WCAG version")
 
 
+RELEASE_VERSION = r"v?([0-9]+\.[0-9]+\.[0-9]+(?:-preview\.[0-9]+)?)\b"
+# The docs that name the newest release (RELEASE_CHECKLIST.md, "Straight after publishing").
+NEWEST_RELEASE_DOCS = ("README.md", "docs/WORKSPACE_GUIDE.md", "docs/IT_DEPLOYMENT.md",
+                       "docs/PRIVACY_IMPACT_ASSESSMENT_DRAFT.md")
+
+
+def changelog_versions():
+    """The changelog's version headings, newest first."""
+    return re.findall(r"^## v(\S+)", read("CHANGELOG.md"), re.MULTILINE)
+
+
+class ReleaseMarkerTests(unittest.TestCase):
+    """#411: "Not in vX" markers and the "newest release" lines name one release.
+
+    The newest release is the one the docs' "newest release" lines name. It must be
+    the newest changelog heading (VERSION, VersionTests), or the one before it
+    while a release is prepared but not yet published: tools/changelog.py writes
+    the new heading before the tag, and the docs move "straight after publishing"
+    (RELEASE_CHECKLIST.md). A marker that names any other version is stale."""
+
+    MARKER = re.compile(r"\bnot in " + RELEASE_VERSION, re.IGNORECASE)
+    NEWEST = re.compile(r"\bthe newest release(?:,| is) " + RELEASE_VERSION, re.IGNORECASE)
+
+    def newest_release(self):
+        named = {}
+        for doc in NEWEST_RELEASE_DOCS:
+            found = self.NEWEST.findall(read(doc))
+            self.assertTrue(found, f"{doc} no longer names the newest release")
+            named.update({v: doc for v in found})
+        self.assertEqual(1, len(named), f"the docs name different newest releases: {named}")
+        return next(iter(named))
+
+    def test_newest_release_lines_name_a_current_version(self):
+        newest = self.newest_release()
+        headings = changelog_versions()
+        self.assertIn(newest, headings[:2],
+                      f"the docs' newest release v{newest} is neither the newest changelog "
+                      f"heading v{headings[0]} nor the one before it: set the 'newest release' "
+                      "lines when a release is published (RELEASE_CHECKLIST.md)")
+
+    def test_markers_name_the_newest_release(self):
+        newest = self.newest_release()
+        seen = 0
+        for doc in DocsTests.DOCS:
+            for line_no, line in enumerate(read(doc).splitlines(), 1):
+                for version in self.MARKER.findall(line):
+                    seen += 1
+                    with self.subTest(doc=doc, line=line_no):
+                        self.assertEqual(newest, version,
+                                         f"{doc}:{line_no} says 'Not in v{version}', but the "
+                                         f"newest release is v{newest}: remove the marker if "
+                                         "it shipped, otherwise name the newest release")
+        self.assertGreater(seen, 0, "no 'Not in vX' marker found: the pattern no longer "
+                                    "matches (IT_DEPLOYMENT.md explains the marker)")
+
+    def test_the_patterns_find_what_the_docs_write(self):
+        self.assertEqual(["0.5.0-preview.4", "0.5.0"], self.MARKER.findall(
+            "(**Not in v0.5.0-preview.4**) and not in v0.5.0. Not in that release."))
+        self.assertEqual(["0.5.0-preview.4", "1.2.3"], self.NEWEST.findall(
+            "The newest release, 0.5.0-preview.4 (27 October 2026), ... "
+            "The newest release is v1.2.3 (1 May 2027)."))
+
+
+def css_colour(value):
+    """(r, g, b, alpha) from a tokens.css colour: #RRGGBB, rgba() or transparent."""
+    value = value.strip().lower()
+    if value == "transparent":
+        return (0, 0, 0, 0.0)
+    if re.fullmatch(r"#[0-9a-f]{6}", value):
+        return tuple(int(value[i:i + 2], 16) for i in (1, 3, 5)) + (1.0,)
+    m = re.fullmatch(r"rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([0-9.]+)\s*\)", value)
+    if not m:
+        raise AssertionError(f"unexpected colour in tokens.css: {value}")
+    return (int(m[1]), int(m[2]), int(m[3]), float(m[4]))
+
+
+def shell_colour(value):
+    """(r, g, b, alpha) from a shell._THEMES colour: "#RRGGBB" or (r, g, b, alpha)."""
+    if isinstance(value, str):
+        return css_colour(value)
+    r, g, b, a = value
+    return (r, g, b, float(a))
+
+
+def theme_tokens():
+    """{"light": {token: colour}, "dark": {token: colour}} from tokens.css: :root,
+    then the dark theme's overrides inside @media (prefers-color-scheme: dark)."""
+    css = re.sub(r"/\*.*?\*/", "", read("workspace/ui/tokens.css"), flags=re.DOTALL)
+    dark_at = css.index("@media (prefers-color-scheme: dark)")
+    pattern = r"(--[\w-]+)\s*:\s*([^;]+);"
+    light = dict(re.findall(pattern, css[css.index(":root {"):dark_at]))
+    dark = {**light, **dict(re.findall(pattern, css[dark_at:]))}
+    return {"light": light, "dark": dark}
+
+
+class DialogColourTests(unittest.TestCase):
+    """#411: the confirmations the app draws itself (workspace/shell.py, _THEMES)
+    use the page's colours (workspace/ui/tokens.css). Read from the source, so no
+    window library is imported."""
+
+    # _THEMES key: the token, or (background, text) tokens. The confirmation's
+    # icons follow the page's .c-icon (--sp1) and .c-icon.danger.
+    SINGLE = {"card": "--card", "text": "--text", "muted": "--muted", "soft": "--soft",
+              "line": "--control-line", "focus": "--accent"}
+    PAIRS = {"primary": ("--primary", "--primary-fg"),
+             "secondary": ("--secondary", "--secondary-fg"),
+             "danger": ("--danger", "--danger-fg"), "record": ("--record", "--record-fg")}
+    ICONS = {"tick": ("--sp1", "--sp1-fg"), "mic": ("--sp1", "--sp1-fg"),
+             "bin": ("--danger", "--danger-fg")}
+
+    @classmethod
+    def setUpClass(cls):
+        tree = ast.parse(read("workspace/shell.py"))
+        values = [node.value for node in tree.body if isinstance(node, ast.Assign)
+                  and any(getattr(t, "id", None) == "_THEMES" for t in node.targets)]
+        assert len(values) == 1, "expected one _THEMES assignment in workspace/shell.py"
+        cls.themes = ast.literal_eval(values[0])
+        cls.tokens = theme_tokens()
+
+    def drawn(self, theme, token):
+        """A token's colour as the dialog draws it: a transparent one shows the card."""
+        tokens = self.tokens[theme]
+        colour = css_colour(tokens[token])
+        return css_colour(tokens["--card"]) if colour[3] == 0 else colour
+
+    def test_every_key_is_tied_to_a_token(self):
+        for theme, colours in self.themes.items():
+            with self.subTest(theme=theme):
+                self.assertEqual(set(self.SINGLE) | set(self.PAIRS)
+                                 | {"scrim", "scrim_opacity", "icon"}, set(colours))
+                self.assertEqual(set(self.ICONS), set(colours["icon"]))
+        self.assertEqual({"light", "dark"}, set(self.themes))
+
+    def test_dialog_colours_match_the_page_tokens(self):
+        for theme, colours in self.themes.items():
+            for key, token in self.SINGLE.items():
+                with self.subTest(theme=theme, key=key):
+                    self.assertEqual(self.drawn(theme, token), shell_colour(colours[key]),
+                                     f"shell._THEMES[{theme!r}][{key!r}] differs from {token}")
+            pairs = [(k, v, colours[k]) for k, v in self.PAIRS.items()]
+            pairs += [(f"icon {k}", v, colours["icon"][k]) for k, v in self.ICONS.items()]
+            for key, tokens, values in pairs:
+                for token, value in zip(tokens, values, strict=True):
+                    with self.subTest(theme=theme, key=key, token=token):
+                        self.assertEqual(self.drawn(theme, token), shell_colour(value),
+                                         f"shell._THEMES[{theme!r}] {key} differs from {token}")
+            with self.subTest(theme=theme, key="scrim"):
+                r, g, b, _ = shell_colour(colours["scrim"])
+                self.assertEqual(css_colour(self.tokens[theme]["--scrim"]),
+                                 (r, g, b, float(colours["scrim_opacity"])))
+
+    def test_the_colour_readers(self):
+        self.assertEqual((20, 41, 102, 1.0), css_colour("#142966"))
+        self.assertEqual((5, 12, 33, 0.6), css_colour("rgba(5, 12, 33, 0.6)"))
+        self.assertEqual((0, 0, 0, 0.0), css_colour("transparent"))
+        self.assertEqual((255, 255, 255, 0.74), shell_colour((255, 255, 255, 0.74)))
+        tokens = theme_tokens()
+        self.assertEqual("#142966", tokens["light"]["--primary"])
+        self.assertEqual("#B4DDF6", tokens["dark"]["--primary"])
+        self.assertEqual("#B3261E", tokens["dark"]["--danger"], "inherited from :root")
+
+
 if __name__ == "__main__":
     unittest.main()
