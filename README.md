@@ -109,7 +109,7 @@ Open a meeting to review it. The steps (Transcribe, Review, Hand off, Clean up) 
 - Select text, or press Enter, to correct it. Ctrl+Z undoes the last edit.
 - Search with Ctrl+F. In a wide window the transcript and the side panel scroll separately.
 - You can open a meeting while it is still transcribing. New passages are added to the end as they arrive, so scrolling, playing and correcting earlier passages stay smooth on long meetings.
-- **Name speakers** plays short examples for each detected speaker. You can merge two labels that are the same person, or move a passage to another speaker. Names stay with this meeting only.
+- **Name speakers** plays short examples for each detected speaker. You can merge two labels that are the same person, or move a passage to another speaker. Names stay with this meeting only. For a call recorded with computer audio, it may suggest which speaker is you (the one mostly on your microphone); nothing is named until you choose **Use 'You'** or type a name.
 - **Skip speakers** (on the meeting's row) or **Skip speaker identification** (in its speaker panel) is for a recording of one or two people: the meeting goes straight to review and hand off without speaker labels. While the audio is kept, **Identify again…** still works later.
 - The side panel's tabs show **Speakers**, **Versions** (Transcribe again with another model keeps your earlier version and its edits) and **Holds**. A meeting that stopped with an error can also be transcribed again, with the model now chosen in Settings.
 - **Help and shortcuts** in the sidebar lists every keyboard shortcut. Press ? (outside a text field) to open it.

@@ -237,6 +237,21 @@ def given_names(store, vid, view=None):
     return out
 
 
+def spans(store, vid, view=None):
+    """{final label: [(start_s, end_s), ...]}: each speaker's passages
+    without overlapping speech, in the meeting's time. Times only, no text:
+    for the "You" suggestion of a two-track recording (workspace/activity.py,
+    #108)."""
+    view = view or resolve(store, vid)
+    out = {}
+    for row in store._all("SELECT id, start_s, end_s FROM segments WHERE version_id = ?",
+                          (vid,)):
+        lbl = view["labels"].get(row["id"])
+        if lbl and not view["overlap"].get(row["id"]):
+            out.setdefault(lbl, []).append((row["start_s"], row["end_s"]))
+    return out
+
+
 def summary(store, vid, view=None):
     """Speakers with names, passage counts and seconds of speech, for the Name
     speakers panel and the meeting's Speakers tab."""

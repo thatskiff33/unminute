@@ -10,7 +10,8 @@
 # A microphone recording (#30) has no original file: its encrypted chunks
 # are opened and checked in this process (workspace/recorder.py) and streamed
 # to the decoder over its stdin as one WAV (import_stream, #111 C3b), so no
-# plain recording.wav is ever written.
+# plain recording.wav is ever written. A two-track recording (#108) also
+# leaves its sealed track-activity file there (workspace/activity.py).
 # Nothing in a media path comes from the source file's name. audiocrypt is
 # imported inside the functions that use it (window-process module budget).
 
@@ -741,6 +742,7 @@ def import_stream(store, media_root, audio, title, recording):
             saved = None
         if saved != samples:
             raise DecodeError(SAVE_FAILED)
+        _write_activity(store, folder, mid, audio)
         sid = store.add_source(mid, original_path=None, original_sha256=feed.sha256,
                                original_size=feed.data_bytes, original_mtime_ns=0,
                                audio_id=file_id.hex(), samples=samples,
@@ -749,6 +751,24 @@ def import_stream(store, media_root, audio, title, recording):
         _forget_new_meeting(store, mid, folder)
         raise
     return mid, sid
+
+
+def _write_activity(store, folder, mid, audio):
+    """A two-track recording's track-activity file (workspace/activity.py,
+    #108), sealed under the meeting's audio key in its folder, before the
+    import commits: a failed import removes it with the folder. It only
+    feeds an optional suggestion, so it never fails the import: without it
+    no suggestion is offered."""
+    get = getattr(audio, "activity", None)
+    if get is None:
+        return
+    try:
+        result = get()
+        if result is not None:
+            from workspace import activity
+            activity.write(folder, store.meeting_key(mid, "audio"), mid, result)
+    except Exception:
+        pass
 
 
 class BadMeetingId(ValueError):

@@ -1241,6 +1241,12 @@ class RecordingAudio:
     def seconds(self):
         return self.frames / self.rate
 
+    def activity(self):
+        """The track-activity result of the mix (workspace/activity.py), once
+        blocks() has been read to the end; None for a microphone-only
+        recording, before then, or if it could not be made."""
+        return self._mix.activity() if self._mix is not None else None
+
     def blocks(self):
         """Little-endian int16 mono at self.rate, a block at a time."""
         try:

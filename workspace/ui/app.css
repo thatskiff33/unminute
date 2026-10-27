@@ -822,6 +822,9 @@ dialog h2 { margin: 0; }
 }
 .n-label { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 600; color: var(--muted); }
 .n-label input { width: 100%; font-size: 17px; font-weight: 700; color: var(--text); background: var(--input-bg); }
+.n-you { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 14px; color: var(--muted); }
+.n-you-use { min-height: 36px; padding: 0 12px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--input-bg); color: var(--link); font-size: 14px; font-weight: 600; }
+.n-you-use:hover:not(:disabled) { background: var(--soft); }
 .speaker .examples { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .speaker .examples li { display: flex; align-items: flex-start; gap: 10px; }
 .ex-play {

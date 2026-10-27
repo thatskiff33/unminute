@@ -28,6 +28,9 @@
 #      sums smoothly under full scale instead of clipping them. Only the mix
 #      is matched and limited: the saved tracks are read, never changed
 #      (D1). Echo cancellation is not done (a later idea, #376).
+#   4. While mixing, workspace/activity.Tracker keeps both tracks' levels in
+#      10 ms steps (before matching), for the track-activity file and the
+#      "You" suggestion (#108 slice 5). A failure there never stops the mix.
 #
 # Lines that cannot be trusted (damaged marks, a drift beyond MAX_DRIFT) fall
 # back to lining the tracks up by their start times, with an event: never a
@@ -258,6 +261,24 @@ class Mix:
                                      track_level_db(comp, crate) if comp.frames else None)
         except Exception:
             self.gains = (1.0, 1.0)
+        from workspace import activity          # numpy only, like this module
+        self.tracker = activity.Tracker(rate, mic.frames)
+
+    def activity(self):
+        """The track-activity result (activity.Tracker.finish) once blocks()
+        has been read to the end; None before then or if tracking failed."""
+        try:
+            return self.tracker.finish() if self.tracker is not None else None
+        except Exception:
+            return None
+
+    def _track(self, a, voice, other):
+        if self.tracker is None:
+            return
+        try:
+            self.tracker.add(a, voice, other)
+        except Exception:
+            self.tracker = None                  # no suggestion; the mix carries on
 
     def blocks(self):
         step = max(1, int(BLOCK_S * self.rate))
@@ -267,6 +288,7 @@ class Mix:
                 voice = self.mic.read(a, b)
                 times = seg.time(np.arange(a, b, dtype=np.float64))
                 other = computer_at(times, self.comp_lines, self.comp)
+                self._track(a, voice, other)
                 g_mic, g_comp = self.gains
                 both = voice.astype(np.float64) * g_mic + other.astype(np.float64) * g_comp
                 mix = np.clip(np.round(soft_limit(both)), -32768, 32767)
