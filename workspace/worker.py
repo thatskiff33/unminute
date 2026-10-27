@@ -71,10 +71,6 @@ NOT_WEIGHTS_ONLY = "TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"
 #     of the first ffmpeg that shutil.which finds while it loads its FFmpeg
 #     libraries. The app decodes with PyAV and never uses TorchCodec's FFmpeg,
 #     so no ffmpeg is left for it to find: see clear_dll_path_environment.
-# Without PYTHONUSERBASE, PyTorch still adds %APPDATA%\Python\Library\bin when
-# it exists, a user-writable folder named by no variable: a documented
-# residual (T25, the owner's decision of 25 October 2026, #358), as is the
-# default NVTOOLSEXT and CUDA folder under Program Files.
 # Removed from every worker before any model library is imported, and from
 # --self-test, which imports the same libraries (workspace/__main__.py; the
 # launcher starts it before a migration, #111 B5b); the app's own process
@@ -90,6 +86,22 @@ DLL_PATH_CHECKED_TORCHCODEC = "0.17.0"
 # Set in a worker so that shutil.which, as TorchCodec calls it, does not look
 # in the current folder before PATH (Windows' NeedCurrentDirectoryForExePath).
 NO_CURRENT_FOLDER = "NoDefaultCurrentDirectoryInExePath"
+# Without those variables PyTorch falls back to folders it builds from two
+# more, which the environment can redirect too (#358 review):
+#   - ProgramFiles: %ProgramFiles%\NVIDIA Corporation\NvToolsExt\bin\x64 and,
+#     in a CUDA build, %ProgramFiles%\NVIDIA GPU Computing Toolkit\CUDA\
+#     v<version>\bin. Windows sets a 64-bit process's ProgramFiles from
+#     ProgramW6432 when it starts. A worker sets both to the real Program
+#     Files folder from Windows' known-folder lookup (FOLDERID_ProgramFiles,
+#     never a variable), so these fallbacks need administrator rights to
+#     plant a DLL in (the owner's decision DEC-073). PyTorch reads only
+#     ProgramFiles; ProgramW6432 is set as well so that a process the worker
+#     starts gets the same folder.
+#   - APPDATA: the default user base is %APPDATA%\Python (sysconfig), so
+#     PyTorch adds %APPDATA%\Python\Library\bin when it exists. That folder is
+#     user-writable and APPDATA can redirect it: a documented residual (T25,
+#     the owner's decisions DEC-052 and DEC-073).
+PROGRAM_FILES_VARIABLES = ("ProgramFiles", "ProgramW6432")
 
 
 # A worker whose pipe has just closed is ending: wait this long for it, so its
@@ -128,16 +140,23 @@ def safe_message(exc):
     return _PATHS.sub("<path>", str(exc))[:500]
 
 
-def clear_dll_path_environment():
+def clear_dll_path_environment(program_files=None):
     """In a worker or --self-test, before any speech or model library is
     imported: remove the environment variables that make one add a DLL folder
-    from outside the app (DLL_PATH_VARIABLES, DLL_PATH_PREFIXES), and keep
-    ffmpeg off PATH, so TorchCodec adds no FFmpeg folder (T25, #357, #358).
-    Changes only this process's environment, which its children inherit."""
+    from outside the app (DLL_PATH_VARIABLES, DLL_PATH_PREFIXES); on Windows,
+    set ProgramFiles and ProgramW6432 to the real Program Files folder
+    (PROGRAM_FILES_VARIABLES); and keep ffmpeg off PATH, so TorchCodec adds no
+    FFmpeg folder (T25, #357, #358). Changes only this process's environment,
+    which its children inherit. program_files stands in for the known-folder
+    lookup in tests. If that lookup fails it raises, with both variables
+    removed rather than left as they came; the callers then import no model
+    library (fail closed)."""
     import shutil
+    pinned = {v.upper() for v in PROGRAM_FILES_VARIABLES} if os.name == "nt" else set()
     for name in list(os.environ):
         upper = name.upper()
-        if upper in DLL_PATH_VARIABLES or upper.startswith(DLL_PATH_PREFIXES):
+        if (upper in DLL_PATH_VARIABLES or upper.startswith(DLL_PATH_PREFIXES)
+                or upper in pinned):
             os.environ.pop(name, None)
     # shutil.which on Windows looks in the current folder first unless this is
     # set; then only PATH. Every PATH folder holding an ffmpeg that which would
@@ -148,11 +167,21 @@ def clear_dll_path_environment():
         kept = [folder for folder in path.split(os.pathsep)
                 if folder.strip() and not shutil.which("ffmpeg", path=folder)]
         os.environ["PATH"] = os.pathsep.join(kept)
+    if pinned:                           # PyTorch reads ProgramFiles only on Windows
+        if program_files is None:
+            # The machine trust test's lookup: shell32's SHGetKnownFolderPath
+            # by ctypes, no heavy import and no sysconfig (#111 B6b).
+            from workspace.update import _program_files as program_files
+        folder = program_files()
+        if not (isinstance(folder, str) and os.path.isabs(folder)):
+            raise OSError("The Program Files folder could not be found.")
+        for name in PROGRAM_FILES_VARIABLES:
+            os.environ[name] = folder
 
 
 def _start_up(log_dir, log_name, quiet, gpu_site=None, gpu_component=None):
     """A worker process's start-up, before any model library is imported:
-    no DLL folder named by the environment and no ffmpeg on PATH (T25), its
+    the DLL-path environment cleared and ProgramFiles set (T25), its
     log, no telemetry, the offline guard (N1), weights-only loading and, if
     quiet, below-normal priority. Shared by the main, GPU and draft workers.
     Returns (log, the device it runs speech models on)."""
@@ -264,6 +293,11 @@ def _worker_main(conn, cache_dir, quiet, gpu_site=None, allow_test_engines=False
                 engine, loaded = None, None
                 import gc
                 gc.collect()
+                # Again just before the speaker libraries load (D4: lazily,
+                # possibly long after start-up), so an ffmpeg put in a PATH
+                # folder since then is not found either (#358 review). If it
+                # fails, only speaker identification fails.
+                clear_dll_path_environment()
                 try:
                     waveform = _read_audio(audio)
                 finally:

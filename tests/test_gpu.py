@@ -635,8 +635,10 @@ class WorkspaceGpuTests(unittest.TestCase):
         # #358 (T25): the CUDA build of PyTorch, which pyannote.audio loads in
         # this worker, and TorchCodec add the user base's Library\bin
         # (PYTHONUSERBASE), %NVTOOLSEXT_PATH%\bin\x64, %CUDA_PATH_V*%\bin (no
-        # cudart beside torch) and the folder of an ffmpeg on PATH to the DLL
-        # search path. Scratch folders named those ways reach none of it.
+        # cudart beside torch), their defaults under %ProgramFiles% (which
+        # Windows sets for the worker from ProgramW6432) and the folder of an
+        # ffmpeg on PATH to the DLL search path. Scratch folders named those
+        # ways reach none of it.
         import json
 
         import fake_worker_engines as fakes
@@ -652,7 +654,7 @@ class WorkspaceGpuTests(unittest.TestCase):
             env, planted = fakes.planted_dll_environment(root)
             with mock.patch.dict(os.environ, env):
                 here = fakes.torch_dll_folders()       # this process is not cleared
-                for name in ("nvtx", "cuda", "ffmpeg"):
+                for name in ("nvtx", "cuda", "pfiles_nvtx", "pfiles_cuda", "ffmpeg"):
                     self.assertIn(planted[name], here)
                 turns, _, device, _ = diarize(
                     self.ws.handle, "test:fake_worker_engines:dll_folders_diarizer", audio,

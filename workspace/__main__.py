@@ -384,13 +384,16 @@ def self_test():
     # No DLL folder named by the environment (#357, #358, T25): CTranslate2,
     # PyTorch and TorchCodec, imported below, add folders from outside the app
     # to the DLL search path when they load (HIP_PATH, PYTHONUSERBASE,
-    # NVTOOLSEXT_PATH, CUDA_PATH_V*, an ffmpeg on PATH). The launcher starts
-    # this check on its own before a migration (#111 B5b), so it clears the
-    # same environment every worker does, before any speech or model library
+    # NVTOOLSEXT_PATH, CUDA_PATH_V*, an ffmpeg on PATH, and PyTorch's fallbacks
+    # under ProgramFiles, which is set to the real Program Files folder from
+    # Windows' known-folder lookup; APPDATA stays a residual). The launcher
+    # starts this check on its own before a migration (#111 B5b), so it sets
+    # the same environment every worker does, before any speech or model library
     # loads (numpy, which workspace.worker imports, comes first and adds only
     # its own numpy.libs folder) and before anything reads sysconfig, which
     # keeps the user base PyTorch reads (workspace.diag does, so it is not
-    # imported before this); if it cannot, it imports nothing more and fails.
+    # imported before this); if it cannot (the known-folder lookup failing
+    # included), it imports nothing more and fails.
     try:
         from workspace.worker import clear_dll_path_environment
         clear_dll_path_environment()

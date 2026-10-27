@@ -1357,38 +1357,51 @@ class ChildCheckTests(unittest.TestCase):
         self.assertEqual(seen, {})
         self.assertEqual(out.getvalue().splitlines()[-1], "FAIL")
 
-    @unittest.skipUnless(HAVE_DEPS, "numpy/av/cryptography not installed")
-    def test_the_self_test_clears_the_user_base_before_python_keeps_it(self):
+    # PyTorch reads the user base and ProgramFiles only on Windows, where
+    # sysconfig always has a user base (on Linux it can be None).
+    @unittest.skipUnless(sys.platform == "win32" and HAVE_DEPS, "Windows app dependencies")
+    def test_the_self_test_clears_the_user_base_and_sets_program_files_first(self):
         # #358 (T25): PyTorch reads the user base from sysconfig, which keeps
-        # the first one it finds, PYTHONUSERBASE included. Started as the
-        # launcher starts it (python -B -m workspace --self-test), the
-        # self-test clears that variable before anything in the app reads
-        # sysconfig, so no library it imports sees the user base it names.
-        # Library imports are recorded instead of run, in a fresh process.
+        # the first one it finds, PYTHONUSERBASE included, and builds its
+        # default NVTOOLSEXT and CUDA folders from ProgramFiles, which Windows
+        # sets for a 64-bit process from ProgramW6432. Started as the launcher
+        # starts it (python -B -m workspace --self-test), the self-test clears
+        # that variable before anything in the app reads sysconfig, and sets
+        # ProgramFiles to the real Program Files folder, so no library it
+        # imports sees the user base or the Program Files folder the
+        # environment names. Library imports are recorded instead of run, in
+        # a fresh process.
+        from workspace import update
         code = textwrap.dedent("""
-            import json, sys, sysconfig
+            import json, os, sys, sysconfig
             from unittest import mock
             from workspace import __main__ as main, speaker_load
             seen = []
             sys.argv = ["workspace", "--self-test"]
             with mock.patch("importlib.import_module",
                             side_effect=lambda name: seen.append(
-                                sysconfig.get_config_var("userbase"))), \\
+                                [sysconfig.get_config_var("userbase"),
+                                 os.environ.get("ProgramFiles")])), \\
                     mock.patch.object(main.offline_guard, "disable_onnxruntime_telemetry"), \\
                     mock.patch.object(speaker_load, "self_check", return_value=[]), \\
                     mock.patch.object(main, "dpapi_round_trip", return_value=(True, "dpapi")):
                 main.main()
             print(json.dumps(seen))
             """)
-        with tempfile.TemporaryDirectory() as userbase:
-            env = {**os.environ, "PYTHONUSERBASE": userbase}
+        with tempfile.TemporaryDirectory() as scratch:
+            userbase, pfiles = os.path.join(scratch, "userbase"), os.path.join(scratch, "pf")
+            env = {k: v for k, v in os.environ.items()
+                   if k.upper() not in ("PROGRAMFILES", "PROGRAMW6432")}
+            env.update(PYTHONUSERBASE=userbase, ProgramFiles=pfiles, ProgramW6432=pfiles)
             r = subprocess.run([sys.executable, "-B", "-c", code], cwd=str(ROOT), env=env,
                                capture_output=True, text=True, timeout=120)
         self.assertEqual(r.returncode, 0, r.stderr[-2000:])
         seen = json.loads(r.stdout.strip().splitlines()[-1])
         self.assertTrue(seen)
-        self.assertEqual([u for u in seen if os.path.normcase(u) == os.path.normcase(userbase)],
-                         [])
+        real = update._program_files()
+        self.assertNotIn(os.path.normcase(userbase),
+                         {os.path.normcase(u) for u, _ in seen if u})
+        self.assertEqual({p for _, p in seen}, {real})
 
     @unittest.skipUnless(sys.platform == "win32" and HAVE_DEPS
                          and importlib.util.find_spec("webview"), "Windows app dependencies")
