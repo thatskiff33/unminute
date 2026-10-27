@@ -51,7 +51,7 @@ Get-Content Unminute-<version>.zip.sha256
 
 That detects a damaged download, not a replaced one. From 0.5.0 (including its previews), each release is built by GitHub Actions from its tagged commit, with signed build provenance and a signed software bill of materials, and is published only after the project owner approves it. The zip itself is still not code-signed. To check that a download was built that way, IT can run `tools\intune\Get-VerifiedRelease.ps1` (add `-AllowPrerelease` for a preview); see "Verifying a release before packaging" in [docs/PACKAGING.md](docs/PACKAGING.md).
 
-Unattended and Intune deployment, exit codes, detection rules and signing are covered in [docs/PACKAGING.md](docs/PACKAGING.md). IT teams can start from [docs/IT_DEPLOYMENT.md](docs/IT_DEPLOYMENT.md): install modes, managed policy, health monitoring, updates, offboarding and incidents.
+Unattended and Intune deployment, exit codes, detection rules and signing are covered in [docs/PACKAGING.md](docs/PACKAGING.md). IT teams can start from [docs/IT_DEPLOYMENT.md](docs/IT_DEPLOYMENT.md): install modes, managed policy, health monitoring, updates, offboarding and incidents. For an install for everyone on a computer, IT can also install the models from a package it builds with `tools\intune\New-ModelPackage.ps1`, so staff need no download or Hugging Face token ("Models for everyone" in the IT guide).
 
 The newest release, 0.5.0-preview.4 (27 October 2026), has everything this README describes except what is marked "Not yet in a release" (the decoder's sandbox, in "Privacy and network behaviour"). The [user guide](docs/WORKSPACE_GUIDE.md) lists any later change that is not in a release yet.
 

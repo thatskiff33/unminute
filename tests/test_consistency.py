@@ -348,7 +348,13 @@ class InstallIdentityTests(unittest.TestCase):
                 # The runtime firewall rules' group (#111 B7b): the machine uninstall
                 # removes the rules by it, so a new name would leave the old rules
                 # behind. Pinned by #455.
-                "firewall_group": "Unminute runtime"}})
+                "firewall_group": "Unminute runtime",
+                # The models IT installs for everyone (#111 B7a; the owner's decision
+                # B7-1, 21 Oct 2026): their folder, the record in each model's
+                # folder and the model package's detection file.
+                "models_folder": "models",
+                "models_record": "models.verified.json",
+                "models_detection_file": r"models\package-<SHA-256 of models.json>.json"}})
         self.assertEqual({script: {mode: sorted(codes) for mode, codes in modes.items()}
                           for script, modes in identity["exit_codes"].items()},
                          {"install.ps1": {"user": ["0", "1", "2", "3", "4", "5", "6"],
