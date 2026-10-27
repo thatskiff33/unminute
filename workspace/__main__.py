@@ -380,23 +380,24 @@ def self_test():
     network and that a code-running speaker checkpoint is refused. Prints one
     line per check; exit code 0 only if all pass."""
     import importlib
-    import os
     import socket
-    # No DLL folder named by the environment (#357, T25): CTranslate2, imported
-    # below, adds %HIP_PATH%\bin to the DLL search path when it loads. The
-    # launcher starts this check on its own before a migration (#111 B5b), so
-    # it removes the same variables every worker does, before any speech or
-    # model library loads (numpy, which workspace.worker imports, comes first
-    # and adds only its own numpy.libs folder); if it cannot read that list it
-    # imports nothing more and fails.
+    # No DLL folder named by the environment (#357, #358, T25): CTranslate2,
+    # PyTorch and TorchCodec, imported below, add folders from outside the app
+    # to the DLL search path when they load (HIP_PATH, PYTHONUSERBASE,
+    # NVTOOLSEXT_PATH, CUDA_PATH_V*, an ffmpeg on PATH). The launcher starts
+    # this check on its own before a migration (#111 B5b), so it clears the
+    # same environment every worker does, before any speech or model library
+    # loads (numpy, which workspace.worker imports, comes first and adds only
+    # its own numpy.libs folder) and before anything reads sysconfig, which
+    # keeps the user base PyTorch reads (workspace.diag does, so it is not
+    # imported before this); if it cannot, it imports nothing more and fails.
     try:
-        from workspace.worker import DLL_PATH_VARIABLES
+        from workspace.worker import clear_dll_path_environment
+        clear_dll_path_environment()
     except Exception as exc:
-        print(f"FAILED  DLL path variables could not be read ({type(exc).__name__})")
+        print(f"FAILED  DLL path variables could not be cleared ({type(exc).__name__})")
         print("FAIL")
         return 1
-    for name in DLL_PATH_VARIABLES:
-        os.environ.pop(name, None)
     ok = True
     offline_guard.disable_onnxruntime_telemetry()   # before onnxruntime is used below
     for name in ("numpy", "av", "onnxruntime", "onnx_asr", "faster_whisper", "ctranslate2",

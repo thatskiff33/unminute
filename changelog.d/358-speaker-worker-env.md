@@ -1,0 +1,3 @@
+Security hardening (#111):
+
+- **Speaker identification no longer looks for libraries in folders named by the environment.** When speaker identification loads, PyTorch and TorchCodec add folders named by `PYTHONUSERBASE`, `NVTOOLSEXT_PATH` and `CUDA_PATH_V*`, and the folder of any `ffmpeg` on `PATH`, to the places Windows looks for libraries. Unminute's worker processes now remove those variables and keep `ffmpeg` off their `PATH` before these libraries load, so a library placed in one of those folders cannot load into them, on the graphics card or the processor. Python's default per-user library folder (`%APPDATA%\Python\Library\bin`) is still searched when it exists, a known limit recorded in the security model. Nothing else changes for users (#358).

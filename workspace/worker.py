@@ -56,19 +56,40 @@ WEIGHTS_ONLY = {"TORCH_FORCE_WEIGHTS_ONLY_LOAD": "1"}
 NOT_WEIGHTS_ONLY = "TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"
 
 # Environment variables a locked speech library reads when it loads to add a
-# folder outside the app to the DLL search path (T25, #357). CTranslate2
-# 4.8.3's __init__ adds %HIP_PATH%\bin when no ROCm wheel is installed, so a
-# DLL placed there could load into the worker (in the Whisper GPU worker that
-# path is all Windows searches by name). Removed from every worker before any
-# model library is imported, and from --self-test, which imports the same
-# libraries (workspace/__main__.py; the launcher starts it before a migration,
-# #111 B5b); the app's own process keeps them. ONNX Runtime
-# 1.30.0 reads none. DLL_PATH_CHECKED_CTRANSLATE2 is the CTranslate2 version
-# this list was checked against: tests/test_consistency.py fails when the lock
-# moves CTranslate2 until its __init__ is read again, this list updated and
-# that version moved with it.
-DLL_PATH_VARIABLES = ("HIP_PATH",)
+# folder outside the app to the DLL search path (T25), so a DLL placed there
+# could load into the worker:
+#   - CTranslate2 4.8.3's __init__ adds %HIP_PATH%\bin when no ROCm wheel is
+#     installed (#357; in the Whisper GPU worker that path is all Windows
+#     searches by name).
+#   - PyTorch 2.14.1's __init__ (_load_dll_libraries, which the speaker
+#     workers reach through pyannote.audio) adds <user base>\Library\bin, the
+#     user base being %PYTHONUSERBASE% when set; %NVTOOLSEXT_PATH%\bin\x64
+#     when nvToolsExt64_1.dll is not beside torch (the CPU build); and, in a
+#     CUDA build without cudart beside torch, %CUDA_PATH_V<version>%\bin
+#     (DLL_PATH_PREFIXES: every version's variable goes) (#358).
+#   - TorchCodec 0.17.0 (imported by pyannote.audio at load) adds the folder
+#     of the first ffmpeg that shutil.which finds while it loads its FFmpeg
+#     libraries. The app decodes with PyAV and never uses TorchCodec's FFmpeg,
+#     so no ffmpeg is left for it to find: see clear_dll_path_environment.
+# Without PYTHONUSERBASE, PyTorch still adds %APPDATA%\Python\Library\bin when
+# it exists, a user-writable folder named by no variable: a documented
+# residual (T25, the owner's decision of 25 October 2026, #358), as is the
+# default NVTOOLSEXT and CUDA folder under Program Files.
+# Removed from every worker before any model library is imported, and from
+# --self-test, which imports the same libraries (workspace/__main__.py; the
+# launcher starts it before a migration, #111 B5b); the app's own process
+# keeps them. ONNX Runtime 1.30.0 reads none. DLL_PATH_CHECKED_* are the
+# versions this was checked against: tests/test_consistency.py fails
+# when the lock moves one of them until its loading code is read again, this
+# list updated and that version moved with it.
+DLL_PATH_VARIABLES = ("HIP_PATH", "NVTOOLSEXT_PATH", "PYTHONUSERBASE")
+DLL_PATH_PREFIXES = ("CUDA_PATH_V",)
 DLL_PATH_CHECKED_CTRANSLATE2 = "4.8.3"
+DLL_PATH_CHECKED_TORCH = "2.14.1"
+DLL_PATH_CHECKED_TORCHCODEC = "0.17.0"
+# Set in a worker so that shutil.which, as TorchCodec calls it, does not look
+# in the current folder before PATH (Windows' NeedCurrentDirectoryForExePath).
+NO_CURRENT_FOLDER = "NoDefaultCurrentDirectoryInExePath"
 
 
 # A worker whose pipe has just closed is ending: wait this long for it, so its
@@ -107,12 +128,43 @@ def safe_message(exc):
     return _PATHS.sub("<path>", str(exc))[:500]
 
 
+def clear_dll_path_environment():
+    """In a worker or --self-test, before any speech or model library is
+    imported: remove the environment variables that make one add a DLL folder
+    from outside the app (DLL_PATH_VARIABLES, DLL_PATH_PREFIXES), and keep
+    ffmpeg off PATH, so TorchCodec adds no FFmpeg folder (T25, #357, #358).
+    Changes only this process's environment, which its children inherit."""
+    import shutil
+    for name in list(os.environ):
+        upper = name.upper()
+        if upper in DLL_PATH_VARIABLES or upper.startswith(DLL_PATH_PREFIXES):
+            os.environ.pop(name, None)
+    # shutil.which on Windows looks in the current folder first unless this is
+    # set; then only PATH. Every PATH folder holding an ffmpeg that which would
+    # return goes, as do empty entries (which mean the current folder).
+    os.environ[NO_CURRENT_FOLDER] = "1"
+    path = os.environ.get("PATH")
+    if path is not None:
+        kept = [folder for folder in path.split(os.pathsep)
+                if folder.strip() and not shutil.which("ffmpeg", path=folder)]
+        os.environ["PATH"] = os.pathsep.join(kept)
+
+
 def _start_up(log_dir, log_name, quiet, gpu_site=None, gpu_component=None):
     """A worker process's start-up, before any model library is imported:
-    its log, no telemetry, the offline guard (N1), weights-only loading, no
-    DLL folder named by the environment (T25) and, if quiet, below-normal
-    priority. Shared by the main, GPU and draft
-    workers. Returns (log, the device it runs speech models on)."""
+    no DLL folder named by the environment and no ffmpeg on PATH (T25), its
+    log, no telemetry, the offline guard (N1), weights-only loading and, if
+    quiet, below-normal priority. Shared by the main, GPU and draft workers.
+    Returns (log, the device it runs speech models on)."""
+    # First of all, before workspace.diag: importing it reads sysconfig's
+    # paths, and sysconfig then keeps the user base it found, PYTHONUSERBASE
+    # included, for PyTorch to read later (#358). A failure here is raised
+    # below, once it can be logged, before any model library is imported.
+    try:
+        clear_dll_path_environment()
+        not_cleared = None
+    except Exception as exc:
+        not_cleared = exc
     # Launched from pythonw there is no console: libraries that write to
     # stdout/stderr must not crash the worker. What they write is free text,
     # which can include meeting content (P3), so it is never kept: with a log,
@@ -131,14 +183,14 @@ def _start_up(log_dir, log_name, quiet, gpu_site=None, gpu_component=None):
         diag.use(log)
     diag.quiet_crashes()                 # no Windows Error Reporting dialog (T21)
     try:
+        if not_cleared is not None:      # no DLL folder named by the environment (#357, #358)
+            raise not_cleared
         # Before importing any model library: no telemetry, no network.
         from workspace import offline_guard
         offline_guard.disable_telemetry()
         offline_guard.install()
         os.environ.update(WEIGHTS_ONLY)
         os.environ.pop(NOT_WEIGHTS_ONLY, None)
-        for name in DLL_PATH_VARIABLES:  # no DLL folder named by the environment (#357)
-            os.environ.pop(name, None)
         # ONNX Runtime (Parakeet, and the voice detection Whisper uses) has its own
         # Windows telemetry events, switched off by a call rather than a variable.
         offline_guard.disable_onnxruntime_telemetry()

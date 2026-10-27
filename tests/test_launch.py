@@ -1310,18 +1310,26 @@ class ChildCheckTests(unittest.TestCase):
         # #357 (T25), review of 96cc8ee: the launcher now starts --self-test on
         # its own before a migration, with the user's environment, and it
         # imports CTranslate2, which adds %HIP_PATH%\bin to the DLL search path
-        # when it loads. As in every worker, the self-test removes
-        # worker.DLL_PATH_VARIABLES before importing any library; if it cannot
-        # read that list it imports nothing and fails.
+        # when it loads, and PyTorch and TorchCodec, which add folders named by
+        # PYTHONUSERBASE, NVTOOLSEXT_PATH and CUDA_PATH_V* and the folder of an
+        # ffmpeg on PATH (#358). As in every worker, the self-test clears them
+        # before importing any library; if it cannot, it imports nothing and
+        # fails.
         import io
 
         from workspace import __main__ as main
         from workspace import speaker_load, worker
         seen = {}
+        names = worker.DLL_PATH_VARIABLES + ("CUDA_PATH_V13_0",)
 
         def imp(name):
-            seen[name] = {v: os.environ.get(v) for v in worker.DLL_PATH_VARIABLES}
-        hip = {name: "C:\\synthetic-hip" for name in worker.DLL_PATH_VARIABLES}
+            seen[name] = {v: os.environ.get(v) for v in names}
+            seen[name]["ffmpeg"] = shutil.which("ffmpeg")
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        Path(scratch.name, "ffmpeg.exe").write_bytes(b"")
+        hip = {name: "C:\\synthetic-hip" for name in names}
+        hip["PATH"] = os.pathsep.join([scratch.name, os.environ.get("PATH", "")])
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.dict(os.environ, hip))
             stack.enter_context(mock.patch("importlib.import_module", side_effect=imp))
@@ -1334,9 +1342,11 @@ class ChildCheckTests(unittest.TestCase):
             main.self_test()
         self.assertIn("ctranslate2", seen)
         self.assertIn("faster_whisper", seen)
-        nothing = {v: None for v in worker.DLL_PATH_VARIABLES}
+        self.assertIn("torch", seen)
+        self.assertIn("pyannote.audio", seen)
+        nothing = {v: None for v in names + ("ffmpeg",)}
         self.assertEqual({name: env for name, env in seen.items() if env != nothing}, {})
-        # The list cannot be read: nothing is imported and the self-test fails.
+        # The clearing cannot be loaded: nothing is imported and the self-test fails.
         seen.clear()
         out = io.StringIO()
         with mock.patch.dict(os.environ, hip), \
@@ -1346,6 +1356,39 @@ class ChildCheckTests(unittest.TestCase):
             self.assertEqual(main.self_test(), 1)
         self.assertEqual(seen, {})
         self.assertEqual(out.getvalue().splitlines()[-1], "FAIL")
+
+    @unittest.skipUnless(HAVE_DEPS, "numpy/av/cryptography not installed")
+    def test_the_self_test_clears_the_user_base_before_python_keeps_it(self):
+        # #358 (T25): PyTorch reads the user base from sysconfig, which keeps
+        # the first one it finds, PYTHONUSERBASE included. Started as the
+        # launcher starts it (python -B -m workspace --self-test), the
+        # self-test clears that variable before anything in the app reads
+        # sysconfig, so no library it imports sees the user base it names.
+        # Library imports are recorded instead of run, in a fresh process.
+        code = textwrap.dedent("""
+            import json, sys, sysconfig
+            from unittest import mock
+            from workspace import __main__ as main, speaker_load
+            seen = []
+            sys.argv = ["workspace", "--self-test"]
+            with mock.patch("importlib.import_module",
+                            side_effect=lambda name: seen.append(
+                                sysconfig.get_config_var("userbase"))), \\
+                    mock.patch.object(main.offline_guard, "disable_onnxruntime_telemetry"), \\
+                    mock.patch.object(speaker_load, "self_check", return_value=[]), \\
+                    mock.patch.object(main, "dpapi_round_trip", return_value=(True, "dpapi")):
+                main.main()
+            print(json.dumps(seen))
+            """)
+        with tempfile.TemporaryDirectory() as userbase:
+            env = {**os.environ, "PYTHONUSERBASE": userbase}
+            r = subprocess.run([sys.executable, "-B", "-c", code], cwd=str(ROOT), env=env,
+                               capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+        seen = json.loads(r.stdout.strip().splitlines()[-1])
+        self.assertTrue(seen)
+        self.assertEqual([u for u in seen if os.path.normcase(u) == os.path.normcase(userbase)],
+                         [])
 
     @unittest.skipUnless(sys.platform == "win32" and HAVE_DEPS
                          and importlib.util.find_spec("webview"), "Windows app dependencies")

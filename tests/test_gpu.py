@@ -631,6 +631,38 @@ class WorkspaceGpuTests(unittest.TestCase):
         self.ws.handle.release_gpu()
         self.assertIsNone(self.ws.handle._gpu)
 
+    def test_the_speaker_gpu_worker_adds_no_dll_folder_named_by_the_environment(self):
+        # #358 (T25): the CUDA build of PyTorch, which pyannote.audio loads in
+        # this worker, and TorchCodec add the user base's Library\bin
+        # (PYTHONUSERBASE), %NVTOOLSEXT_PATH%\bin\x64, %CUDA_PATH_V*%\bin (no
+        # cudart beside torch) and the folder of an ffmpeg on PATH to the DLL
+        # search path. Scratch folders named those ways reach none of it.
+        import json
+
+        import fake_worker_engines as fakes
+        import numpy as np
+
+        from workspace import audiocrypt, media
+        from workspace.worker import diarize
+        path, key, context = Path(self.tmp.name) / "a.uma", bytes(range(32)), ("decoded", "m")
+        with audiocrypt.AudioWriter(path, key, context, "float32", 1, 16000) as w:
+            w.write(np.zeros(16000, dtype=np.float32))
+        audio = media.AudioRef(path, key, context, 16000)
+        with tempfile.TemporaryDirectory() as root:
+            env, planted = fakes.planted_dll_environment(root)
+            with mock.patch.dict(os.environ, env):
+                here = fakes.torch_dll_folders()       # this process is not cleared
+                for name in ("nvtx", "cuda", "ffmpeg"):
+                    self.assertIn(planted[name], here)
+                turns, _, device, _ = diarize(
+                    self.ws.handle, "test:fake_worker_engines:dll_folders_diarizer", audio,
+                    None, 1, device="cuda", gpu_site=str(Path(self.tmp.name) / "gpu-site"))
+        self.assertEqual(device, "cuda")
+        self.assertIsNotNone(self.ws.handle._gpu)          # it ran in the GPU worker
+        found = json.loads(turns[0][2])
+        self.assertEqual([f for f in found if f.startswith(os.path.abspath(root))], [])
+        self.ws.handle.release_gpu()
+
 
 # -- Whisper on the graphics card (#248) -------------------------------------------------
 
