@@ -696,8 +696,8 @@ class DesignTokenTests(unittest.TestCase):
 REPO_FOLDERS = {".claude", ".github", "changelog.d", "docs", "packaging", "requirements",
                 "tests", "tools", "workspace"}
 FILE_SUFFIXES = (".py", ".md", ".json", ".toml", ".txt", ".yml", ".ps1", ".cmd", ".ico")
-# Named in AGENTS.md because the repo must not have it (see test_claude_reads_agents_md_natively).
-ABSENT_ON_PURPOSE = {"CLAUDE.md"}
+# Named in AGENTS.md because the repo must not have them (see test_claude_reads_agents_md_natively).
+ABSENT_ON_PURPOSE = {"CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"}
 
 
 # The tests that guard each AGENTS.md invariant. AGENTS.md names the files; this
@@ -834,9 +834,10 @@ class AgentInstructionTests(unittest.TestCase):
         cls.invariants = cls.text[start:end]
 
     def test_claude_reads_agents_md_natively(self):
-        # Claude Code reads AGENTS.md only when there is no CLAUDE.md; a new one
-        # would silently stop Claude sessions loading the shared rules.
-        for name in ("CLAUDE.md", ".claude/CLAUDE.md"):
+        # Claude Code reads AGENTS.md only when there is no CLAUDE.md,
+        # .claude/CLAUDE.md or CLAUDE.local.md (#365); a new one would silently
+        # stop Claude sessions loading the shared rules.
+        for name in ABSENT_ON_PURPOSE:
             self.assertFalse((ROOT / name).exists(),
                              f"{name} stops Claude Code reading AGENTS.md; put the rule there")
 
@@ -1166,7 +1167,7 @@ class AccessibilityTargetTests(unittest.TestCase):
         standard = read("docs/RELEASE_STANDARD.md")
         wcag = standard.split("### Accessibility against WCAG 2.2 AA", 1)[1].split("\n### ", 1)[0]
         self.assertIn("These checks (#298) are a gate for the next release "
-                      "(owner decision, 22 October 2026).", wcag)
+                      "(owner decision DEC-027, 22 October 2026).", wcag)
         before = section(read("docs/RELEASING.md"), "Before cutting a release")
         self.assertRegex(before, r"(?m)^\d+\. \*\*The accessibility check covers WCAG 2\.2 AA "
                                  r"where it can \(#298\)\.\*\* .*gate for the next release")
