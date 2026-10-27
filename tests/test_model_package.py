@@ -20,6 +20,8 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+sys.path.insert(0, str(ROOT / "tools"))
+import windows_powershell  # noqa: E402  (Windows PowerShell 5.1 by its full path)
 from workspace import asr_engines as ae  # noqa: E402
 
 MODELS_SCRIPT = ROOT / "packaging" / "models" / "Install-Models.ps1"
@@ -162,8 +164,9 @@ class RecordInteropTests(unittest.TestCase):
 
     def write_record(self):
         done = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-             "-File", str(self.script), str(self.model_file), str(self.folder)],
+            [windows_powershell.executable(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
+             "Bypass", "-File", str(self.script), str(self.model_file), str(self.folder)],
+            env=windows_powershell.environment(), stdin=subprocess.DEVNULL,
             capture_output=True, text=True, timeout=120)
         self.assertEqual(done.returncode, 0, done.stderr[-2000:])
 
