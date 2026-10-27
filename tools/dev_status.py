@@ -4,6 +4,12 @@
 # and gh instead of an earlier session's memory: how far each worktree is behind
 # origin/main and which open PR it belongs to, every open PR with its draft, merge
 # and required-check state, and the files two or more open PRs change.
+# It also checks the work-in-progress limits in AGENTS.md "Several agents or
+# sessions" (#412): the number of open drafts, each open draft's size (lines
+# changed outside tests/), age and conflict state, and the worktrees to tidy
+# (detached, or on a branch whose PR has merged or closed or whose origin branch
+# has gone). GitHub does not say when a PR began to conflict, so a conflicting
+# draft is measured by the age of its last commit: it has not been rebased since.
 # It changes nothing except refreshing origin's refs (skip with --no-fetch); git
 # status runs without optional locks, so another session's commit is never held
 # up. It prints branch names, PR numbers and titles, check names and repository
@@ -25,11 +31,23 @@ import json
 import re
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE = "main"
-PR_FIELDS = "number,title,headRefName,isDraft,mergeStateStatus,files,statusCheckRollup"
+PR_FIELDS = ("number,title,headRefName,isDraft,mergeStateStatus,files,statusCheckRollup,"
+             "createdAt,mergeable")
+# Read per draft: listing commits for every open PR at once exceeds GitHub's
+# GraphQL node limit.
+DRAFT_FIELDS = "commits"
+CLOSED_FIELDS = "number,headRefName,headRefOid,state"
+CLOSED_LIMIT = 200           # recent merged or closed PRs read to find stale worktrees
+# Work-in-progress limits (AGENTS.md "Several agents or sessions", #412).
+DRAFT_CAP = 3                # open release-path drafts at once
+SPLIT_LINES = 1000           # lines changed outside tests/ before a PR is split
+CONFLICT_DAYS = 2            # days a conflicting draft may go without a rebase
+TEST_DIR = "tests/"
 VIEW_FIELDS = ("number,state,isDraft,mergeStateStatus,headRefOid,statusCheckRollup,"
                "comments,reviews,autoMergeRequest")
 GH_FILE_LIMIT = 100          # gh returns at most this many files per pull request
@@ -271,6 +289,117 @@ def behind_ahead(counts):
     return int(left), int(right)
 
 
+# --- Work-in-progress limits (pure, tested with canned data) ------------------
+
+def non_test_lines(pr):
+    """Lines changed (added plus deleted) outside tests/, from gh's file list. For
+    a PR past GH_FILE_LIMIT files this is a lower bound (capped() says so)."""
+    return sum((f.get("additions") or 0) + (f.get("deletions") or 0)
+               for f in pr.get("files") or []
+               if not f.get("path", "").replace("\\", "/").startswith(TEST_DIR))
+
+
+def days_since(stamp, now):
+    """Days from an ISO 8601 time as gh writes it (2026-10-24T05:50:26Z) to now,
+    or None for a missing or unset time."""
+    if not stamp or stamp.startswith(UNSET_TIME):
+        return None
+    then = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    return (now - then).total_seconds() / 86400
+
+
+def last_commit_days(pr, now):
+    """Days since the PR's latest commit was made (a rebase makes new ones), or
+    None when its commits were not read."""
+    stamps = [c.get("committedDate") or "" for c in pr.get("commits") or []]
+    stamps = [s for s in stamps if s and not s.startswith(UNSET_TIME)]
+    return days_since(max(stamps), now) if stamps else None
+
+
+def conflict_state(pr):
+    """"conflicting", "clean" or "unknown" against the base branch."""
+    if pr.get("mergeable") == "CONFLICTING" or pr.get("mergeStateStatus") == "DIRTY":
+        return "conflicting"
+    return "clean" if pr.get("mergeable") == "MERGEABLE" else "unknown"
+
+
+def _days(value):
+    return "?" if value is None else f"{value:.1f}d"
+
+
+def pr_shape(pr, now):
+    """(summary, warnings) for one open PR under the work-in-progress limits: its
+    size outside tests/, its age, its last commit's age and its conflict state,
+    and what AGENTS.md asks for when a limit is passed."""
+    lines = non_test_lines(pr)
+    size = f"{lines:,}{'+' if capped(pr) else ''} non-test lines"
+    opened = days_since(pr.get("createdAt"), now)
+    pushed = last_commit_days(pr, now)
+    conflict = conflict_state(pr)
+    summary = ", ".join([size, f"opened {_days(opened)} ago"]
+                        + ([f"last commit {_days(pushed)} ago"] if pushed is not None else [])
+                        + ["conflicts with " + BASE if conflict == "conflicting"
+                           else f"conflict state {conflict}"])
+    warnings = []
+    if lines > SPLIT_LINES:
+        warnings.append(f"over about {SPLIT_LINES:,} non-test lines: split it, or say on the "
+                        "PR why it cannot be")
+    if (pr.get("isDraft") and conflict == "conflicting" and pushed is not None
+            and pushed > CONFLICT_DAYS):
+        warnings.append(f"conflicts with {BASE} and not rebased for over {CONFLICT_DAYS} days: "
+                        "rebase it, split it, or park it with the reason on the PR")
+    return summary, warnings
+
+
+def draft_cap_note(prs):
+    """A note when more drafts are open than AGENTS.md allows on the release path,
+    or None. The script cannot tell a release-path draft from any other, so it
+    counts every open draft and leaves that call to the reader."""
+    drafts = sum(1 for pr in prs if pr.get("isDraft"))
+    if drafts <= DRAFT_CAP:
+        return None
+    return (f"{drafts} open drafts: at most {DRAFT_CAP} may be on the release path at once; "
+            "finish one before starting another")
+
+
+def gone_branches(refs):
+    """Local branches whose upstream has gone, from `git for-each-ref
+    --format=%(refname:short)%09%(upstream:track) refs/heads`."""
+    gone = set()
+    for line in refs.splitlines():
+        name, _, track = line.partition("\t")
+        if track.strip() == "[gone]":
+            gone.add(name.strip())
+    return gone
+
+
+def stale_worktrees(trees, open_prs, closed_prs, gone):
+    """[(tree, reason)] for worktrees on a branch with no open PR whose PR has
+    merged or closed, or whose origin branch has gone. A merged PR whose head is
+    not the worktree's head is still named, with that said, since the worktree
+    may hold newer work. The base branch and detached heads are left out."""
+    open_branches = {pr["headRefName"] for pr in open_prs}
+    by_branch = {}
+    for pr in sorted(closed_prs, key=lambda p: p["number"]):
+        by_branch.setdefault(pr["headRefName"], []).append(pr)
+    stale = []
+    for tree in trees:
+        branch = tree.get("branch")
+        if not branch or branch == BASE or branch in open_branches:
+            continue
+        closed = by_branch.get(branch, [])
+        same = [pr for pr in closed if (pr.get("headRefOid") or "") == tree["head"]]
+        if same or closed:
+            pr = (same or closed)[-1]
+            reason = f"PR #{pr['number']} {pr['state'].lower()}"
+            if not same:
+                reason += ", but the worktree's head is not that PR's head"
+            stale.append((tree, reason))
+        elif branch in gone:
+            stale.append((tree, f"origin/{branch} has gone"))
+    return stale
+
+
 # --- Output -------------------------------------------------------------------
 
 def short_path(path):
@@ -281,10 +410,11 @@ def short_path(path):
     return path
 
 
-def show_status(prs, required):
+def show_status(prs, required, closed_prs, gone, now):
     by_branch = {pr["headRefName"]: pr["number"] for pr in prs}
+    trees = parse_worktrees(run(["git", "worktree", "list", "--porcelain"]))
     print(f"Worktrees (behind/ahead of origin/{BASE}, uncommitted file count):")
-    for tree in parse_worktrees(run(["git", "worktree", "list", "--porcelain"])):
+    for tree in trees:
         ref = tree["branch"] or tree["head"]
         try:
             behind, ahead = behind_ahead(run(["git", "rev-list", "--left-right", "--count",
@@ -317,6 +447,34 @@ def show_status(prs, required):
     print(f"\nFiles changed by two or more open PRs ({len(shared)}):")
     for path, numbers in sorted(shared.items(), key=lambda kv: (-len(kv[1]), kv[0])):
         print(f"  {len(numbers)}  {path}  " + " ".join(f"#{n}" for n in numbers))
+    show_limits(prs, trees, closed_prs, gone, now)
+
+
+def show_limits(prs, trees, closed_prs, gone, now):
+    """The work-in-progress limits of AGENTS.md "Several agents or sessions"."""
+    drafts = sorted((pr for pr in prs if pr.get("isDraft")), key=lambda p: p["number"])
+    print(f"\nOpen drafts ({len(drafts)}; at most {DRAFT_CAP} on the release path, split over "
+          f"about {SPLIT_LINES:,} non-test lines, rebase a conflict within {CONFLICT_DAYS} days):")
+    note = draft_cap_note(prs)
+    if note:
+        print(f"  ! {note}")
+    for pr in sorted(prs, key=lambda p: p["number"]):
+        if pr.get("isDraft"):
+            pr = {**pr, **gh_json(["pr", "view", str(pr["number"]), "--json", DRAFT_FIELDS])}
+        summary, warnings = pr_shape(pr, now)
+        if pr.get("isDraft") or warnings:
+            print(f"  #{pr['number']} {'draft' if pr.get('isDraft') else 'ready'}: {summary}")
+            for warning in warnings:
+                print(f"      ! {warning}")
+    detached = [t for t in trees if not t["branch"]]
+    stale = stale_worktrees(trees, prs, closed_prs, gone)
+    print(f"\nWorktrees to tidy ({len(trees)} in all, {len(detached)} detached, {len(stale)} "
+          "stale; remove with git worktree remove once nothing in them is needed):")
+    for tree, reason in stale:
+        print(f"  {short_path(tree['path'])}  {tree['branch']}  {reason}")
+    if detached:
+        print(f"  {len(detached)} detached (review or scratch checkouts), listed under "
+              "Worktrees above")
 
 
 def show_files(prs, paths):
@@ -366,7 +524,12 @@ def main(argv=None):
     if args.files:
         show_files(prs, args.files)
     else:
-        show_status(prs, required_checks())
+        closed = gh_json(["pr", "list", "--state", "closed", "--limit", str(CLOSED_LIMIT),
+                          "--json", CLOSED_FIELDS])
+        gone = gone_branches(run(["git", "for-each-ref",
+                                  "--format=%(refname:short)%09%(upstream:track)",
+                                  "refs/heads"]))
+        show_status(prs, required_checks(), closed, gone, datetime.now(UTC))
     return 0
 
 
