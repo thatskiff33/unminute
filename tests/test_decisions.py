@@ -16,17 +16,24 @@ ROW = re.compile(r"^\| (DEC-\d{3}) \|(.*)\|\s*$", re.MULTILINE)
 # A mention of a decision, in any case, with a straight or curly apostrophe:
 # "the owner's decision", "the user's approval", "owner decisions", "the owner
 # decided" or "chose" (not "the user chose", which the guides use for the app's
-# user), and "(the owner, 22 Oct 2026)", a form that cannot cite an ID and so is
-# always reported.
+# user), "the owner accepted" and "accepted by the owner" (an accepted risk or
+# limit), "the user's choice of 17 Oct 2026" (a choice followed by its date or
+# its ID; "the user's choice of file" is the app's user), and "(the owner,
+# 22 Oct 2026)", a form that cannot cite an ID and so is always reported.
 MENTION = re.compile(r"\b(?:owner|user)(?:['\u2019]s|s['\u2019])? (?:decisions?|approval)\b"
                      r"|\b(?:owner|user) decisions?\b"
-                     r"|\bowner (?:decided|chose)\b"
+                     r"|\bowner (?:decided|chose|accepted)\b"
+                     r"|\baccepted by the owner\b"
+                     r"|\b(?:owner|user)['\u2019]s choice"
+                     r"(?= of \d{1,2} [A-Za-z]+ \d{4}|\s*DEC-\d{3}\b)"
                      r"|\((?:the )?(?:owner|user), (?=\d{1,2} [A-Za-z]+ \d{4})",
                      re.IGNORECASE)
 # The ID that cites a mention comes right after it: "the owner's decision DEC-031",
-# and in brackets after a verb, "the owner decided (DEC-049) on 25 October".
+# "accepted by the owner DEC-070", "the user's choice DEC-072 of 17 Oct 2026", and
+# in brackets after a verb, "the owner decided (DEC-049) on 25 October".
 CITED = re.compile(r"\s*DEC-\d{3}\b")
 CITED_VERB = re.compile(r"\s*\(DEC-\d{3}\b")
+VERBS = ("decided", "chose", "accepted")
 # Mentions that state a rule about decisions rather than cite one. Each is the
 # whole phrase, whitespace collapsed; adding one needs its reason in the PR.
 GENERIC = (
@@ -69,7 +76,7 @@ def uncited(text):
                for g in re.finditer(re.escape(phrase), low)]
     found = []
     for m in MENTION.finditer(flat):
-        verb = m.group(0).lower().endswith(("decided", "chose"))
+        verb = m.group(0).lower().endswith(VERBS)
         if (CITED_VERB if verb else CITED).match(flat, m.end()):
             continue
         if any(start <= m.start() and m.end() <= end for start, end in generic):
@@ -150,6 +157,13 @@ class CitationTests(unittest.TestCase):
                      "nothing has been deleted (the owner, 22 Oct 2026), then",
                      "as the owner decided on 25 October 2026",
                      "the owner chose 1,000 ms on 19 October 2026",
+                     # An accepted risk or limit, and a dated choice (#447).
+                     "the owner accepted this as a documented limit (22 Oct 2026).",
+                     "a limit the owner accepted | With the recording's folder",
+                     "Accepted by the owner (18 Oct 2026, #175): page script",
+                     "the earlier decoder (accepted by the owner, 25 October 2026)",
+                     "the warning type names are counted, the user's choice of 17 Oct 2026.",
+                     "the owner\u2019s choice of 25 October 2026",
                      # A generic phrase exempts only the mention inside it, not one
                      # just after it.
                      "Merge when no owner decision is open (owner decision, 21 Oct 2026)."):
@@ -163,6 +177,11 @@ class CitationTests(unittest.TestCase):
                      "the owner\u2019s decision DEC-031",
                      "as the owner decided (DEC-049) on 25 Oct",
                      "the owner chose (DEC-061) 1,000 ms", "the user chose a folder",
+                     "the owner accepted (DEC-030) this as a documented limit (22 Oct 2026)",
+                     "Accepted by the owner DEC-070 (18 Oct 2026, #175): page script",
+                     "the user's choice DEC-072 of 17 Oct 2026",
+                     # The app's user choosing a file is not a decision.
+                     "The user's choice of file or folder",
                      "Withdrawn: the owner decided it is not part of the repository; the "
                      "decision is named."):
             with self.subTest(text=text):

@@ -40,8 +40,8 @@ Privacy
 - **P3** Errors, `--status`, receipts, diagnostics, and the audit log and its Event Log entries
   carry no content, names, identifying paths or tokens. The user's SID that Windows attaches to
   an Event Log entry is not text the app writes; the audit log's random ids stay in its local
-  file, never in its Event Log entries (DEC-019). Guard: `tests/test_workers.py`, `tests/test_app.py`,
-  `tests/test_diagnostics.py`, `tests/test_audit.py`.
+  file, never in its Event Log entries (DEC-019). Guard: `tests/test_workers.py`,
+  `tests/test_app.py`, `tests/test_diagnostics.py`, `tests/test_audit.py`.
 
 Network, secrets and integrity
 
@@ -52,11 +52,10 @@ Network, secrets and integrity
   cut off by closing the app, are user-started too and carry on at the next start, DEC-049), to
   the hosts in `setup.DOWNLOAD_HOSTS` (plus files.pythonhosted.org for the Whisper GPU
   component's download only, `setup.download_hosts`, DEC-010), every request and redirect
-  checked. No background calls,
-  update checks, telemetry or remote transcription. Opening a fixed or IT-set address in the
-  user's browser on the user's click (help links; Copy and open) is the browser's network use,
-  not Unminute's, and is allowed: Unminute sends nothing, and handoff text goes by the
-  clipboard, never in the address (DEC-013). Guard:
+  checked. No background calls, update checks, telemetry or remote transcription. Opening a
+  fixed or IT-set address in the user's browser on the user's click (help links; Copy and open)
+  is the browser's network use, not Unminute's, and is allowed: Unminute sends nothing, and
+  handoff text goes by the clipboard, never in the address (DEC-013). Guard:
   `tests/test_download_process.py`.
 - **N3** The Hugging Face token lives in Windows Credential Manager and reaches the download
   process by pipe only, never by command line, environment, log or message; cached models work
