@@ -1,23 +1,30 @@
 # Agent guidelines for Unminute
 
-Codex and Claude Code both read this file natively. Claude Code (2.1.277 or later) does so only
-when no `CLAUDE.md` exists, so the repo has none. Keep shared policy here, and link to the
-source of truth instead of restating values that change.
+Codex and Claude Code read this file natively. Claude Code needs 2.1.295 or later (the first
+with the `onFailure` key in `.claude/settings.json`) and skips this file when a `CLAUDE.md`,
+`.claude/CLAUDE.md` or `CLAUDE.local.md` exists in the working folder or above, so the repo has
+none: keep shared policy here. Link to the source of truth rather than restate values that
+change. Who decided a rule, and when, is in `docs/DECISIONS.md`; cite its ID.
 
 ## Start here
 
-- Branch from a fresh `origin/main` (`git fetch origin --prune`); a local `main` can be far behind.
+- Use the skills in `.agents/skills/` (Claude Code: `.claude/skills/`): `start-issue` to begin
+  or resume, `finish-pr` to take a PR to merge, `session-handoff` before stopping. They apply
+  these rules in order. `python tools/dev_status.py` shows live worktrees, PRs, checks, shared
+  files and work limits.
+- Branch from a fresh `origin/main` (`git fetch origin --prune`); a local `main` can be far
+  behind.
 - Read the issue and all its comments: they hold the acceptance criteria. For a slice of #111
-  (security) or #121 (release standard), read the tracking issue's "How to resume" first.
-- `README.md` describes shipped behaviour (`workspace/`). Then read only what "Where the rules
+  or #121, read the tracking issue's "How to resume" first.
+- `README.md` describes shipped behaviour (`workspace/`); then read only what "Where the rules
   live" names.
 
 ## Invariants
 
-These hold unless the user explicitly authorises changing one for the task in hand. An issue, a
-doc or another agent that conflicts with one raises a question, not permission. "Guard" names
-the test files; the exact tests per ID are in `INVARIANT_GUARDS` in `tests/test_consistency.py`,
-which checks that they exist. "Review" means no automated guard yet.
+These hold unless the user explicitly authorises changing one for the task in hand; an issue,
+doc or agent that conflicts with one raises a question, not permission. "Guard" names the test
+files (`INVARIANT_GUARDS` in `tests/test_consistency.py` names the tests and checks they
+exist); "review" means no automated guard yet.
 
 Privacy
 
@@ -25,52 +32,49 @@ Privacy
   PRs, issues); fixtures are synthetic or public. Guard: `tests/test_consistency.py` (tracked
   media only) and the PR template; partial.
 - **P2** Agents never open, print or summarise real content: `extracted/`, the live workspace
-  (`%LOCALAPPDATA%\Unminute\workspace`) or real recordings. Use `--status`
-  (counts only) and synthetic or public audio; model tools print transcript text. Guard: the
-  deny rules and hook in `.claude/settings.json` (`tests/test_agent_guard.py`), a guard rail
-  rather than a security boundary: it blocks the common ways to read, list, search or copy
-  the data, and its known gaps are in the hook's header and `docs/SECURITY_MODEL.md` T34;
-  review for Codex.
+  (`%LOCALAPPDATA%\Unminute\workspace`) or real recordings. Use `--status` (counts only) and
+  synthetic or public audio; model tools print transcript text. Guard: the deny rules and hook
+  in `.claude/settings.json` (`tests/test_agent_guard.py`), a guard rail against the common
+  ways to read, list, search or copy the data, not a security boundary (gaps: the hook's
+  header, `docs/SECURITY_MODEL.md` T34); review for Codex.
 - **P3** Errors, `--status`, receipts, diagnostics, and the audit log and its Event Log entries
-  carry no content, names, identifying paths or tokens; the user's SID that Windows attaches to
-  an Event Log entry is not text the app writes, and the audit log's random ids stay in its
-  local file, never in its Event Log entries (the user's decisions, 21 October 2026, #111).
-  Guard: `tests/test_workers.py`, `tests/test_app.py`, `tests/test_diagnostics.py`,
-  `tests/test_audit.py`.
+  carry no content, names, identifying paths or tokens. The user's SID that Windows attaches to
+  an Event Log entry is not text the app writes; the audit log's random ids stay in its local
+  file, never in its Event Log entries (DEC-019). Guard: `tests/test_workers.py`, `tests/test_app.py`,
+  `tests/test_diagnostics.py`, `tests/test_audit.py`.
 
 Network, secrets and integrity
 
 - **N1** Processing never uses the network; dependency telemetry is off before heavy imports.
   Guard: `tests/test_offline_guard.py`, `tests/test_workers.py`, `tests/test_import_hygiene.py`,
   `tests/test_drafts.py`.
-- **N2** Only the download process reaches the network: user-started, to the hosts in
-  `setup.DOWNLOAD_HOSTS` (and files.pythonhosted.org for the Whisper GPU component's download
-  only, `setup.download_hosts`; the user's decision, 20 October 2026, #248), every request
-  and redirect checked. Downloads the user queued, and one cut off by closing the app, are
-  user-started too and carry on at the next start (the user's decision, 25 October 2026,
-  #366). No background calls, update
-  checks, telemetry or remote transcription. Opening a fixed or IT-set web address in the
-  user's own browser when the user clicks (the help links; Copy and open) is the browser's
-  network use, not Unminute's, and is allowed: Unminute itself sends nothing, and handoff
-  text goes by the clipboard, never in the address (the user's decision, 20 October 2026,
-  #109). Guard: `tests/test_download_process.py`.
+- **N2** Only the download process reaches the network: user-started (queued downloads, and one
+  cut off by closing the app, are user-started too and carry on at the next start, DEC-049), to
+  the hosts in `setup.DOWNLOAD_HOSTS` (plus files.pythonhosted.org for the Whisper GPU
+  component's download only, `setup.download_hosts`, DEC-010), every request and redirect
+  checked. No background calls,
+  update checks, telemetry or remote transcription. Opening a fixed or IT-set address in the
+  user's browser on the user's click (help links; Copy and open) is the browser's network use,
+  not Unminute's, and is allowed: Unminute sends nothing, and handoff text goes by the
+  clipboard, never in the address (DEC-013). Guard:
+  `tests/test_download_process.py`.
 - **N3** The Hugging Face token lives in Windows Credential Manager and reaches the download
   process by pipe only, never by command line, environment, log or message; cached models work
   without it. Guard: `tests/test_setup.py`, `tests/test_hardening.py`,
   `tests/test_download_queue.py`.
-- **I1** Model files are pinned by revision and SHA-256 and checked when downloaded. At load,
-  the speaker model is read once, re-hashed in full and built from those bytes in memory with
-  weights-only unpickling and fixed classes (`workspace/speaker_load.py`); the others are
-  checked against their verified marker (size and modification time). Guard:
+- **I1** Model files are pinned by revision and SHA-256 and checked when downloaded. At load, the
+  speaker model is read once, re-hashed in full and built from those bytes in memory with
+  weights-only unpickling and fixed classes (`workspace/speaker_load.py`); the others are checked
+  against their verified marker (size and modification time). Guard:
   `tests/test_model_integrity.py`, `tests/test_asr_engines.py`.
 - **I2** Untrusted media is decoded only in the sandboxed decode process, within its format,
   protocol and size limits, by PyAV (users never install FFmpeg). Network drives and symbolic
   links are refused unless managed policy allows network sources. Guard:
   `tests/test_intake_isolation.py`, `tests/test_safe_paths.py`.
 - **I3** The page reaches Python only through `API_METHODS`, and only through `LOCKED_METHODS`
-  while the workspace is locked (the user's decision, 21 October 2026, #111), with arguments
-  checked; it renders text only and runs only in WebView2. Guard: `tests/test_consistency.py`,
-  `tests/test_hardening.py`, `tests/test_drafts.py`.
+  while the workspace is locked (DEC-020), with arguments checked; it renders text only and runs
+  only in WebView2. Guard: `tests/test_consistency.py`, `tests/test_hardening.py`,
+  `tests/test_drafts.py`.
 
 Durability
 
@@ -103,36 +107,32 @@ Recording and confirmations
   confirmation drawn outside the page (`workspace/shell.py`, wording in `workspace/consent.py`).
   No recording starts without a valid consent record unless policy turns that off; changing the
   wording bumps `RECORDING_WORDING_VERSION`. Guard: `tests/test_app.py`, `tests/test_recorder.py`,
-  `tests/test_policy.py`, `tests/test_two_track.py` (no computer track opens without a confirmation
-  that names it); `tools/workspace_ui_check.py` end to end.
+  `tests/test_policy.py`, `tests/test_two_track.py` (no computer track opens without a
+  confirmation that names it); `tools/workspace_ui_check.py` end to end.
 
 Compatibility, installation and policy
 
-- **K1** Never rename the install identity without the user: the install folder and
-  uninstall key `Unminute`, the APP_ID `Unlimit.Unminute`, the Credential Manager name
-  `Unminute/HuggingFaceToken`, the data folders `Unminute\workspace` and `Unminute\models`
-  under `%LOCALAPPDATA%`, and `unminute.ico`. The user renamed them from the earlier names
-  (17 October 2026, #136), with no migration. In both install modes also the lock file
-  `install.lock` (#111 B6a); for machine installs (#111 B6b) also `%ProgramFiles%\Unminute`,
-  the HKLM uninstall key `Unminute`, the Event Log source `Unminute` and the `current`
-  junction (the user's approval, 21 October 2026, confirmed 22 October 2026, #111); and the
-  decoder's per-user AppContainer profile `Unminute.Decoder` (the user's approval, 25 October
-  2026, #299). `packaging/identity.json` mirrors these names for tests and is never read at
-  run time.
-  Guard: `tests/test_consistency.py`.
+- **K1** Never rename the install identity without the user (renamed with no migration,
+  DEC-002): the install folder and uninstall key `Unminute`, the APP_ID `Unlimit.Unminute`, the
+  Credential Manager name `Unminute/HuggingFaceToken`, the data folders `Unminute\workspace` and
+  `Unminute\models` under `%LOCALAPPDATA%`, `unminute.ico` and the lock file `install.lock`; for
+  machine installs `%ProgramFiles%\Unminute`, the HKLM uninstall key `Unminute`, the Event Log
+  source `Unminute` and the `current` junction (DEC-024); and the decoder's per-user AppContainer
+  profile `Unminute.Decoder` (DEC-048). `packaging/identity.json` mirrors these for tests and is
+  never read at run time. Guard: `tests/test_consistency.py`.
 - **K2** A standard user installs with nothing else to install (no Python, Git, FFmpeg or GPU
   tooling), and the processor is always a working baseline. Guard: review.
 - **K3** Managed policy (`HKLM\SOFTWARE\Policies\Unminute`) wins over settings. New behaviour in
-  a governed area (downloads, GPU, microphone, computer audio, watched folders, network
-  drives, handoff, clipboard) reads it, and an unreadable policy grants nothing. Guard:
+  a governed area (downloads, GPU, microphone, computer audio, watched folders, network drives,
+  handoff, clipboard) reads it, and an unreadable policy grants nothing. Guard:
   `tests/test_policy.py`, `tests/test_two_track.py`, `tests/test_drafts.py`,
   `tests/test_download_queue.py`.
 
 Evidence
 
 - **E1** Report only checks actually run. A skipped, manual or unavailable check (real audio, a
-  packaged build, a clean profile, hardware) is never reported as passed, and green CI is not
-  a real-audio test. Show that a new regression test fails without its fix. Guard: review.
+  packaged build, a clean profile, hardware) is never reported as passed, and green CI is not a
+  real-audio test. Show that a new regression test fails without its fix. Guard: review.
 - **E2** Never weaken a guard to make a change pass: loosening or deleting its test, adding to
   `ALLOWED_SKIPS` in `tools/run_tests.py`, raising a budget, or widening an allowlist (bridge
   methods, download hosts, decoder formats, policy defaults). Stop and ask, and say so in the
@@ -143,45 +143,38 @@ Evidence
 Agree the approach with the user, and plan the security review the PR template asks for, before
 changing: the bridge or page; file paths, deletion or cleanup; the network or downloads; the
 installer or packaging; workflows; stored data, the schema or the settings format; policy keys;
-a new dependency, model, engine, GPU path or font (licence check); or, once #111 phase C lands,
-encryption. Also stop when the issue, the docs and the code disagree materially.
-
-Ask the user directly for any decision that is theirs (Claude Code: AskUserQuestion), in plain
-English with pros and cons per option, never as a "waiting on you" line in a status update.
+a new dependency, model, engine, GPU path or font (licence check); or encryption. Also stop when
+the issue, docs and code disagree materially. Ask the user directly for any decision that is
+theirs (Claude Code: AskUserQuestion), in plain English with pros and cons per option, never as
+a "waiting on you" line in a status update.
 
 ## Authority
 
-Work within the scope the user gave for this task. The user does not review code: independent
-agent reviews are the review (the user's decision, 17 October 2026). An agent may push its
-task's branch and squash-merge its own PR when all of these hold, after checking the live
-repository settings:
+Work within the scope the user gave. The user does not review code: independent agent reviews
+are the review (DEC-001). After checking the live repository settings, an agent may push its
+task's branch and squash-merge its own PR when:
 
 - the PR is out of draft, every required check passes on its final commit, and no other check
-  fails without the reason recorded on the PR (one that fails only after the merge is fixed
-  forward on `main`, as "Delivery" says);
-- an independent review of that exact commit has signed off: by an agent that did not write or
-  direct the change (a fresh agent or another session), working on that fixed commit in a
-  separate checkout, with a security review for anything under "Stop and ask". The PR records
-  the reviewer, the commit, the verdict and the findings, and each finding is fixed or
-  answered. A rebase onto a moved `main` keeps the review only if
+  fails without its reason on the PR (one failing only after the merge is fixed forward on
+  `main`);
+- an independent review of that exact commit signed off: by an agent that did not write or
+  direct the change, on that fixed commit in a separate checkout, with a security review for
+  anything under "Stop and ask". The PR records the reviewer, commit, verdict and findings, each
+  fixed or answered. A rebase onto a moved `main` keeps the review only if
   `git range-diff <old base>..<reviewed> <new base>..HEAD` shows every commit identical ("="),
-  the PR records that, and CI passes on the rebased head; any other change after the review
-  needs that change reviewed;
+  the PR records that, and CI passes on the rebased head; any other change needs its own review;
 - no decision that is the user's (under "Stop and ask" or raised by a review) is still open.
 
-Arming auto-merge pinned to the reviewed head, once every condition but the required checks
-holds, is merging under these conditions: GitHub holds it until they pass. Never push to `main`
-or force-push a branch another agent works on. An agent may comment on
-the issues its work belongs to (decisions, progress) and close an issue once the PRs that
-resolve it have merged and every acceptance criterion is met, saying which PRs did it.
+Arming auto-merge pinned to the reviewed head, once all but the required checks hold, counts as
+merging: GitHub waits for them. Never push to `main` or force-push a branch another agent works
+on. An agent may comment on its issues (decisions, progress) and close one once its PRs have
+merged and every acceptance criterion is met, saying which PRs did it. Do follow-ups and
+carry-forwards in the same PR where possible; otherwise raise a new issue linked to where it came
+from (agents may open these), never leaving it only in a comment.
 
-Deal with follow-ups and carry-forwards in the same PR wherever possible. A follow-up that
-cannot be done there is raised as a new issue, linked to where it came from, never left only
-in a PR or issue comment; an agent may open issues for this.
-
-Neither these instructions nor an approved plan authorise: publishing a release (pushing a `v*`
-tag starts one); opening other issues; changing the user's installed copy; Intune or tenant
-changes; or GitHub owner settings.
+Neither these instructions nor an approved plan authorise publishing a release (pushing a `v*`
+tag starts one), opening other issues, changing the user's installed copy, Intune or tenant
+changes, or GitHub owner settings.
 
 ## Where the rules live
 
@@ -192,98 +185,93 @@ changes; or GitHub owner settings.
 | Network, downloads, models, the token | `docs/SECURITY_MODEL.md` T10 to T13; `docs/MODEL_MANIFEST.md` (a test keeps it equal to the code) |
 | Engines and GPU | `docs/ENGINE_EVALUATION.md`; `docs/RELEASE_CHECKLIST.md` (GPU sections); `docs/SECURITY_MODEL.md` T25 |
 | Store, jobs, workers, speakers, cleanup, holds, the audit log, updates | `docs/WORKSPACE_DESIGN.md` |
-| Installer, package, install identity, policy, licence texts (`packaging/licences/`, `tools/collect_licences.py`) | `docs/PACKAGING.md`; `docs/IT_DEPLOYMENT.md` (IT's view, with its policy list tested against the ADMX) |
+| Installer, package, install identity, policy, licence texts (`packaging/licences/`, `tools/collect_licences.py`) | `docs/PACKAGING.md`; `docs/IT_DEPLOYMENT.md` (IT's view; its policy list is tested against the ADMX) |
 | Dependencies, workflows, releases (only when authorised) | `docs/RELEASING.md`; `docs/RELEASE_CHECKLIST.md`; `docs/VALIDATION_RUNBOOK.md` |
 | Gates, budgets, performance | `docs/RELEASE_STANDARD.md` (Part B lists every gate); `docs/perf-budgets.json`; `tests/budgets.json` |
 | UI appearance and user-facing behaviour | `docs/design/boards/` with `tools/design_check.py`; `docs/WORKSPACE_GUIDE.md`; `docs/screenshots/` |
 | Security threats and controls | `docs/SECURITY_MODEL.md` (each #111 slice updates it, with its row in `docs/CONTROL_MATRIX.md`); `SECURITY.md`; `docs/PRIVACY_IMPACT_ASSESSMENT_DRAFT.md` (facts only, no legal position) |
 | Encryption and keys (`workspace/vault.py`, `workspace/audiocrypt.py`, `workspace/dpapi.py`, `workspace/keystore.py`); meeting content in the database (`store.CONTENT_COLUMNS`, sealed since schema 2: only `workspace/store.py` names them, or the key tables, in SQL, through its codec) | `docs/ENCRYPTION.md`; `docs/WORKSPACE_DESIGN.md` "Content columns"; `docs/SECURITY_MODEL.md` T6 to T8; `tests/test_content_access.py`; `tests/test_schema2.py` |
+| Decisions and who made them | `docs/DECISIONS.md` (`tests/test_decisions.py` checks that every mention cites an ID) |
 | Tooling traps, flaky checks, Windows and WebView2 quirks | `docs/DEVELOPER_NOTES.md` |
 
 ## Checks
 
-- Every Python change: run the tests it touches with `python tools/run_tests.py --only <modules>`
-  (with `--strict-skips` on Windows) and `ruff check .`. Run tests only through
-  `tools/run_tests.py`. The full suite runs on CI on every push, in parts, and is required
-  before merge; do not run it on the shared laptop (the user's decision, 26 October 2026).
-- No test downloads a model: the runner refuses the real download process in every test
-  (`tests/download_guard.py`, #382). Fake it (a `Downloads` target, or patch
-  `setup._download_main`); a test of the download process itself, with no network, opts in
-  with `download_guard.real_download_process()`.
-- The shared laptop is for what CI cannot do: real windows, timings, real audio and installer
-  runs, plus quick targeted tests. A heavy run (headless Edge batches, real windows, Pester,
-  performance) holds `%USERPROFILE%\.umv\heavy.lock` (created with CreateNew, labelled,
-  deleted only by its holder) for at most about 15 minutes at a time, releasing it between
-  batches. While the laptop is unlocked, screen and timing work goes first. Long repeat runs
-  go to CI, not the laptop.
-- For PowerShell, dependency and workflow changes, run the matching job's commands from
-  `.github/workflows/` rather than a copy kept here. The required checks are in `docs/RELEASING.md`.
-  Installer changes also run the Pester tests in `tests/powershell` with
-  `tools/run_pester.ps1` under Windows PowerShell 5.1 (Pester pinned by version and SHA-256;
-  the job is report only until it has passed on 5 consecutive PRs). Installer tests run only
-  scratch copies with a scratch install folder, `LOCALAPPDATA`, `APPDATA`, Start menu folder
-  and HKCU key, and for machine mode a scratch Program Files and all-users Start menu folder
-  and throwaway HKCU keys for the HKLM uninstall entry and Event Log source (`run_installer`
-  in `tests/test_hardening.py`, `tests/powershell/Isolation.ps1`); never run either script,
-  or its tests, against the real install, per user or machine, nor dot-source an older
-  revision.
-- `tests/test_consistency.py` ties together facts with several copies (version, install
+- Python: test what a change touches with `python tools/run_tests.py --only <modules>`
+  (`--strict-skips` on Windows; run tests only through it) and `ruff check .`. CI runs the full
+  suite on every push, in parts, and it is required before merge; never run it on the shared
+  laptop (DEC-053).
+- No test downloads a model (`tests/download_guard.py` refuses the real download process): fake
+  it (a `Downloads` target, or patch `setup._download_main`); a networkless test of the download
+  process opts in with `download_guard.real_download_process()`.
+- The shared laptop is for what CI cannot do (real windows, timings, real audio, installer runs)
+  and quick targeted tests; screen and timing work goes first while it is unlocked, and long
+  repeat runs go to CI. A heavy run (headless Edge batches, real windows, Pester, performance)
+  holds `%USERPROFILE%\.umv\heavy.lock` (CreateNew, labelled, deleted only by its holder) for at
+  most about 15 minutes at a time, released between batches.
+- PowerShell, dependency and workflow changes: run the matching job's commands from
+  `.github/workflows/` (required checks: `docs/RELEASING.md`). Installer changes also run
+  `tools/run_pester.ps1` (tests in `tests/powershell`; Pester pinned by version and SHA-256;
+  report only until it passes on 5 consecutive PRs) under Windows PowerShell 5.1. Installer tests
+  use only scratch copies, folders and registry keys, per user and machine mode, as
+  `run_installer` in `tests/test_hardening.py` and `tests/powershell/Isolation.ps1` set up; never
+  run either script or its tests against the real install, per user or machine, nor dot-source
+  an older revision.
+- `tests/test_consistency.py` ties together facts kept in several places (version, install
   identity, pins, bridge names, required checks): change every copy at once. `VERSION` is the
   one version source, written by `tools/changelog.py`.
 - Window-process code imports no heavy library at module level.
 - UI changes: `tools/ui_idle_check.py`, then `tools/workspace_ui_check.py` and
   `tools/accessibility_check.py`, which open real windows on the user's screen (say so first).
-- Budgets: lower one when it improves; raise one only with a reason in the PR, and never from a
-  single quick run on a development laptop (use `tools/perf_check.py` medians).
-- Required CI time is a budget too (#386): `python tools/dev_status.py --ci-time` prints how long
-  "Unit tests (Windows)" took from push in the latest runs. A PR that noticeably slows it fixes
-  that or gives its reason in the PR; raising it needs the owner.
+- Budgets: lower one when it improves; raise one only with a reason in the PR, never from a
+  single quick laptop run (use `tools/perf_check.py` medians). Required CI time is a budget too
+  (`python tools/dev_status.py --ci-time` shows how long "Unit tests (Windows)" took from push):
+  a PR that noticeably slows it fixes that or says why; raising it needs the owner.
 - Dependencies change as a compatible set with Windows wheels only (especially torch,
-  torchaudio, pyannote.audio and huggingface_hub): edit `requirements.in` and run
-  `python tools/lock.py`; never edit a lock by hand. Engine, model or dependency changes also need
-  `tools/compare_engines.py` and an end-to-end run with speaker identification on a
-  non-sensitive recording. CI does not run the models.
+  torchaudio, pyannote.audio and huggingface_hub): edit `requirements.in`, run
+  `python tools/lock.py`, never edit a lock by hand. Engine, model or dependency changes also
+  need `tools/compare_engines.py` and an end-to-end run with speaker identification on a
+  non-sensitive recording; CI does not run the models.
 - GPU: validate the exact model, export, precision and runtime (processor INT8 support proves
-  nothing on a GPU), with bounded chunks and limited VRAM; NVIDIA only, and always optional.
-- Verify in a scratch virtual environment, never in other Python installations. For docs-only
-  changes, check accuracy, paths and the diff. Read required CI results before calling a PR ready.
+  nothing on a GPU), with bounded chunks and limited VRAM; NVIDIA only, always optional.
+- Verify in a scratch virtual environment, never other Python installations. Docs-only changes:
+  check accuracy, paths and the diff. Read required CI results before calling a PR ready.
 
 ## Delivery
 
-- The definition of done is `.github/pull_request_template.md`. Write "Closes #N" only when every
-  acceptance criterion is met.
-- Shipped changes need a `changelog.d/` fragment (see its README) or the `no-changelog` label.
+- The definition of done is `.github/pull_request_template.md`; write "Closes #N" only when
+  every acceptance criterion is met. Shipped changes need a `changelog.d/` fragment (see its
+  README) or the `no-changelog` label.
 - Update the README, user guide, docs and screenshots with the behaviour, and this file when a
-  rule, guard or path it names changes, in the same PR.
-- Squash merge with linear history (`docs/RELEASING.md`), after the review "Authority" asks
-  for, with fixes verified. Inspect the final diff for unrelated edits, private material and
+  rule, guard or path it names changes, in the same PR. Log a new decision in
+  `docs/DECISIONS.md` in the PR that first relies on it.
+- Squash merge with linear history (`docs/RELEASING.md`), after the review "Authority" asks for,
+  with fixes verified. Inspect the final diff for unrelated edits, private material and
   invisible characters.
-- A PR may be a draft while work continues. Keep it moving (the user's decision, 26 October
-  2026): start the independent review as soon as the head is pushed, while CI runs. Once it
-  approves the exact head (or its rebase, with an identical range-diff recorded) and no user
-  decision is open, the owning agent records the review, runs `gh pr ready <n>` and arms
-  auto-merge pinned to that commit (`gh pr merge <n> --auto --squash --match-head-commit <sha>`).
-  GitHub merges once the required checks pass and waits for no other check: do not arm while
-  one fails without its reason on the PR (with the required checks green, arming merges at
-  once), and disarm (`gh pr merge <n> --disable-auto`) if one fails after arming; one failing
-  after the merge is fixed forward on `main`. Disarm before any push; keep it off until the
-  new head is reviewed. A green, reviewed PR left in draft or unarmed is a fault to fix at once.
-  Watch PRs by events (`gh pr checks <n> --watch`), not timed polls. Never call a draft "ready
-  to merge": check `gh pr view <n> --json isDraft,mergeStateStatus,autoMergeRequest` first.
+- Keep PRs moving (DEC-054), with the commands in the `finish-pr` skill. A PR may be a draft
+  while work continues; start the independent review once its head is pushed, while CI runs.
+  When the review approves the exact head (or its rebase, identical range-diff recorded) and no
+  user decision is open, the owning agent records the review, marks the PR ready and arms
+  auto-merge pinned to that commit. GitHub waits only for required checks, so never arm while
+  another check fails without its reason on the PR (with required checks green, arming merges at
+  once); disarm if one fails after arming, and before any push, keeping it off until the new head
+  is reviewed.
+  A green, reviewed PR left in draft or unarmed is a fault to fix at once. Watch PRs by events
+  (`gh pr checks <n> --watch`), not timed polls. Never call a draft "ready to merge" without
+  checking `gh pr view <n> --json isDraft,mergeStateStatus,autoMergeRequest`.
 
 ## Several agents or sessions
 
-- One issue or slice, one branch, one worktree, one writer, named as the tracking issue says.
-- Keep work small (`tools/dev_status.py` checks): at most 3 release-path drafts; finish one
-  before starting another. Split a PR over about 1,000 lines outside `tests/` unless it says
-  why not. Rebase, split or park (with a reason) a draft conflicted with `main` over 2 days.
-- Announce the files you will touch, and message the owning session before editing a file in
-  its open PR. The PR that lands second converts shared pieces such as changelog fragments.
+- One issue or slice: one branch, one worktree, one writer, named as the tracking issue says.
+- Keep work small (`tools/dev_status.py` checks): at most 3 release-path drafts, finishing one
+  before starting another; split a PR over about 1,000 lines outside `tests/` unless it says why
+  not; rebase, split or park (with a reason) a draft conflicted with `main` for over 2 days.
+- Announce the files you will touch, and message the owning session before editing a file in its
+  open PR. The PR that lands second converts shared pieces such as changelog fragments.
 - Reviewers work on a fixed commit in a separate checkout and do not edit, push or comment
-  without authority. The agent that owns a PR handles its pushes, PR state, merge and branch
-  clean-up; agree the merge order with the other owners when PRs share files. The owner account
-  also merges, so do not assume a merge was an agent's.
+  without authority. The owning agent handles its PR's pushes, state, merge and branch clean-up,
+  and agrees the merge order with other owners when PRs share files. The owner account also
+  merges, so do not assume a merge was an agent's.
 - Do not share a mutable runtime, model cache, test database or headless Edge run between
   sessions; run heavy benchmarks one at a time.
-- After rebasing onto a moved `main`, confirm no conflict markers remain and that the diff
-  matches the reviewed one before pushing. Give times in New Zealand time (GitHub uses UTC).
+- After rebasing onto a moved `main`, confirm no conflict markers remain and the diff matches the
+  reviewed one before pushing. Give times in New Zealand time (GitHub uses UTC).
