@@ -763,6 +763,21 @@ class MachineEvidenceTests(TempDir):
         self.assertEqual([], evidence.perf_not_drawn(body))
         self.assertEqual([], evidence.check(SHA, self.complete(perf=body)))
 
+    def test_live_drafts_have_a_visible_window_to_show(self):
+        # #104 slice 4: recording with live drafts on is a visible state too.
+        self.assertIn("recording-drafts", evidence.PERF_VISIBLE_STATES)
+        body = report("perf")
+        del body["each_run"][1]["recording-drafts"]
+        self.assertEqual(["recording-drafts in run 2"], evidence.perf_not_drawn(body))
+        body["each_run"][1]["recording-drafts"] = {"drawing": {"drawn": False}}
+        self.assertEqual(["recording-drafts in run 2"], evidence.perf_not_drawn(body))
+        # Live drafts off by policy: that window is excused, no other.
+        body = report("perf")
+        for run in body["each_run"]:
+            del run["recording-drafts"]
+        body["not_measured_by_policy"] = ["recording-drafts", "recording-drafts-minimised"]
+        self.assertEqual([], evidence.perf_not_drawn(body))
+
     def test_a_missing_visible_state_counts_only_if_policy_names_it(self):
         # #292 review: a visible state missing from a run is excused only when
         # the report names it as not measured by policy.
@@ -1490,8 +1505,11 @@ class ToolTests(TempDir):
         def parent(args):
             out.write_text(json.dumps({"median": {}}), encoding="utf-8")
             return rc
+        # A release run also records public speech with live drafts on (#104).
+        speech = self.root / "public-speech.wav"
+        speech.write_bytes(b"synthetic stand-in")
         argv = ["perf_check.py", str(out), "--app", str(folder / "app"), "--zip", str(zpath),
-                *extra]
+                "--speech", str(speech), "--draft-models", str(self.root), *extra]
         with mock.patch.object(perf_check, "parent", parent), \
                 mock.patch.object(perf_check.evidence, "require_package_runtime"), \
                 mock.patch.object(perf_check.evidence, "require_app_modules"), \
@@ -1515,6 +1533,24 @@ class ToolTests(TempDir):
                 self.assertEqual(1, code)                   # evidence that fails exits 1
         code, ev = self.run_perf(zpath, folder, 0, "--leak-minutes", "5")
         self.assertEqual((1, False), (code, ev["pass"]))
+
+    def test_a_release_perf_run_without_public_speech_stops_before_measuring(self):
+        # #104 slice 4: the drafts-on states have budgets, so a release run
+        # without --speech and --draft-models would fail them after hours.
+        import perf_check
+        zpath, folder = make_package(self.root)
+        never = mock.Mock(side_effect=AssertionError("a real run started"))
+        argv = ["perf_check.py", str(self.root / "perf.json"), "--app", str(folder / "app"),
+                "--zip", str(zpath), "--leak-minutes", "30"]
+        with mock.patch.object(sys, "argv", argv), mock.patch("sys.stderr") as err, \
+                mock.patch.object(perf_check, "parent", never), \
+                mock.patch.object(perf_check.evidence, "prepare"), \
+                self.assertRaises(SystemExit) as caught:
+            perf_check.main()
+        self.assertEqual(2, caught.exception.code)
+        never.assert_not_called()
+        said = "".join(str(c.args[0]) for c in err.write.call_args_list)
+        self.assertIn("a release run also measures recording with live drafts on", said)
 
     def test_perf_evidence_needs_the_app_it_measured(self):
         import perf_check

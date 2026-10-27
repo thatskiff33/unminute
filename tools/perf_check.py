@@ -15,6 +15,13 @@
 # recording is started, confirmed and saved with its consent record by the
 # shipped code. Both stand-ins exist only in this tool's child process.
 #
+# The drafts-on states (#104) record public speech instead, with live drafts
+# on, because synthetic noise does not exercise the speech model: a public
+# recording (--speech, such as the AMI meeting ES2004a, CC BY 4.0) is decoded
+# once by the app's contained decoder in a child of its own (speech_step()),
+# and Parakeet v2 is copied from --draft-models into each run's throwaway model
+# folder (copy_models()). Only counts and times leave the window: never text.
+#
 # Run "python tools/perf_check.py --help" for the states, the output and the
 # exit codes. The window is visible for the whole run; leave the machine idle,
 # on mains power, on the Balanced power plan. The worker's peak memory and
@@ -53,10 +60,15 @@ import windows_powershell  # noqa: E402
 BUDGETS = ROOT / "docs" / "perf-budgets.json"
 # The recording states come last, after the leak check too (plan()): every
 # other figure is measured before any recording has started. One recording
-# runs through both recording states and is discarded before quitting.
-STATES = ("meetings", "settings", "minimised", "recording", "recording-minimised")
+# runs through both recording states and is discarded; a second, with live
+# drafts on and public speech as its input, runs through both drafts-on states
+# (#104) and is discarded before quitting.
+STATES = ("meetings", "settings", "minimised", "recording", "recording-minimised",
+          "recording-drafts", "recording-drafts-minimised")
 RECORDING_STATES = ("recording", "recording-minimised")
-IDLE_STATES = tuple(s for s in STATES if s not in RECORDING_STATES)
+DRAFT_STATES = ("recording-drafts", "recording-drafts-minimised")
+CAPTURE_STATES = RECORDING_STATES + DRAFT_STATES      # every state with a recording open
+IDLE_STATES = tuple(s for s in STATES if s not in CAPTURE_STATES)
 # Through a measuring window the recording must keep recording and its length
 # grow by at least this share of the time that passed (the synthetic input is
 # paced in real time; a hold-up over PACE_MAX_LATE_S is skipped, not caught up).
@@ -78,6 +90,16 @@ STEP_TIMEOUT_S = 90               # the window reaching a state
 # button ready, the recording card shown, the first second of audio. A state
 # that starts a recording gets these on top of STEP_TIMEOUT_S (step_timeout()).
 RECORD_WAITS_S = {"button": 30, "started": 30, "audio": 30}
+# A drafts-on state that starts its recording also waits for the draft worker
+# to load Parakeet v2 and run (record()), so its settle measures drafting.
+DRAFT_WAIT_S = 120
+DRAFT_RUNNING = "running"         # workspace.drafts.RUNNING, as recording_status gives it
+# The public speech the drafts-on states record (--speech): this long from
+# --speech-start, looped, at SYNTHETIC_RATE (about 11.5 MB held in the window
+# process at 120 s, which its private bytes include).
+SPEECH_SECONDS = 120.0
+SPEECH_TIMEOUT_S = 600            # decoding it, once per invocation (speech_step())
+SPEECH_FILE = "speech.pcm"        # 16-bit mono at SYNTHETIC_RATE, in the tool's own folder
 LEAK_BUDGET_MINUTES = 30          # the leak budget is growth over this long
 # A release run's shape; release evidence needs at least this (tools/evidence.py).
 RELEASE_RUNS = evidence.PERF_RELEASE["runs"]
@@ -93,8 +115,8 @@ VISIBLE_STATES = evidence.PERF_VISIBLE_STATES
 # decision of 23 Oct 2026, #216). Its draws are counted, not the page's frames,
 # and a window counts only if it drew at least half its expected rate
 # (min_meter_draws()) and was never undrawn for longer than MAX_UNDRAWN_S at a
-# stretch.
-DRAWING_STATES = ("recording",)
+# stretch. With live drafts on the recording card shows the level display too.
+DRAWING_STATES = ("recording", "recording-drafts")
 METER_MAX_HZ = 60
 MAX_UNDRAWN_S = 5.0
 # GUID_SESSION_DISPLAY_STATUS's values. A dimmed display still draws every frame.
@@ -114,8 +136,11 @@ DRAWN_DISPLAY = ("on", "dimmed")
 HELP = """
 States, in order: meetings (the Meetings view, 3 synthetic meetings), settings
 (the Settings view), minimised, recording (the Meetings view while recording,
-with the level display running) and recording-minimised (minimised while
-recording). The recording states record synthetic audio fed in at real-time
+with the level display running), recording-minimised (minimised while
+recording), recording-drafts (the Meetings view while recording with live
+drafts on, the draft text shown under the level display) and
+recording-drafts-minimised (minimised while recording with live drafts on;
+drafts keep running). The recording states record synthetic audio fed in at real-time
 pace in place of the microphone (48 kHz, 0.1 s blocks); no microphone or
 audio device is opened. The tool turns microphone recording on in the
 throwaway workspace, presses Record and answers the app's recording question
@@ -126,10 +151,32 @@ after them, never saved or imported. Its figures include the stand-in's own
 feeding thread (small) and leave out the Windows audio service, which a real
 microphone would also use.
 
+Live drafts (#104): the drafts-on states record public speech, because
+synthetic noise does not exercise the speech model. --speech names a public
+recording (such as the AMI meeting ES2004a, CC BY 4.0), never a real meeting;
+it is decoded once, by the app's own contained decoder, and 120 s of it from
+--speech-start (--speech-seconds) is fed in, looped, at real-time pace (48 kHz,
+0.1 s blocks), held in the window process (about 11.5 MB, which its private
+bytes include). --draft-models names a model folder holding Parakeet v2 and
+its speech detector, as the app downloads them; for each run they are copied,
+with their verification records, into the run's throwaway model folder, so
+the folder named is only read. After the drafts-off recording is discarded,
+the tool turns live drafts on in the throwaway workspace and starts a second
+recording, through the app's own recording question again, waits for the
+draft worker to load and run, and runs that recording through both drafts-on
+states. Each window counts only if live drafts were running at its start and
+end, in the same session, and made draft text during it ("draft_phrases",
+a count: no text leaves the window); otherwise the run could not be measured
+(exit 2). That recording is discarded too, never saved or imported. A release
+run needs --speech and --draft-models; --quick without them leaves the
+drafts-on states out and does not compare them. The report records the
+recording's SHA-256, the excerpt's start and length, never its name or path.
+
 Managed policy: where policy turns microphone recording off, the recording
-states are "not measured (policy)": the other figures are still measured and
-the exit code follows the budgets (a budget set for a recording state then
-counts as not measured, exit 1). Where policy turns the recording confirmation
+states (with live drafts on too) are "not measured (policy)", and so are the
+drafts-on states where policy turns live drafts off: the other figures are
+still measured and the exit code follows the budgets (a budget set for a
+recording state then counts as not measured, exit 1). Where policy turns the recording confirmation
 off, the app asks nothing and makes no consent record; the tool accepts that
 and the report says so ("recording_consent").
 
@@ -155,8 +202,8 @@ display's refresh rate once it is kept on ("refresh_hz", which the machine
 block then records; with the rate read before, "refresh_hz_before_kept_on",
 if the two differ: dynamic refresh can lower it while idle). A run that starts
 with the display off or the session locked stops before measuring (exit 2).
-Each window measured in a visible state (meetings, settings, recording)
-counts only if the display stayed on (Windows' display status for the
+Each window measured in a visible state (meetings, settings, recording,
+recording-drafts) counts only if the display stayed on (Windows' display status for the
 session), the session was not locked and showed no screen saver, and the page
 was visible and drew: at least one frame in every such window, and while
 recording, the level display drawn at least half as often as it should be
@@ -216,8 +263,9 @@ side ("compared"), with both machines; if the machines differ in processor,
 cores, memory, power plan or mains power, each figure is "not comparable".
 
 Release run (docs/RELEASING.md): 3 runs, 60 s settle, 300 s windows and
---leak-minutes 30, about two and a quarter hours, plus the store step.
---quick is 1 run, 20 s settle and 60 s windows (about 10 minutes), for
+--leak-minutes 30, with --speech and --draft-models, about two and
+three-quarter hours, plus the store step. --quick is 1 run, 20 s settle and
+60 s windows (about 10 minutes, or 13 with the drafts-on states), for
 before-and-after checks during development.
 """
 
@@ -460,24 +508,116 @@ def consent_outcome(required, record, asked, recording_title, valid):
     return "off by policy"
 
 
-def plan(leak_minutes, recording_allowed):
+def plan(leak_minutes, recording_allowed, drafts=False):
     """What the parent measures, in order, in one run: the idle states, the
     leak check (if asked for) before any recording, then the recording states
-    unless managed policy turns microphone recording off."""
+    unless managed policy turns microphone recording off, then the drafts-on
+    states if `drafts` (asked for with --speech, and allowed by policy)."""
     out = list(IDLE_STATES)
     if leak_minutes:
         out.append("leak")
     if recording_allowed:
         out += RECORDING_STATES
+        if drafts:
+            out += DRAFT_STATES
     return out
 
 
 def step_timeout(state):
     """How long the parent waits for the child to reach `state`: a state that
-    may start a recording also gets the child's own waits for that."""
-    if state in RECORDING_STATES:
-        return STEP_TIMEOUT_S + sum(RECORD_WAITS_S.values())
+    may start a recording also gets the child's own waits for that, and a
+    drafts-on one the wait for its draft worker to run."""
+    if state in CAPTURE_STATES:
+        extra = DRAFT_WAIT_S if state in DRAFT_STATES else 0
+        return STEP_TIMEOUT_S + sum(RECORD_WAITS_S.values()) + extra
     return STEP_TIMEOUT_S
+
+
+def draft_now(state, recording, when):
+    """The live drafts of the recording the child reported (its "draft":
+    {"state", "count", "generation"}, numbers and a state name only), or
+    raise Unmeasurable unless they were running, `when` saying at which end
+    of `state`'s window."""
+    draft = (recording or {}).get("draft") if isinstance(recording, dict) else None
+    draft = draft if isinstance(draft, dict) else {}
+    if draft.get("state") != DRAFT_RUNNING:
+        raise Unmeasurable(f"live drafts were {draft.get('state') or 'off'}, not running, "
+                           f"{when} {state}")
+    if not (_number(draft.get("count")) and _number(draft.get("generation"))):
+        raise Unmeasurable(f"live drafts gave no count {when} {state}")
+    return draft
+
+
+def check_drafting(state, before, after):
+    """Raise Unmeasurable unless live drafts were running at both ends of
+    `state`'s window (before, after: the child's recording reports), in the
+    same draft session, and made draft text during it: synthetic or silent
+    input, or a draft worker that failed or restarted, would leave the speech
+    model's cost out of the figures. Returns the phrases made in the window."""
+    first = draft_now(state, before, "as the window began in")
+    last = draft_now(state, after, "after")
+    if last["generation"] != first["generation"]:
+        raise Unmeasurable(f"live drafts started again during {state}")
+    made = last["count"] - first["count"]
+    if made <= 0:
+        raise Unmeasurable(f"live drafts made no draft text during {state} (does the "
+                           "--speech excerpt hold speech?)")
+    return made
+
+
+# -- the drafts-on states' input (pure apart from the files; tested) --------------------
+
+def to_device_rate(audio, rate, start_s=0.0, seconds=SPEECH_SECONDS, source_rate=16000):
+    """`seconds` of 16 kHz float audio from start_s, as 16-bit samples at a
+    microphone's `rate` (linear interpolation, as tools/live_trial.py feeds
+    the draft session): the draft worker resamples it back, as it does a real
+    microphone's. Raises ValueError when less than one second is left."""
+    import numpy as np
+    audio = np.asarray(audio, dtype=np.float32)
+    first = max(0, int(round(start_s * source_rate)))
+    part = audio[first:first + int(round(seconds * source_rate))]
+    if len(part) < source_rate:
+        raise ValueError("the speech excerpt is shorter than one second")
+    count = int(len(part) * rate / source_rate)
+    at = np.arange(count) * (source_rate / rate)
+    out = np.round(np.interp(at, np.arange(len(part)), part) * 32768.0)
+    return np.clip(out, -32768, 32767).astype(np.int16)
+
+
+def speech_blocks(pcm, rate=SYNTHETIC_RATE, block_s=SYNTHETIC_BLOCK_S):
+    """16-bit mono samples as the recorder's blocks, shaped (frames, 1) like
+    sounddevice's: views of one array, so looping them copies nothing. A
+    last, partial block is left out."""
+    import numpy as np
+    frames = int(rate * block_s)
+    pcm = np.asarray(pcm, dtype=np.int16).reshape(-1)
+    count = len(pcm) // frames
+    if not count:
+        raise ValueError("the speech excerpt is shorter than one block")
+    return [pcm[i * frames:(i + 1) * frames].reshape(-1, 1) for i in range(count)]
+
+
+def copy_models(source, dest, specs, model_dir, marker):
+    """Copy each spec's pinned files, and its verification record (`marker`)
+    if it has one, from `source`'s model folder (model_dir(spec, source)) to
+    `dest`'s, keeping their times so the record still matches. `source` is
+    only read. Raises RuntimeError naming the model (never a path) when a
+    pinned file is missing. Returns the bytes copied."""
+    copied = 0
+    for spec in specs:
+        src, out = Path(model_dir(spec, source)), Path(model_dir(spec, dest))
+        names = [f.name for f in spec.files]
+        missing = [n for n in names if not (src / n).is_file()]
+        if missing:
+            raise RuntimeError(f"--draft-models holds no complete {spec.folder} "
+                               f"({len(missing)} of its files missing)")
+        if (src / marker).is_file():
+            names.append(marker)
+        out.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            shutil.copy2(src / name, out / name)
+            copied += (out / name).stat().st_size
+    return copied
 
 
 def check_held(state, before, after, elapsed):
@@ -502,27 +642,32 @@ class LostRecording(RuntimeError):
     would put its start (and the first one's saving) in the figures."""
 
 
-def steps(state, recording):
+def steps(state, recording, drafts=False):
     """What the child does, in order, to put the window in `state` ("quit" to
-    end), given whether a recording is open. A recording is started only for
-    the first recording state, before minimising (the window then keeps the
-    page running instead of suspending it), and is discarded before any other
-    state and before quitting, so no other figure includes it and nothing is
-    imported. A later recording state with nothing recording is refused."""
+    end), given whether a recording is open and whether it has live drafts
+    on. A recording is started only for the first state of its group (the
+    recording states, drafts off; the drafts-on states, with "record:drafts"),
+    before minimising (the window then keeps the page running instead of
+    suspending it), and is discarded before any state outside its group and
+    before quitting, so no other figure includes it and nothing is imported.
+    A later state of a group with no recording of that group open is refused."""
     if state == "quit":
         return ["discard"] if recording else []
     if state not in STATES:
         raise ValueError(f"unknown state {state!r}")
-    wanted = state in RECORDING_STATES
-    if wanted and not recording and state != RECORDING_STATES[0]:
-        raise LostRecording(f"nothing was recording when {state} began")
+    group = (DRAFT_STATES if state in DRAFT_STATES
+             else RECORDING_STATES if state in RECORDING_STATES else None)
+    keep = bool(recording) and group is not None and bool(drafts) == (group is DRAFT_STATES)
+    if group is not None and not keep and state != group[0]:
+        what = "with live drafts on " if group is DRAFT_STATES else ""
+        raise LostRecording(f"nothing was recording {what}when {state} began")
     out = ["restore"]
-    if recording and not wanted:
+    if recording and not keep:
         out.append("discard")
     out.append("show:settings" if state == "settings" else "show:meetings")
-    if wanted and not recording:
-        out.append("record")
-    if state in ("minimised", "recording-minimised"):
+    if group is not None and not keep:
+        out.append("record:drafts" if group is DRAFT_STATES else "record")
+    if state.endswith("minimised"):
         out.append("minimise")
     return out
 
@@ -1278,13 +1423,17 @@ def child_command(args, workdir):
     return command, env
 
 
-def one_run(args, settle, window, leak_minutes=0, display=None, refresh_hz=None):
+def one_run(args, settle, window, leak_minutes=0, display=None, refresh_hz=None, speech=None):
     """One run of the window through every state. display: the run's
     WindowsDisplay (parent()); without one, no visible state counts as drawn.
     refresh_hz: the display's refresh rate (parent()), for the level display's
-    expected draws (min_meter_draws())."""
+    expected draws (min_meter_draws()). speech: the decoded public speech
+    (speech_step()) for the drafts-on states, with args.draft_models; without
+    it they are not measured."""
     workdir = Path(tempfile.mkdtemp(prefix="unminute-perf-"))
     command, env = child_command(args, workdir)
+    if speech:
+        command += ["--speech-pcm", str(speech), "--draft-models", str(args.draft_models)]
     proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env,
                             text=True, encoding="utf-8", bufsize=1)
     job = None
@@ -1360,10 +1509,14 @@ def one_run(args, settle, window, leak_minutes=0, display=None, refresh_hz=None)
             result["worker"] = {"exited": gone, "exit_after_last_use_s": round(
                 time.time() - ready["worker_last_used"], 1) if gone else WORKER_WAIT_S}
         allowed = ready.get("recording_allowed") is True
-        if not allowed:                  # managed policy: microphone recording off
-            result["not_measured_by_policy"] = list(RECORDING_STATES)
-            print(f"  {', '.join(RECORDING_STATES)}: {POLICY_SKIPPED}", flush=True)
-        for state in plan(leak_minutes, allowed):
+        drafts = bool(speech) and ready.get("drafts_allowed") is True
+        off = [] if allowed else list(RECORDING_STATES)  # managed policy: microphone off
+        if speech and not (allowed and drafts):           # or live drafts off
+            off += DRAFT_STATES
+        if off:
+            result["not_measured_by_policy"] = off
+            print(f"  {', '.join(off)}: {POLICY_SKIPPED}", flush=True)
+        for state in plan(leak_minutes, allowed, drafts):
             if state == "leak":
                 result["leak"] = leak()
                 continue
@@ -1374,6 +1527,10 @@ def one_run(args, settle, window, leak_minutes=0, display=None, refresh_hz=None)
             t0 = time.monotonic()
             visible = state in VISIBLE_STATES
             time.sleep(settle)
+            if state in DRAFT_STATES:        # drafting as the window begins (outside it)
+                say("check")
+                drafting = read(STEP_TIMEOUT_S).get("recording")
+                draft_now(state, drafting, "as the window began in")
             if visible:                      # read just before the window, outside it
                 start, at0 = look(), time.monotonic()
             result[state] = measure(job, proc.pid, 0, window)
@@ -1388,12 +1545,15 @@ def one_run(args, settle, window, leak_minutes=0, display=None, refresh_hz=None)
                     raise Unmeasurable(
                         f"{state} was not drawn on screen ({'; '.join(drawing['problems'])}): "
                         "keep the session unlocked and the window in view")
-            if state in RECORDING_STATES:    # still the same recording, still recording
+            if state in CAPTURE_STATES:      # still the same recording, still recording
                 say("check")
                 held = read(STEP_TIMEOUT_S)
                 result[state]["recorded_s"] = check_held(
                     state, reached.get("recording"), held.get("recording"),
                     time.monotonic() - t0)
+                if state in DRAFT_STATES:    # and drafting, with text made in the window
+                    result[state]["draft_phrases"] = check_drafting(
+                        state, drafting, held.get("recording"))
                 if reached.get("consent"):   # sent by the state that started it
                     result["recording_consent"] = reached["consent"]
             print(f"  {state}: {result[state]['cpu_percent_of_one_core']}% of one core, "
@@ -1412,11 +1572,7 @@ def one_run(args, settle, window, leak_minutes=0, display=None, refresh_hz=None)
             proc.wait(30)
         except subprocess.TimeoutExpired:
             pass
-        for _ in range(10):              # files can stay locked for a moment
-            shutil.rmtree(workdir, ignore_errors=True)
-            if not workdir.exists():
-                break
-            time.sleep(0.5)
+        remove_folder(workdir)
     return result
 
 
@@ -1427,9 +1583,16 @@ def parent(args):
               "leak_minutes": args.leak_minutes,
               "recording_input": {"synthetic": True, "rate": SYNTHETIC_RATE,
                                   "block_s": SYNTHETIC_BLOCK_S, "paced": "real time"}}
+    asked = bool(getattr(args, "speech", None) and getattr(args, "draft_models", None))
     results = []
     display = None
+    speech_dir = speech = None
     try:
+        if asked:  # the drafts-on states' input: the recording named by its hash only (P3)
+            report["drafts_input"] = {
+                "speech_sha256": evidence.sha256(args.speech), "start_s": args.speech_start,
+                "seconds": args.speech_seconds, "rate": SYNTHETIC_RATE,
+                "block_s": SYNTHETIC_BLOCK_S, "paced": "real time, looped"}
         # Inside the guard: a probe that fails (a damaged version.json, a
         # missing system tool) is "not measured", not a traceback.
         try:
@@ -1478,11 +1641,15 @@ def parent(args):
             missing = store_problems(report["store"])
             if missing:
                 raise RuntimeError(f"the store step did not measure {', '.join(missing)}")
+        if asked:                     # once, no window, before the windowed runs (#104)
+            print("decoding the public speech for the drafts-on states", flush=True)
+            speech_dir = Path(tempfile.mkdtemp(prefix="unminute-speech-"))
+            speech = speech_step(args, speech_dir)
         for n in range(runs):
             print(f"run {n + 1} of {runs}", flush=True)
             last = n == runs - 1
             results.append(one_run(args, settle, window, args.leak_minutes if last else 0,
-                                   display=display, refresh_hz=hz or before))
+                                   display=display, refresh_hz=hz or before, speech=speech))
     except Exception as exc:          # anything that stops a run means "not measured"
         # Without the home folder or the user name; then the name guard (P3).
         report["each_run"], report["error"] = results, residue.redact(str(exc))
@@ -1492,6 +1659,8 @@ def parent(args):
     finally:
         if display is not None:
             display.stop()            # the display may turn off again as the plan says
+        if speech_dir is not None:
+            remove_folder(speech_dir)
     report["each_run"] = results
     # Managed policy: recording states it turned off (in any run), and how the
     # recordings were confirmed. Neither is a figure, so neither has a median.
@@ -1510,6 +1679,8 @@ def parent(args):
     skip = () if args.leak_minutes >= LEAK_BUDGET_MINUTES else ("leak",)
     if args.quick:                    # --quick has no store step to compare
         skip += ("store",)
+    if args.quick and not asked:      # nor, without --speech, the drafts-on states;
+        skip += DRAFT_STATES          # a release run without them is not measured
     # The store step's figures are measured once, not per run, so they are
     # compared and proposed as they are, beside the medians (#430).
     gated = dict(figures, store=report["store"]) if report.get("store") else figures
@@ -1532,7 +1703,8 @@ def parent(args):
     for s, m in missing:
         print(f"NOT MEASURED: {s} {m}")
     for s in policy_off:
-        print(f"{s}: {POLICY_SKIPPED}; managed policy turns microphone recording off")
+        print(f"{s}: {POLICY_SKIPPED}; managed policy turns microphone recording"
+              f"{' or live drafts' if s in DRAFT_STATES else ''} off")
     if "off by policy" in consents:
         print("The recording confirmation is off by policy: no consent record was made.")
     if not report["display"]["kept_awake"]:
@@ -1542,6 +1714,8 @@ def parent(args):
         print(f"Not compared: the leak check needs --leak-minutes {LEAK_BUDGET_MINUTES} or more.")
     if "store" in skip:
         print("Not compared: the store step does not run with --quick.")
+    if DRAFT_STATES[0] in skip:
+        print("Not compared: the drafts-on states need --speech and --draft-models.")
     if report.get("store"):
         print("store step: " + json.dumps(report["store"]))
     comparison = report.get("comparison")
@@ -1580,11 +1754,70 @@ def store_step(args):
                                f"{residue.redact(r.stderr[-800:], workdir)}")
         return found[-1]
     finally:
-        for _ in range(10):
-            shutil.rmtree(workdir, ignore_errors=True)
-            if not workdir.exists():
-                break
-            time.sleep(0.5)
+        remove_folder(workdir)
+
+
+def remove_folder(folder):
+    """Remove one of this tool's throwaway folders (files can stay locked
+    for a moment after a child ends)."""
+    for _ in range(10):
+        shutil.rmtree(folder, ignore_errors=True)
+        if not folder.exists():
+            break
+        time.sleep(0.5)
+
+
+def speech_step(args, folder):
+    """Decode --speech once in a child (the package's runtime, as the window
+    child runs, so the app's own contained decoder reads it), writing the
+    excerpt the drafts-on states record into `folder` (SPEECH_FILE). Returns
+    its path; `folder` is the caller's to remove."""
+    command, env = child_command(args, folder)
+    command[command.index("--child")] = "--speech-child"
+    command += ["--speech", str(Path(args.speech).resolve()),
+                "--speech-start", str(args.speech_start),
+                "--speech-seconds", str(args.speech_seconds)]
+    r = subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
+                       env=env, timeout=SPEECH_TIMEOUT_S)
+    found = [json.loads(line[len(PREFIX):]) for line in r.stdout.splitlines()
+             if line.startswith(PREFIX)]
+    out = Path(folder) / SPEECH_FILE
+    if r.returncode or not found or not out.is_file():
+        # The report is published: no path, home folder or user name (P3).
+        tail = residue.redact(r.stderr[-800:], folder)
+        tail = residue.redact(tail, Path(args.speech).resolve().parent)
+        raise RuntimeError(f"the public speech could not be decoded (exit {r.returncode}): "
+                           f"{tail}")
+    return out
+
+
+def speech_child(args):
+    """--speech-child: decode --speech with the app's contained decoder and
+    write --speech-seconds of it from --speech-start, as 16-bit samples at
+    SYNTHETIC_RATE, to the working folder; the sample count on stdout."""
+    import io
+    app = Path(args.app) if args.app else ROOT
+    evidence.add_app(app)
+    from workspace import offline_guard     # as the app itself starts
+    offline_guard.disable_telemetry()
+    offline_guard.install()
+    if args.app:
+        evidence.require_app_modules(app)
+    import numpy as np
+
+    import decoder_runtime                  # tools/: a decoder the container can read (#299)
+    from workspace import media
+    raw, folder = io.BytesIO(), Path(args.workdir)
+    with decoder_runtime.session():
+        samples = media.decode(str(args.speech), raw, folder=folder)
+    audio = np.frombuffer(raw.getbuffer(), dtype="<f4")
+    if len(audio) != samples:
+        raise SystemExit(f"perf_check: decoded {len(audio)} samples, not {samples}")
+    pcm = to_device_rate(audio, SYNTHETIC_RATE, args.speech_start, args.speech_seconds)
+    pcm.astype("<i2").tofile(folder / SPEECH_FILE)
+    sys.stdout.write(PREFIX + json.dumps({"samples": len(pcm)}) + "\n")
+    sys.stdout.flush()
+    return 0
 
 
 def _median(fn, times):
@@ -1750,9 +1983,20 @@ def child(args):
         raise SystemExit("perf_check: recorder.BLOCK_S changed; update SYNTHETIC_BLOCK_S")
     blocks = synthetic_blocks()
     recorder.list_devices = lambda: [dict(SYNTHETIC_DEVICE)]
+    # The drafts-on states' input (#104): the public speech the parent decoded
+    # (speech_step()), and Parakeet v2 copied into this run's model folder, so
+    # the folder named by --draft-models is only read.
+    speech = None
+    if args.speech_pcm:
+        from workspace import asr_engines, drafts
+        speech = speech_blocks(np.fromfile(args.speech_pcm, dtype="<i2"))
+        copy_models(args.draft_models, Path(args.workdir) / "models",
+                    (asr_engines.PARAKEET_MODELS[drafts.DRAFT_MODEL], asr_engines.SILERO_VAD),
+                    asr_engines.model_dir, asr_engines.VERIFIED_MARKER)
+    feed = {"blocks": blocks}          # what the next recording records (record())
 
     def open_synthetic(device, rate, callback, finished):
-        return PacedStream(rate, callback, finished, blocks=blocks)
+        return PacedStream(rate, callback, finished, blocks=feed["blocks"])
 
     def never(*a, **k):
         raise RuntimeError("perf_check never changes the power scheme")
@@ -1822,33 +2066,34 @@ def child(args):
                      startup_s=round(imports_s + interactive, 2),
                      workspace_s=round(workspace_s, 3),
                      recording_allowed=ws.managed()["allow"]["AllowMicrophoneRecording"],
+                     drafts_allowed=ws.managed()["allow"].get("AllowLiveDrafts") is True,
                      **worker)
                 # The frame counter (#292), after start-up is timed, before any state.
                 if window.evaluate_js(PAGE_COUNTER_JS) is not True:
                     raise RuntimeError("the page's frame counter could not be set up")
                 for line in sys.stdin:
                     state = line.strip()
-                    if state == "check":                 # after a recording state's window
+                    if state == "check":                 # around a recording state's window
                         send(recording=recording_now())
                         continue
                     if state == "probe":                 # around a visible state's window
                         send(page=page_reading(window.evaluate_js(PAGE_READ_JS)))
                         continue
                     started = {}
-                    for step in steps(state, ws.recording_active()):
+                    for step in steps(state, ws.recording_active(), holder.get("drafts")):
                         if step == "restore":
                             window.restore()
                         elif step == "discard":          # never imported or kept
                             ws.discard_recording()
                         elif step.startswith("show:"):
                             window.evaluate_js(f"window.workspace.show('{step[5:]}')")
-                        elif step == "record":
-                            started["consent"] = record(window)
+                        elif step in ("record", "record:drafts"):
+                            started["consent"] = record(window, step == "record:drafts")
                         elif step == "minimise":
                             window.minimize()
                     if state == "quit":
                         break
-                    if state in RECORDING_STATES:
+                    if state in CAPTURE_STATES:
                         send(state=state, recording=recording_now(), **started)
                     else:
                         send(state=state)
@@ -1862,16 +2107,30 @@ def child(args):
                     pass
                 window.destroy()
 
-        def record(window):
+        def record(window, live=False):
             """Start a recording as a person does: microphone recording on in
-            Settings, then Record. The bridge asks the app's own recording
-            question; consent_answerer says yes, and the bridge makes the
-            consent record that start_recording requires and keeps. Where
-            policy turns the confirmation off, nothing is asked and no record
-            is made (consent_outcome). Returns that outcome for the report."""
+            Settings (and live drafts on or off, as `live` says), then Record.
+            The bridge asks the app's own recording question; consent_answerer
+            says yes, and the bridge makes the consent record that
+            start_recording requires and keeps. Where policy turns the
+            confirmation off, nothing is asked and no record is made
+            (consent_outcome). With live drafts on it records the public
+            speech and waits for the draft worker to run. Returns the
+            confirmation's outcome for the report."""
             waits = RECORD_WAITS_S                # the parent allows for these (step_timeout)
-            if not ws.settings["microphone"]:
-                ws.set_settings({"microphone": True})
+            if live and speech is None:
+                raise RuntimeError("live drafts need the public speech (--speech)")
+            feed["blocks"] = speech if live else blocks
+            holder["drafts"] = live
+            changes = {} if ws.settings["microphone"] else {"microphone": True}
+            try:
+                drafting = bool(ws.settings["live_drafts"])
+            except KeyError:                      # an app from before live drafts
+                drafting = False
+            if drafting != live:
+                changes["live_drafts"] = live
+            if changes:
+                ws.set_settings(changes)
                 window.evaluate_js("window.workspace.show('meetings')")
             wait_for(window, "(() => { const b = document.getElementById('rec-start');"
                              " return !!b && !b.hidden && !b.disabled; })()", bool,
@@ -1893,13 +2152,30 @@ def child(args):
                 time.sleep(0.1)
             if "sounddevice" in sys.modules:
                 raise RuntimeError("an audio device library was loaded")
-            log(f"recording synthetic audio (confirmation {outcome})")
+            if live:                              # the draft worker loads, then drafts
+                end = time.monotonic() + DRAFT_WAIT_S
+                while ((recording_now() or {}).get("draft") or {}).get("state") != DRAFT_RUNNING:
+                    if time.monotonic() > end:
+                        draft = (recording_now() or {}).get("draft") or {}
+                        raise TimeoutError(f"live drafts did not start running in "
+                                           f"{DRAFT_WAIT_S} s ({draft.get('state') or 'off'})")
+                    time.sleep(0.2)
+            log(f"recording {'public speech with live drafts on' if live else 'synthetic audio'}"
+                f" (confirmation {outcome})")
             return outcome
 
         def recording_now():
-            """The open recording's state and length for the parent, or None."""
-            rec = ws.recording_status().get("recording")
-            return {"state": rec["state"], "seconds": rec["seconds"]} if rec else None
+            """The open recording's state and length for the parent, and its
+            live drafts' state, phrase count and session number (never their
+            text), or None."""
+            status = ws.recording_status()
+            rec, draft = status.get("recording"), status.get("draft")
+            if not rec:
+                return None
+            out = {"state": rec["state"], "seconds": rec["seconds"]}
+            if isinstance(draft, dict):
+                out["draft"] = {k: draft.get(k) for k in ("state", "count", "generation")}
+            return out
 
         # make_api's confirm seam (for tests and this tool; the app passes none):
         # the recording question is answered here, never shown on screen.
@@ -1938,14 +2214,26 @@ def main():
                         "evidence (tools/evidence.py); exit 1 unless that evidence passes")
     parser.add_argument("--compare", help="a local copy of an earlier release's "
                         "evidence-perf.json: list the figures both have, side by side")
+    parser.add_argument("--speech", help="a public recording (such as the AMI meeting ES2004a, "
+                        "CC BY 4.0), never a real meeting: the drafts-on states record it")
+    parser.add_argument("--speech-start", type=float, default=0.0,
+                        help="seconds into --speech where the excerpt starts (default 0)")
+    parser.add_argument("--speech-seconds", type=float, default=SPEECH_SECONDS,
+                        help=f"the excerpt's length, looped (default {SPEECH_SECONDS:g})")
+    parser.add_argument("--draft-models", help="a model folder holding Parakeet v2 and its "
+                        "speech detector, as the app downloads them (only read)")
     parser.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--store-child", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--speech-child", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--speech-pcm", help=argparse.SUPPRESS)
     parser.add_argument("--workdir", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.child:
         return child(args)
     if args.store_child:
         return store_child(args)
+    if args.speech_child:
+        return speech_child(args)
     if not args.report:
         parser.error("give a report path")
     if args.compare:                    # a bad file stops now, not after the run
@@ -1954,6 +2242,9 @@ def main():
         except (OSError, ValueError) as exc:
             parser.error(f"--compare: {exc}")
     before = evidence.prepare(parser, args, Path(args.app) if args.app else None)
+    problem = drafts_input_problem(args)
+    if problem:                         # stops now, not after the run
+        parser.error(problem)
     rc = parent(args)
     if args.zip:
         run = run_shape(args)
@@ -1962,6 +2253,27 @@ def main():
                                  and BUDGETS.exists(), before=before, run=run)
         rc = rc or (0 if ev["pass"] else 1)
     return rc
+
+
+def drafts_input_problem(args):
+    """Why the drafts-on states' input cannot be used, or None. A release run
+    needs it: its budgets would otherwise count as not measured after hours."""
+    speech, models = args.speech, args.draft_models
+    if bool(speech) != bool(models):
+        return "--speech and --draft-models go together"
+    if not speech:
+        return None if args.quick else (
+            "a release run also measures recording with live drafts on: give --speech (a "
+            "public recording, such as the AMI meeting ES2004a) and --draft-models (a model "
+            "folder holding Parakeet v2)")
+    if not Path(speech).is_file():
+        return "--speech is not a file"
+    if not Path(models).is_dir():
+        return "--draft-models is not a folder"
+    if not (math.isfinite(args.speech_start) and math.isfinite(args.speech_seconds)
+            and args.speech_start >= 0 and args.speech_seconds >= 1):
+        return "--speech-start must be 0 or more and --speech-seconds at least 1"
+    return None
 
 
 def run_shape(args):

@@ -106,22 +106,27 @@ class BudgetTests(unittest.TestCase):
             limit = budgets.get(state, {}).get("cpu_percent_of_one_core")
             self.assertIsNotNone(limit, f"{state}: no CPU budget in {path.name}")
 
-    def test_drafts_on_budgets_wait_for_perf_check_states(self):
+    def test_drafts_on_budgets_are_the_owners_and_gate(self):
         # #104: the owner set budgets for recording with drafts on (25 Oct 2026,
-        # #189 sitting 8): 40% of one core visible, about 10% minimised. perf_check
-        # has no drafts-on states yet (#104 slice 4), so the figures wait in
-        # "pending_budgets", which compare() never reads. When perf_check gains
-        # a state, it must move into "budgets" (the test above then needs it).
+        # #189 sitting 8): 40% of one core visible, about 10% minimised. They
+        # waited in "pending_budgets", which compare() never read, until
+        # perf_check gained the drafts-on states (#104 slice 4); now they are
+        # in "budgets", compared like the others, and only the owner moves them.
         path = ROOT / "docs" / "perf-budgets.json"
         data = json.loads(path.read_text(encoding="utf-8"))
-        pending = {state: limits for state, limits in data["pending_budgets"].items()
-                   if not state.startswith("_")}
+        self.assertEqual(("recording-drafts", "recording-drafts-minimised"),
+                         perf_check.DRAFT_STATES)
+        for state in perf_check.DRAFT_STATES:
+            self.assertIn(state, perf_check.STATES)
         self.assertEqual({"recording-drafts": {"cpu_percent_of_one_core": 40.0},
                           "recording-drafts-minimised": {"cpu_percent_of_one_core": 10.0}},
-                         pending)
-        for state in pending:
-            self.assertNotIn(state, perf_check.STATES, f"{state}: measured, move it to budgets")
-            self.assertNotIn(state, data["budgets"], f"{state}: in both sections")
+                         {s: data["budgets"][s] for s in perf_check.DRAFT_STATES})
+        self.assertNotIn("pending_budgets", data)       # nothing set waits ungated
+        self.assertIn("recording-drafts", data["_budget_notes"])
+        over, missing = perf_check.compare(
+            {"recording-drafts": {"cpu_percent_of_one_core": 40.1}}, data["budgets"])
+        self.assertIn(("recording-drafts", "cpu_percent_of_one_core", 40.1, 40.0), over)
+        self.assertIn(("recording-drafts-minimised", "cpu_percent_of_one_core"), missing)
 
 
 class ParentTests(unittest.TestCase):
@@ -379,7 +384,11 @@ class ConsentAnswerTests(unittest.TestCase):
 class StateSequenceTests(unittest.TestCase):
     def test_recording_states_come_after_the_idle_ones(self):
         self.assertEqual(("meetings", "settings", "minimised"), perf_check.STATES[:3])
-        self.assertEqual(perf_check.RECORDING_STATES, perf_check.STATES[3:])
+        self.assertEqual(perf_check.IDLE_STATES, perf_check.STATES[:3])
+        # Drafts off first, then drafts on (#104).
+        self.assertEqual(perf_check.RECORDING_STATES + perf_check.DRAFT_STATES,
+                         perf_check.STATES[3:])
+        self.assertEqual(perf_check.CAPTURE_STATES, perf_check.STATES[3:])
 
     def test_each_state_from_idle(self):
         steps = perf_check.steps
@@ -413,27 +422,56 @@ class StateSequenceTests(unittest.TestCase):
     def test_the_leak_check_comes_before_any_recording(self):
         self.assertEqual(["meetings", "settings", "minimised", "leak", "recording",
                           "recording-minimised"], perf_check.plan(30, True))
-        self.assertEqual(list(perf_check.STATES), perf_check.plan(0, True))
+        self.assertEqual(["meetings", "settings", "minimised", "leak", "recording",
+                          "recording-minimised", "recording-drafts",
+                          "recording-drafts-minimised"], perf_check.plan(30, True, True))
+        self.assertEqual(list(perf_check.STATES), perf_check.plan(0, True, True))
         # Managed policy turns microphone recording off: idle states only.
         self.assertEqual(["meetings", "settings", "minimised", "leak"],
                          perf_check.plan(30, False))
+        self.assertEqual(["meetings", "settings", "minimised", "leak"],
+                         perf_check.plan(30, False, True))
 
-    def test_a_full_run_records_once_and_ends_with_nothing_open(self):
+    def test_a_full_run_records_twice_and_ends_with_nothing_open(self):
         # The parent's order (plan): the idle states, the leak check's
-        # Meetings view, the recording states, quit.
-        recording, opened, seen = False, 0, {}
-        for action in (*perf_check.plan(30, True), "quit"):
+        # Meetings view, the recording states, the drafts-on states, quit.
+        # One recording for each pair, the first discarded before the second.
+        recording, drafts, opened, seen = False, False, [], {}
+        for action in (*perf_check.plan(30, True, True), "quit"):
             state = "meetings" if action == "leak" else action
-            for step in perf_check.steps(state, recording):
-                if step == "record":
-                    recording, opened = True, opened + 1
+            for step in perf_check.steps(state, recording, drafts):
+                if step in ("record", "record:drafts"):
+                    recording, drafts = True, step == "record:drafts"
+                    opened.append(step)
                 elif step == "discard":
-                    recording = False
-            seen.setdefault(action, []).append(recording)
-        self.assertEqual(1, opened)
-        self.assertEqual({"meetings": [False], "settings": [False], "minimised": [False],
-                          "leak": [False], "recording": [True],
-                          "recording-minimised": [True], "quit": [False]}, seen)
+                    recording = drafts = False
+            seen.setdefault(action, []).append((recording, drafts))
+        self.assertEqual(["record", "record:drafts"], opened)
+        off, plain, live = (False, False), (True, False), (True, True)
+        self.assertEqual({"meetings": [off], "settings": [off], "minimised": [off],
+                          "leak": [off], "recording": [plain], "recording-minimised": [plain],
+                          "recording-drafts": [live], "recording-drafts-minimised": [live],
+                          "quit": [off]}, seen)
+
+    def test_the_drafts_on_states_record_afresh_with_live_drafts(self):
+        steps = perf_check.steps
+        # From the drafts-off recording: discarded, then one with live drafts.
+        self.assertEqual(["restore", "discard", "show:meetings", "record:drafts"],
+                         steps("recording-drafts", True, False))
+        self.assertEqual(["restore", "show:meetings", "record:drafts"],
+                         steps("recording-drafts", False))
+        self.assertEqual(["restore", "show:meetings"], steps("recording-drafts", True, True))
+        self.assertEqual(["restore", "show:meetings", "minimise"],
+                         steps("recording-drafts-minimised", True, True))
+        # Its minimised state never starts one, nor keeps a drafts-off one.
+        for recording, drafts in ((False, False), (True, False)):
+            with self.assertRaises(perf_check.LostRecording):
+                steps("recording-drafts-minimised", recording, drafts)
+        with self.assertRaises(perf_check.LostRecording):
+            steps("recording-minimised", True, True)
+        # Leaving the drafts-on recording discards it.
+        self.assertEqual(["restore", "discard", "show:meetings"], steps("meetings", True, True))
+        self.assertEqual(["discard"], steps("quit", True, True))
 
     def test_a_state_that_starts_a_recording_waits_for_it(self):
         # Review of 51a7605: the child's own waits while starting a recording
@@ -442,6 +480,9 @@ class StateSequenceTests(unittest.TestCase):
         for state in perf_check.RECORDING_STATES:
             self.assertGreaterEqual(perf_check.step_timeout(state),
                                     perf_check.STEP_TIMEOUT_S + child, state)
+        for state in perf_check.DRAFT_STATES:     # and its draft worker to run (#104)
+            self.assertGreaterEqual(perf_check.step_timeout(state), perf_check.STEP_TIMEOUT_S
+                                    + child + perf_check.DRAFT_WAIT_S, state)
         for state in perf_check.IDLE_STATES:
             self.assertEqual(perf_check.STEP_TIMEOUT_S, perf_check.step_timeout(state))
 
@@ -456,18 +497,23 @@ class StateSequenceTests(unittest.TestCase):
     def test_the_release_run_time_is_stated_from_its_shape(self):
         # Review of 51a7605: five states made "about 90 minutes" wrong. The
         # floor leaves out start-up and seeding; the worker waits about half
-        # of WORKER_WAIT_S (its 120 s idle unload).
+        # of WORKER_WAIT_S (its 120 s idle unload). The drafts-on states (#104)
+        # made seven, and "two and a quarter hours" wrong in turn.
         states = len(perf_check.STATES) * (perf_check.RELEASE_SETTLE_S
                                            + perf_check.RELEASE_WINDOW_S)
         floor = (perf_check.RELEASE_RUNS * (states + perf_check.WORKER_WAIT_S / 2)
                  + perf_check.LEAK_BUDGET_MINUTES * 60 + perf_check.RELEASE_SETTLE_S)
-        self.assertGreater(floor / 3600, 2.0)
-        self.assertLess(floor / 3600, 2.5)
-        phrase = "about two and a quarter hours"
-        self.assertIn(phrase, " ".join(perf_check.HELP.split()))
-        releasing = (ROOT / "docs" / "RELEASING.md").read_text(encoding="utf-8")
+        self.assertGreater(floor / 3600, 2.5)
+        self.assertLess(floor / 3600, 3.0)
+        phrase = "about two and three-quarter hours"
+        help_text = " ".join(perf_check.HELP.split())
+        self.assertIn(phrase, help_text)
+        releasing = " ".join((ROOT / "docs" / "RELEASING.md").read_text(
+            encoding="utf-8").split())
         self.assertIn(phrase, releasing)
-        self.assertNotIn("about 90 minutes", releasing)
+        for stale in ("about 90 minutes", "about two and a quarter hours"):
+            self.assertNotIn(stale, releasing)
+            self.assertNotIn(stale, help_text)
 
     def test_the_help_names_the_states_and_the_synthetic_input(self):
         for state in perf_check.STATES:
@@ -496,6 +542,189 @@ class HeldRecordingTests(unittest.TestCase):
         for b, a in cases:
             with self.assertRaises(perf_check.Unmeasurable, msg=repr((b, a))):
                 perf_check.check_held("recording-minimised", b, a, 80.0)
+
+
+def drafting(count, state="running", generation=3, seconds=10.0):
+    """The child's report of a recording with live drafts (recording_now())."""
+    return {"state": "recording", "seconds": seconds,
+            "draft": {"state": state, "count": count, "generation": generation}}
+
+
+class DraftingTests(unittest.TestCase):
+    """#104 slice 4: a drafts-on window counts only if live drafts ran through
+    it and made draft text, so the speech model's cost is in its figures."""
+
+    def test_drafts_running_and_making_text_pass(self):
+        self.assertEqual(7, perf_check.check_drafting(
+            "recording-drafts", drafting(5), drafting(12, seconds=70.0)))
+        self.assertEqual("running", perf_check.DRAFT_RUNNING)
+        from workspace import drafts
+        self.assertEqual(drafts.RUNNING, perf_check.DRAFT_RUNNING)
+
+    def test_drafts_not_running_or_making_nothing_are_unmeasurable(self):
+        cases = [
+            (drafting(5, state="starting"), drafting(9), "were starting, not running"),
+            (drafting(5), drafting(5, state="failed"), "were failed, not running, after"),
+            (drafting(5), {"state": "recording", "seconds": 70.0}, "were off, not running"),
+            (None, drafting(9), "were off, not running, as the window began"),
+            (drafting(5), None, "were off, not running, after"),
+            (drafting(5), drafting(5), "made no draft text during recording-drafts"),
+            (drafting(5), drafting(2, generation=4), "started again during"),
+            (drafting(None), drafting(9), "gave no count"),
+            (drafting(5), drafting(True), "gave no count"),
+        ]
+        for before, after, why in cases:
+            with self.subTest(why=why), self.assertRaises(perf_check.Unmeasurable) as caught:
+                perf_check.check_drafting("recording-drafts", before, after)
+            self.assertIn(why, str(caught.exception))
+
+    def test_only_counts_and_states_are_read(self):
+        # P2, P3: the child sends the draft's state, count and session number,
+        # never its text; the check reads nothing else.
+        before = drafting(5)
+        before["draft"]["phrases"] = [{"text": "SYNTHETIC-MARKER"}]
+        self.assertEqual(4, perf_check.check_drafting("recording-drafts", before, drafting(9)))
+
+
+class DraftsInputTests(unittest.TestCase):
+    """#104 slice 4: the drafts-on states' public speech and model copy."""
+
+    def test_speech_is_resampled_to_the_microphone_rate(self):
+        import numpy as np
+        audio = np.sin(np.arange(16000 * 3) / 16000 * 2 * np.pi * 200).astype(np.float32) * 0.5
+        pcm = perf_check.to_device_rate(audio, 48000, start_s=1.0, seconds=1.5)
+        self.assertEqual(np.int16, pcm.dtype)
+        self.assertEqual(72000, len(pcm))                 # 1.5 s at 48 kHz
+        self.assertAlmostEqual(0.5 * 32768, float(np.abs(pcm).max()), delta=200)
+        # From start_s: the first sample is audio[16000], scaled.
+        self.assertAlmostEqual(float(audio[16000]) * 32768, float(pcm[0]), delta=1)
+        # Clipped, never wrapped.
+        loud = np.full(16000, 2.0, dtype=np.float32)
+        self.assertEqual(32767, int(perf_check.to_device_rate(loud, 48000, 0, 1).max()))
+        with self.assertRaises(ValueError):           # less than a second left
+            perf_check.to_device_rate(audio, 48000, start_s=2.5)
+
+    def test_speech_blocks_are_shaped_like_sounddevice_and_copy_nothing(self):
+        import numpy as np
+        pcm = np.arange(4800 * 3 + 100, dtype=np.int16)
+        blocks = perf_check.speech_blocks(pcm)
+        self.assertEqual(3, len(blocks))                  # the partial block is left out
+        self.assertEqual((4800, 1), blocks[0].shape)
+        self.assertEqual(4800, int(blocks[1][0, 0]))
+        self.assertTrue(all(np.shares_memory(b, pcm) for b in blocks))
+        with self.assertRaises(ValueError):
+            perf_check.speech_blocks(pcm[:100])
+
+    def test_the_models_are_copied_with_their_record_and_times(self):
+        import os
+        import tempfile
+        from types import SimpleNamespace
+        spec = SimpleNamespace(family="parakeet", folder="model-x",
+                               files=[SimpleNamespace(name="a.onnx"),
+                                      SimpleNamespace(name="vocab.txt")])
+        bare = SimpleNamespace(family="parakeet", folder="vad-y",
+                               files=[SimpleNamespace(name="v.onnx")])
+
+        def model_dir(s, root):
+            return Path(root) / s.family / s.folder
+        with tempfile.TemporaryDirectory() as tmp:
+            source, dest = Path(tmp) / "source", Path(tmp) / "dest"
+            for s, names in ((spec, ("a.onnx", "vocab.txt", ".verified.json", "extra.bin")),
+                             (bare, ("v.onnx",))):
+                model_dir(s, source).mkdir(parents=True)
+                for name in names:
+                    path = model_dir(s, source) / name
+                    path.write_bytes(b"synthetic " + name.encode())
+                    os.utime(path, (1_600_000_000, 1_600_000_000))
+            before = {p: p.stat().st_mtime for p in source.rglob("*") if p.is_file()}
+            copied = perf_check.copy_models(source, dest, (spec, bare), model_dir,
+                                            ".verified.json")
+            got = sorted(str(p.relative_to(dest)).replace("\\", "/")
+                         for p in dest.rglob("*") if p.is_file())
+            self.assertEqual(["parakeet/model-x/.verified.json", "parakeet/model-x/a.onnx",
+                              "parakeet/model-x/vocab.txt", "parakeet/vad-y/v.onnx"], got)
+            self.assertEqual(1_600_000_000, (dest / "parakeet/model-x/a.onnx").stat().st_mtime)
+            self.assertEqual(sum(p.stat().st_size for p in dest.rglob("*") if p.is_file()),
+                             copied)
+            # The folder named is only read.
+            self.assertEqual(before, {p: p.stat().st_mtime for p in source.rglob("*")
+                                      if p.is_file()})
+            (model_dir(bare, source) / "v.onnx").unlink()
+            with self.assertRaises(RuntimeError) as caught:
+                perf_check.copy_models(source, Path(tmp) / "again", (spec, bare), model_dir,
+                                       ".verified.json")
+            self.assertEqual("--draft-models holds no complete vad-y (1 of its files missing)",
+                             str(caught.exception))
+            self.assertNotIn(tmp, str(caught.exception))
+
+    def test_the_draft_models_are_the_apps(self):
+        # The child copies what the app's draft worker loads: Parakeet v2 and
+        # its speech detector (workspace.drafts, asr_engines).
+        from workspace import asr_engines, drafts
+        self.assertEqual(asr_engines.PARAKEET_V2, drafts.DRAFT_MODEL)
+        source = (ROOT / "tools" / "perf_check.py").read_text(encoding="utf-8")
+        self.assertIn("(asr_engines.PARAKEET_MODELS[drafts.DRAFT_MODEL], asr_engines.SILERO_VAD)",
+                      source)
+        self.assertIn("asr_engines.VERIFIED_MARKER", source)
+
+    def test_the_speech_child_is_this_tool_without_a_window(self):
+        import tempfile
+        from types import SimpleNamespace
+        seen = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            args = SimpleNamespace(app=None, zip=None, speech=str(Path(tmp) / "public.wav"),
+                                   speech_start=30.0, speech_seconds=120.0)
+
+            def fake_run(cmd, **kw):
+                seen["command"] = cmd
+                (Path(tmp) / perf_check.SPEECH_FILE).write_bytes(b"\0\0" * 4800)
+                out = perf_check.PREFIX + json.dumps({"samples": 4800}) + "\n"
+                return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+            with mock.patch.object(perf_check.subprocess, "run", side_effect=fake_run):
+                self.assertEqual(Path(tmp) / perf_check.SPEECH_FILE,
+                                 perf_check.speech_step(args, Path(tmp)))
+            command = seen["command"]
+            self.assertIn("--speech-child", command)
+            self.assertNotIn("--child", command)
+            self.assertEqual("30.0", command[command.index("--speech-start") + 1])
+            self.assertEqual("120.0", command[command.index("--speech-seconds") + 1])
+
+            def failed(cmd, **kw):
+                return subprocess.CompletedProcess(
+                    cmd, 1, stdout="", stderr=f"cannot read {tmp}\\public.wav")
+            (Path(tmp) / perf_check.SPEECH_FILE).unlink()
+            with mock.patch.object(perf_check.subprocess, "run", side_effect=failed), \
+                    self.assertRaises(RuntimeError) as caught:
+                perf_check.speech_step(args, Path(tmp))
+            self.assertIn("the public speech could not be decoded (exit 1)",
+                          str(caught.exception))
+            self.assertNotIn(tmp, str(caught.exception))      # no path in the report (P3)
+
+    def test_a_release_run_needs_the_drafts_input(self):
+        import tempfile
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp:
+            wav = Path(tmp) / "public.wav"
+            wav.write_bytes(b"RIFF")
+
+            def problem(quick, speech=None, models=None, start=0.0, seconds=120.0):
+                return perf_check.drafts_input_problem(SimpleNamespace(
+                    quick=quick, speech=speech, draft_models=models, speech_start=start,
+                    speech_seconds=seconds))
+            self.assertIsNone(problem(True))                  # --quick: left out, said so
+            self.assertIn("a release run also measures recording with live drafts on",
+                          problem(False))
+            self.assertEqual("--speech and --draft-models go together",
+                             problem(True, speech=str(wav)))
+            self.assertEqual("--speech and --draft-models go together",
+                             problem(False, models=tmp))
+            self.assertIsNone(problem(False, str(wav), tmp))
+            self.assertEqual("--speech is not a file", problem(False, tmp, tmp))
+            self.assertEqual("--draft-models is not a folder", problem(False, str(wav), str(wav)))
+            for start, seconds in ((-1.0, 120.0), (0.0, 0.5), (float("nan"), 120.0),
+                                   (0.0, float("inf"))):
+                self.assertIn("--speech-seconds at least 1",
+                              problem(False, str(wav), tmp, start, seconds))
 
 
 class ConsentOutcomeTests(unittest.TestCase):
@@ -622,9 +851,9 @@ class FakeChild:
             if self._display is not None:
                 self._display.measuring = command
             msg = {"state": command}
-            if command in perf_check.RECORDING_STATES:
+            if command in perf_check.CAPTURE_STATES:
                 msg["recording"] = {"state": "recording", "seconds": 1.0}
-                if command == perf_check.RECORDING_STATES[0]:
+                if command in (perf_check.RECORDING_STATES[0], perf_check.DRAFT_STATES[0]):
                     msg["consent"] = "asked and recorded"
             self._send(msg)
 
@@ -650,12 +879,12 @@ class OneRunTests(unittest.TestCase):
     READY = {"imports_s": 1.0, "window_to_interactive_s": 1.0, "startup_s": 2.0,
              "recording_allowed": True}
 
-    def run_child(self, child, leak_minutes=0, held=None, display=None):
+    def run_child(self, child, leak_minutes=0, held=None, display=None, speech=None):
         from types import SimpleNamespace
         from unittest import mock
         figures = lambda *a: {"cpu_percent_of_one_core": 1.0, "private_mb": 700}  # noqa: E731
         snap = ([], {1: {"private": 2**20}})
-        args = SimpleNamespace(app=None, zip=None)
+        args = SimpleNamespace(app=None, zip=None, draft_models="models" if speech else None)
         patches = [mock.patch.object(perf_check.subprocess, "Popen", return_value=child),
                    mock.patch.object(perf_check, "Job"),
                    mock.patch.object(perf_check, "measure", side_effect=figures),
@@ -664,11 +893,13 @@ class OneRunTests(unittest.TestCase):
                    mock.patch("builtins.print")]
         if held is not None:          # the scripted recording does not really grow
             patches.append(mock.patch.object(perf_check, "check_held", return_value=held))
+        started = []
         for patch in patches:
-            patch.start()
+            started.append(patch.start())
             self.addCleanup(patch.stop)
+        self.popen, self.measured = started[0], started[2]
         display = display or child._display or FakeDisplay()
-        return perf_check.one_run(args, 0, 0, leak_minutes, display=display)
+        return perf_check.one_run(args, 0, 0, leak_minutes, display=display, speech=speech)
 
     def test_the_leak_check_runs_before_the_recording_states(self):
         child = FakeChild(self.READY, lambda c: {"state": "recording", "seconds": 61.0})
@@ -696,6 +927,86 @@ class OneRunTests(unittest.TestCase):
         self.assertEqual(list(perf_check.RECORDING_STATES), result["not_measured_by_policy"])
         for state in perf_check.IDLE_STATES:
             self.assertIn(state, result)
+
+    # -- the drafts-on states (#104 slice 4) --------------------------------------------
+
+    DRAFTS_READY = dict(READY, drafts_allowed=True)
+
+    @staticmethod
+    def drafting_child(ready=None, made=7, state="running", **kw):
+        """A child whose drafts-on recording makes `made` phrases between each
+        check, so a window (one check before, one after) makes `made`."""
+        counts = {"n": 0}
+
+        def check(commands):
+            current = [c for c in commands if c not in ("probe", "check")][-1]
+            if current in perf_check.DRAFT_STATES:
+                counts["n"] += made
+                return drafting(counts["n"], state=state, seconds=61.0)
+            return {"state": "recording", "seconds": 61.0}
+        return FakeChild(ready or OneRunTests.DRAFTS_READY, check, **kw)
+
+    def test_the_drafts_on_states_record_speech_with_live_drafts(self):
+        child = self.drafting_child()
+        result = self.run_child(child, held=60.0, speech=Path("speech.pcm"))
+        # A check just before each drafts-on window (outside it) and after it.
+        self.assertEqual(["meetings", "probe", "probe", "settings", "probe", "probe",
+                          "minimised", "recording", "probe", "probe", "check",
+                          "recording-minimised", "check",
+                          "recording-drafts", "check", "probe", "probe", "check",
+                          "recording-drafts-minimised", "check", "check", "quit"],
+                         child.commands)
+        for state in perf_check.DRAFT_STATES:
+            self.assertEqual(7, result[state]["draft_phrases"], state)
+            self.assertEqual(60.0, result[state]["recorded_s"], state)
+        self.assertTrue(result["recording-drafts"]["drawing"]["drawn"])
+        self.assertEqual(60.0, result["recording-drafts"]["drawing"]["meter_draws_per_s"])
+        self.assertNotIn("drawing", result["recording-drafts-minimised"])
+        self.assertNotIn("not_measured_by_policy", result)
+        # The child gets the decoded speech and the model folder to copy from.
+        command = self.popen.call_args.args[0]
+        self.assertEqual("speech.pcm", command[command.index("--speech-pcm") + 1])
+        self.assertEqual("models", command[command.index("--draft-models") + 1])
+
+    def test_without_speech_the_drafts_on_states_are_not_measured(self):
+        child = self.drafting_child()
+        result = self.run_child(child, held=60.0)
+        for state in perf_check.DRAFT_STATES:
+            self.assertNotIn(state, child.commands)
+            self.assertNotIn(state, result)
+        self.assertNotIn("not_measured_by_policy", result)
+        self.assertNotIn("--speech-pcm", self.popen.call_args.args[0])
+
+    def test_live_drafts_off_by_policy_are_not_measured_by_policy(self):
+        child = self.drafting_child(ready=dict(self.READY, drafts_allowed=False))
+        result = self.run_child(child, held=60.0, speech=Path("speech.pcm"))
+        self.assertEqual(list(perf_check.DRAFT_STATES), result["not_measured_by_policy"])
+        self.assertIn("recording-minimised", result)
+        for state in perf_check.DRAFT_STATES:
+            self.assertNotIn(state, child.commands)
+        # Microphone recording off: every recording state, drafts on too.
+        child = self.drafting_child(ready=dict(self.DRAFTS_READY, recording_allowed=False))
+        result = self.run_child(child, held=60.0, speech=Path("speech.pcm"))
+        self.assertEqual(list(perf_check.CAPTURE_STATES), result["not_measured_by_policy"])
+
+    def test_drafts_that_made_no_text_are_unmeasurable(self):
+        # Synthetic or silent input, or a draft worker doing nothing, would
+        # leave the speech model's cost out of the figures.
+        child = self.drafting_child(made=0)
+        with self.assertRaises(perf_check.Unmeasurable) as caught:
+            self.run_child(child, held=60.0, speech=Path("speech.pcm"))
+        self.assertIn("live drafts made no draft text during recording-drafts",
+                      str(caught.exception))
+        self.assertNotIn("recording-drafts-minimised", child.commands)
+
+    def test_drafts_not_running_as_the_window_begins_stop_before_it(self):
+        child = self.drafting_child(state="failed")
+        with self.assertRaises(perf_check.Unmeasurable) as caught:
+            self.run_child(child, held=60.0, speech=Path("speech.pcm"))
+        self.assertIn("live drafts were failed, not running, as the window began in "
+                      "recording-drafts", str(caught.exception))
+        self.assertEqual("check", child.commands[-1])        # no window was measured
+        self.assertEqual(5, self.measured.call_count)        # the five states before it
 
 
 class DrawnWindowTests(unittest.TestCase):
@@ -768,9 +1079,11 @@ class DrawnWindowTests(unittest.TestCase):
                           "expected)"], got["problems"])
         self.assertTrue(self.report(fps=30)["drawn"])
         self.assertTrue(self.report(fps=60)["drawn"])
-        # Only the recording state has the level display drawing.
-        self.assertEqual(("recording",), perf_check.DRAWING_STATES)
-        self.assertEqual(("meetings", "settings", "recording"), perf_check.VISIBLE_STATES)
+        # Only the visible recording states have the level display drawing,
+        # with live drafts on too (#104: the draft text shows under it).
+        self.assertEqual(("recording", "recording-drafts"), perf_check.DRAWING_STATES)
+        self.assertEqual(("meetings", "settings", "recording", "recording-drafts"),
+                         perf_check.VISIBLE_STATES)
         self.assertTrue(set(perf_check.VISIBLE_STATES) <= set(perf_check.STATES))
 
     def test_display_states_during_a_window(self):
@@ -960,20 +1273,30 @@ class DrawnRunTests(unittest.TestCase):
 
     READY = OneRunTests.READY
 
-    def run_child(self, child, display):
-        return OneRunTests.run_child(self, child, held=60.0, display=display)
+    def run_child(self, child, display, speech=None):
+        return OneRunTests.run_child(self, child, held=60.0, display=display, speech=speech)
 
     def test_every_visible_window_records_how_it_was_drawn(self):
         display = FakeDisplay()
-        child = FakeChild(self.READY, lambda c: {"state": "recording", "seconds": 61.0},
-                          display=display)
-        result = self.run_child(child, display)
+        child = OneRunTests.drafting_child(display=display)
+        result = self.run_child(child, display, speech=Path("speech.pcm"))
+        self.assertIn("recording-drafts", perf_check.VISIBLE_STATES)      # #104
         for state in perf_check.VISIBLE_STATES:
             self.assertTrue(result[state]["drawing"]["drawn"], state)
-        self.assertEqual(120.0, result["recording"]["drawing"]["page_frames_per_s"])
-        self.assertEqual(60.0, result["recording"]["drawing"]["meter_draws_per_s"])
-        for state in ("minimised", "recording-minimised"):
+        for state in perf_check.DRAWING_STATES:
+            self.assertEqual(120.0, result[state]["drawing"]["page_frames_per_s"], state)
+            self.assertEqual(60.0, result[state]["drawing"]["meter_draws_per_s"], state)
+        for state in ("minimised", "recording-minimised", "recording-drafts-minimised"):
             self.assertNotIn("drawing", result[state])
+
+    def test_a_drafts_on_window_with_the_display_off_is_unmeasurable(self):
+        display = FakeDisplay(states={"recording-drafts": ["on", "off"]})
+        child = OneRunTests.drafting_child(display=display)
+        with self.assertRaises(perf_check.Unmeasurable) as caught:
+            self.run_child(child, display, speech=Path("speech.pcm"))
+        self.assertIn("recording-drafts was not drawn on screen (the display was off)",
+                      str(caught.exception))
+        self.assertNotIn("recording-drafts-minimised", child.commands)
 
     def test_a_window_with_the_display_off_is_unmeasurable(self):
         display = FakeDisplay(states={"recording": ["on", "off"]})
@@ -1030,17 +1353,18 @@ class DrawnRunTests(unittest.TestCase):
         once the display is kept on."""
         import tempfile
         from types import SimpleNamespace
-        child = FakeChild(self.READY, lambda c: {"state": "recording", "seconds": 61.0},
-                          page=page, display=display)
+        child = OneRunTests.drafting_child(page=page, display=display)
         figures = {"cpu_percent_of_one_core": 1.0, "private_mb": 700}
 
         def refresh_now():
             display.calls.append("refresh")
             return refresh[1]
         with tempfile.TemporaryDirectory() as tmp:
-            report = Path(tmp) / "perf.json"
+            report, speech = Path(tmp) / "perf.json", Path(tmp) / "public.wav"
+            speech.write_bytes(b"synthetic stand-in for a public recording")
             args = SimpleNamespace(quick=False, settle=0, window=0, runs=1, leak_minutes=0,
-                                   report=str(report), app=None, zip=None)
+                                   report=str(report), app=None, zip=None, speech=str(speech),
+                                   draft_models=tmp, speech_start=0.0, speech_seconds=120.0)
             env = {"machine": dict(MachineReportTests.FULL, display_refresh_hz=refresh[0])}
             with mock.patch.object(perf_check, "environment", return_value=env), \
                     mock.patch.object(perf_check, "display_watch", create=True,
@@ -1049,6 +1373,8 @@ class DrawnRunTests(unittest.TestCase):
                                       side_effect=refresh_now), \
                     mock.patch.object(perf_check, "store_step",      # #111 C7, no window
                                       return_value=dict(STORE)), \
+                    mock.patch.object(perf_check, "speech_step",     # #104, no window
+                                      return_value=Path(tmp) / "speech.pcm"), \
                     mock.patch.object(perf_check.subprocess, "Popen", return_value=child), \
                     mock.patch.object(perf_check, "Job"), \
                     mock.patch.object(perf_check, "measure",
@@ -1253,6 +1579,106 @@ class PolicyReportTests(unittest.TestCase):
         self.assertEqual(["off by policy"], report["recording_consent"])
         self.assertEqual([], report["not_measured_by_policy"])
         self.assertEqual(3.0, report["median"]["recording"]["cpu_percent_of_one_core"])
+
+
+class DraftsReportTests(unittest.TestCase):
+    """#104 slice 4: the drafts-on states' budgets gate a release run, and the
+    report names the public speech by its hash only."""
+
+    BUDGETS = {"recording-drafts": {"cpu_percent_of_one_core": 40.0},
+               "recording-drafts-minimised": {"cpu_percent_of_one_core": 10.0}}
+
+    def run_parent(self, quick, speech, figures=None, failure=None):
+        import tempfile
+        from types import SimpleNamespace
+        calls = []
+
+        def decoded(args, folder):
+            calls.append(("speech", Path(folder).is_dir()))
+            return Path(folder) / perf_check.SPEECH_FILE
+
+        def run(*a, **k):
+            calls.append(("run", k.get("speech") is not None))
+            if failure is not None:
+                raise failure
+            return dict(figures or {})
+        with tempfile.TemporaryDirectory() as tmp:
+            report, budget_file = Path(tmp) / "perf.json", Path(tmp) / "budgets.json"
+            budget_file.write_text(json.dumps({"budgets": self.BUDGETS}), encoding="utf-8")
+            wav = Path(tmp) / "ES2004a.Mix-Headset.wav"
+            wav.write_bytes(b"synthetic stand-in for a public recording")
+            args = SimpleNamespace(quick=quick, settle=0, window=0, runs=1, leak_minutes=0,
+                                   report=str(report), app=None, zip=None, compare=None,
+                                   speech=str(wav) if speech else None,
+                                   draft_models=tmp if speech else None,
+                                   speech_start=12.0, speech_seconds=120.0)
+            with mock.patch.object(perf_check, "environment", return_value={}), \
+                    mock.patch.object(perf_check, "display_watch", return_value=FakeDisplay()), \
+                    mock.patch.object(perf_check, "refresh_now", return_value=None), \
+                    mock.patch.object(perf_check, "store_step", return_value=dict(STORE)), \
+                    mock.patch.object(perf_check, "speech_step", side_effect=decoded), \
+                    mock.patch.object(perf_check, "one_run", side_effect=run), \
+                    mock.patch.object(perf_check, "BUDGETS", budget_file), \
+                    mock.patch("builtins.print"):
+                rc = perf_check.parent(args)
+            text = report.read_text(encoding="utf-8")
+            return rc, calls, json.loads(text), text, tmp
+
+    def test_quick_without_speech_leaves_them_out_and_says_so(self):
+        rc, calls, report, _, _ = self.run_parent(quick=True, speech=False)
+        self.assertEqual(0, rc)
+        self.assertEqual([("run", False)], calls)
+        for state in perf_check.DRAFT_STATES:
+            self.assertIn(state, report["not_asked_for"])
+        self.assertEqual([], report["not_measured"])
+        self.assertNotIn("drafts_input", report)
+
+    def test_a_release_run_without_them_is_not_measured(self):
+        # main() refuses to start one (drafts_input_problem); parent() alone
+        # still fails it rather than passing the budgets by leaving them out.
+        rc, _, report, _, _ = self.run_parent(quick=False, speech=False)
+        self.assertEqual(1, rc)
+        self.assertEqual([{"state": s, "metric": "cpu_percent_of_one_core"}
+                          for s in perf_check.DRAFT_STATES], report["not_measured"])
+
+    def test_with_speech_they_are_measured_and_compared(self):
+        figures = {"recording-drafts": {"cpu_percent_of_one_core": 41.0, "draft_phrases": 30},
+                   "recording-drafts-minimised": {"cpu_percent_of_one_core": 9.0,
+                                                  "draft_phrases": 28}}
+        rc, calls, report, text, tmp = self.run_parent(quick=True, speech=True,
+                                                       figures=figures)
+        self.assertEqual(1, rc)                           # 41% is over the owner's 40%
+        self.assertEqual([("speech", True), ("run", True)], calls)    # decoded once, first
+        self.assertEqual([{"state": "recording-drafts", "metric": "cpu_percent_of_one_core",
+                           "value": 41.0, "budget": 40.0}], report["over_budget"])
+        self.assertEqual(30, report["median"]["recording-drafts"]["draft_phrases"])
+        # The recording by its hash, never its name or path (P3).
+        import hashlib
+        self.assertEqual({"speech_sha256": hashlib.sha256(
+                              b"synthetic stand-in for a public recording").hexdigest(),
+                          "start_s": 12.0, "seconds": 120.0, "rate": perf_check.SYNTHETIC_RATE,
+                          "block_s": perf_check.SYNTHETIC_BLOCK_S,
+                          "paced": "real time, looped"}, report["drafts_input"])
+        self.assertNotIn("ES2004a", text)
+        self.assertNotIn(Path(tmp).name, text)
+        self.assertNotIn(perf_check.DRAFT_STATES[0], report["not_asked_for"])
+
+    def test_the_decoded_speech_is_removed_even_when_a_run_fails(self):
+        import tempfile
+        made, real = [], tempfile.mkdtemp
+
+        def mkdtemp(*a, **k):
+            made.append(Path(real(*a, **k)))
+            return str(made[-1])
+        with mock.patch.object(perf_check.tempfile, "mkdtemp", side_effect=mkdtemp):
+            rc, _, report, _, _ = self.run_parent(
+                quick=True, speech=True,
+                failure=perf_check.Unmeasurable("the window lost its recording"))
+        self.assertEqual(2, rc)
+        self.assertEqual("the window lost its recording", report["error"])
+        speech = [p for p in made if p.name.startswith("unminute-speech-")]
+        self.assertEqual(1, len(speech))                  # the decoded speech's folder
+        self.assertFalse(speech[0].exists())
 
 
 # -- the machine it ran on (#121: no named reference machine) -------------------------
