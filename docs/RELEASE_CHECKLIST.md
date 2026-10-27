@@ -229,3 +229,5 @@ Findings:
 ## Publishing (when authorised)
 
 Follow "Before cutting a release" and "Cutting a release" in [RELEASING.md](RELEASING.md). That is the only copy of the steps. If a release has to be withdrawn, the runbook is in the same file.
+
+- [ ] **Straight after publishing:** in a docs pull request, set the "newest release" lines (README.md, docs/WORKSPACE_GUIDE.md, docs/IT_DEPLOYMENT.md, docs/PRIVACY_IMPACT_ASSESSMENT_DRAFT.md) to the published version, remove each "Not in vX" marker for what shipped and move the rest to the new version, and fold into the release's CHANGELOG.md section any `changelog.d/` fragment that shipped in the tagged commit but is not in it, worded as the published notes are (#421).
