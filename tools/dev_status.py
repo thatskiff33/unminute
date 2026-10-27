@@ -249,9 +249,11 @@ def trusted(item):
 
 def notes_of(pr):
     """The text of a PR's comments and reviews by accounts with write access, as
-    GitHub shows it. Anyone else's comment never counts as a record."""
+    GitHub shows it. Anyone else's comment never counts as a record, and nor does
+    a dismissed review (#442): dismissing it withdraws it."""
     return [visible(item.get("body")) for item in
-            (pr.get("comments") or []) + (pr.get("reviews") or []) if trusted(item)]
+            (pr.get("comments") or []) + (pr.get("reviews") or [])
+            if trusted(item) and str(item.get("state") or "").upper() != "DISMISSED"]
 
 
 def names(value):
