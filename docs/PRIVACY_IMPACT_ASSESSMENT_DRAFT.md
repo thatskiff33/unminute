@@ -2,7 +2,7 @@
 
 **Status: draft.** This is a starting point for an organisation that deploys Unminute to write its own privacy impact assessment. It records facts about the software: what it stores, where, how it is protected, how long it is kept, who can reach it and what leaves the device. It does not assess those facts against any law, standard or policy, and it reaches no conclusions. That assessment, and every decision in the last section, belongs to the deploying organisation.
 
-It describes the `main` branch. The newest release, v0.5.0-preview.4 (27 October 2026), does not differ from it in anything this draft describes. Versions before v0.5.0-preview.4 encrypt nothing themselves. The technical detail behind each statement is in [SECURITY_MODEL.md](SECURITY_MODEL.md) (threats, controls and the data inventory) and [ENCRYPTION.md](ENCRYPTION.md); when they differ from this draft, they are the source.
+It describes the `main` branch as at 27 October 2026. The newest release, v0.5.0-preview.4 (27 October 2026), does not differ from it in anything this draft describes. Versions before v0.5.0-preview.4 encrypt nothing themselves. The technical detail behind each statement is in [SECURITY_MODEL.md](SECURITY_MODEL.md) (threats, controls and the data inventory) and [ENCRYPTION.md](ENCRYPTION.md); when they differ from this draft, they are the source.
 
 ## What Unminute does
 

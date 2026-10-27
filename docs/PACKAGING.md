@@ -209,7 +209,7 @@ Rules:
 - Deploy a per-user install in **user** context. The gate checks the signed-in user's workspace, and in System context it would see none. A machine install (B6b) has no install-time gate: each user's start decides ("Launch-time hand-over" below).
 - A workspace that exists but cannot be read (damaged or locked) also makes the update wait, with exit code 5. It is never treated as a fresh install.
 - The check reads only plain counts and needs no encryption key (#111 C2b-2), so it works, and gives the same answer, when Windows cannot unlock the user's key. A first start whose key cannot be protected leaves no workspace, so the check sees none.
-- Schema 2 (encryption at rest, #111 phase C) ships as one release, once phase C is complete (through C7; [RELEASING.md](RELEASING.md), "Before cutting a release"). A version before it cannot open a schema-2 workspace (exit code 6, as for any downgrade); going back means moving the workspace folder aside first.
+- Schema 2 (encryption at rest, #111 phase C) came in one release, v0.5.0-preview.4, once phase C was complete (through C7; [RELEASING.md](RELEASING.md), "Before cutting a release"). A version before it cannot open a schema-2 workspace (exit code 6, as for any downgrade); going back means moving the workspace folder aside first.
 - `-SelfService` switches an IT-managed installation back to self-service updates.
 
 Settings > Updates in the app shows the deployment mode and anything that would hold up a storage-format update.

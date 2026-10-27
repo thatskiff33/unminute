@@ -6,7 +6,7 @@ It is a temporary workspace, not an archive. Your final documents live wherever 
 
 This guide covers the packaged workspace, as it is in the project's latest code. The newest release is 0.5.0-preview.4 (27 October 2026). This part of the guide is not in that release yet, and arrives with the next one:
 
-- **The note on the Meetings page when Unminute removes an import cut short**, in [Handing off and cleaning up](#handing-off-and-cleaning-up). In 0.5.0-preview.4 the app still removes such an import when it starts, but says nothing, and an update that changes how the workspace is stored counts it as a meeting to review and hand off.
+- **The note on the Meetings page when Unminute removes an import cut short**, in [Handing off and cleaning up](#handing-off-and-cleaning-up). In 0.5.0-preview.4 the app still finishes or removes such an import when it starts, but says nothing when it removes one, and an update that changes how the workspace is stored counts it as a meeting to review and hand off.
 
 ## What stays on your computer, and what does not
 
@@ -14,7 +14,7 @@ This guide covers the packaged workspace, as it is in the project's latest code.
 | --- | --- |
 | **Recordings you import** | Read where they are. The app keeps its own working copy of the audio until you confirm the transcript is reviewed. |
 | **Transcription and speaker identification** | Done on this computer. Nothing is uploaded. While processing, the app refuses its own Python network connections; for managed devices, an outbound firewall rule is the stronger control. |
-| **Transcripts, edits, speaker names, holds** | In the workspace on this computer (`%LOCALAPPDATA%\Unminute\workspace`), encrypted with a key that Windows keeps for your account on this computer This is not a synced folder. The app's working copy of each meeting's audio, and each recording as it is saved (the microphone, and computer audio when it is on), are encrypted the same way. Your settings are not encrypted. |
+| **Transcripts, edits, speaker names, holds** | In the workspace on this computer (`%LOCALAPPDATA%\Unminute\workspace`), encrypted with a key that Windows keeps for your account on this computer. This is not a synced folder. The app's working copy of each meeting's audio, and each recording as it is saved (the microphone, and computer audio when it is on), are encrypted the same way. Your settings are not encrypted. |
 | **Models** | Downloaded once, when you choose, from Hugging Face. Each file is checked against a published checksum. They are stored in `%LOCALAPPDATA%\Unminute\models`. |
 | **Handoff to an AI assistant** | Only when you copy or save it. **Copy and open** also opens the assistant's web page in your browser, but sends nothing: you paste and send. What you paste or upload is then handled by that assistant under your organisation's account and policies, not by this app. |
 | **Watched folders and synced storage** | If a watched folder is synced (for example OneDrive), its recordings are already in that cloud service. The app does not change that. |

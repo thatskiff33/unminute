@@ -51,7 +51,7 @@ A custom `-InstallDir` must be new, empty or an existing Unminute install. A fol
 
 ## Stopping per-user copies on managed computers
 
-Once the per-machine install (B6) ships, a current per-user installer refuses to install when a machine-wide install exists. An older package's installer has no such check, and a user can always run one, so on a managed computer a user can still put a per-user copy in their own profile. That copy runs from a folder the user can change ([SECURITY_MODEL.md](SECURITY_MODEL.md) T24), and IT does not update it. Unminute has no policy value for this. Per-user copies on managed computers are a residual, and the control is IT's application control: AppLocker, or App Control for Business (formerly Windows Defender Application Control, WDAC). This was the owner's decision B6-12, 21 October 2026 (#111).
+A per-user installer from v0.5.0-preview.4 or later, the release that brings the machine-wide install (B6b), refuses to install when a machine-wide install exists (exit code 2). An older package's installer has no such check, and a user can always run one, so on a managed computer a user can still put a per-user copy in their own profile. That copy runs from a folder the user can change ([SECURITY_MODEL.md](SECURITY_MODEL.md) T24), and IT does not update it. Unminute has no policy value for this. Per-user copies on managed computers are a residual, and the control is IT's application control: AppLocker, or App Control for Business (formerly Windows Defender Application Control, WDAC). This was the owner's decision B6-12, 21 October 2026 (#111).
 
 **Nothing in this section has been tested.** The machine-wide install (B6b) has not yet been run on a managed computer, and neither has any rule below. Every rule is marked "to confirm", and the checks are in the validation tracker (#189, sitting 3). Statements about Windows and Intune come from the Microsoft Learn pages listed under "Microsoft sources" at the end of this section, read on 22 October 2026, and are cited by number (M1 and so on).
 
@@ -117,7 +117,7 @@ An example approach (to confirm, #189):
 On a pilot laptop, signed in as a standard user, with the policy in audit mode (to confirm, #189):
 
 1. Install a per-user copy with `install.cmd` and open it. Expected: AppLocker events 8003 and 8006, or App Control events 3076 and 8028, naming files in the extracted folder and under `%LOCALAPPDATA%\Programs\Unminute`.
-2. Once B6 ships, open the machine-wide install and run its `--self-test`. Expected: no such event for any file under `%ProgramFiles%\Unminute`. Note any event for `%LOCALAPPDATA%\Unminute\models` (the GPU components) and for other programs.
+2. Open the machine-wide install and run its `--self-test`. Expected: no such event for any file under `%ProgramFiles%\Unminute`. Note any event for `%LOCALAPPDATA%\Unminute\models` (the GPU components) and for other programs.
 3. Enforce the policy and repeat. Expected: the per-user copy does not start (AppLocker 8004, App Control 3077), and the machine-wide install starts and passes `--self-test`.
 
 Record the Windows version, the policy (AppLocker or App Control, and which rules) and each result in #189.
@@ -276,7 +276,7 @@ The app keeps a content-free, hash-chained audit log in `%LOCALAPPDATA%\Unminute
 
 - **Same storage format:** installing the new version keeps everything.
 - **New storage format:** the update waits (exit code 5) until the user's workspace holds no meetings, active holds, unfinished cleanup, microphone recordings waiting to be imported or meeting audio. It never expires a hold, deletes content or backs content up to proceed. Map 5 to Retry in Intune; Settings > Updates in the app says what it is waiting for.
-- **Encryption at rest is a storage-format change.** The release that brings it (schema 2) ships as one release once #111 phase C is complete, and the workspace must be empty before it installs. A version before it cannot open a schema-2 workspace.
+- **Encryption at rest is a storage-format change.** It came in one release, v0.5.0-preview.4 (schema 2), once #111 phase C was complete, and the workspace must be empty before it installs over an earlier version. A version before it cannot open a schema-2 workspace.
 - **Rollback:** `install.ps1 -Rollback` from the current version's folder returns to the previous installed version, after the same check with that version. It has no minimum-version check (T26). It goes back only to a version folder the installer made (#297).
 - **The first release after the rename (#136)** has no earlier version in its install folder to roll back to.
 

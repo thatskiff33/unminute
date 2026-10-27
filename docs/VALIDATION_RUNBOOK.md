@@ -33,7 +33,7 @@ Follow `docs/PACKAGING.md`, "Managed deployment (Intune)": a Win32 app in user c
 3. Deploy the next version. With a meeting under a hold, the install waits (exit 5). After the hold is released and cleanup is confirmed, it installs.
 4. Uninstall through Intune.
 5. On the Intune-managed device, check `--health` as a Remediation script, and the crash-dump settings (SECURITY_MODEL.md T21).
-6. With an AppLocker or App Control for Business policy in audit mode, then enforced, follow "Checking it" in `docs/IT_DEPLOYMENT.md`, "Stopping per-user copies on managed computers": a per-user copy and its installer are reported, then blocked; the machine-wide install (once B6 ships) is not (#304).
+6. With an AppLocker or App Control for Business policy in audit mode, then enforced, follow "Checking it" in `docs/IT_DEPLOYMENT.md`, "Stopping per-user copies on managed computers": a per-user copy and its installer are reported, then blocked; the machine-wide install (B6b) is not (#304).
 
 **Signing:** nothing to choose or check. The owner dropped the signing requirement on 22 October 2026 (#111): the installer scripts stay unsigned and run with `-ExecutionPolicy Bypass`, an accepted risk under `docs/SECURITY_MODEL.md` T22, which security plan B6 updates to say so.
 
