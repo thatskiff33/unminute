@@ -255,12 +255,25 @@ function Get-LicenceText([string]$Version, $Chosen) {
         "Each model keeps its own licence. Redistributing them inside your organisation is your",
         "organisation's decision; the gated speaker model's terms are on its Hugging Face page.", "")
     foreach ($entry in $Chosen) {
-        $lines += "$($entry.name): $($entry.licence). $($entry.attribution)."
+        $speaker = [string]$entry.repository -ceq $SpeakerRepository
+        if ($speaker) {
+            # The app's own line for it says to accept its terms to download; this
+            # package's copy is already downloaded (Access, below).
+            $lines += "$($entry.name): $($entry.licence). Downloaded for this package by the IT team; see Credit and Access below."
+        } else {
+            $lines += "$($entry.name): $($entry.licence). $($entry.attribution)."
+        }
         $lines += "  Source: https://huggingface.co/$($entry.repository) (revision $($entry.revision))"
         if ([string]$entry.licence -like "CC BY 4.0*") {
             $lines += "  Licence: Creative Commons Attribution 4.0 International, https://creativecommons.org/licenses/by/4.0/"
+            # Every CC BY model says what changed (nothing); the speaker model's
+            # credit below says so with the rest of its attribution.
+            if (-not $speaker) {
+                $lines += "  Changes: none. The files are unmodified, byte for byte the files at the revision above,"
+                $lines += "  each checked by its SHA-256."
+            }
         }
-        if ([string]$entry.repository -ceq $SpeakerRepository) { $lines += Get-SpeakerCredit }
+        if ($speaker) { $lines += Get-SpeakerCredit }
         $lines += ""
     }
     return ($lines -join "`n")

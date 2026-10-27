@@ -219,6 +219,27 @@ Describe "New-ModelPackage.ps1" {
         $text | Should -BeLike ("*Luk" + [char]0x00E1 + [char]0x0161 + " Burget.*Computer Speech & Language, 2022.*")
         ([regex]::Matches($text, "Credit: ")).Count | Should -Be 1
         ([regex]::Matches($text, "creativecommons.org")).Count | Should -Be 1
+        # The app's "accept terms to download" line is not for a downloaded copy.
+        $text | Should -BeLike "*m-one: CC BY 4.0 (gated). Downloaded for this package by the IT team; see Credit and Access below.*"
+        $text | Should -Not -BeLike "*Synthetic m-one*"
+        ([regex]::Matches($text, "Changes: none")).Count | Should -Be 1
+    }
+
+    It "says every CC BY model is unmodified, with no speaker credit for the others" {
+        # The Parakeet models are CC BY 4.0 too: each says what changed (nothing).
+        $script:Entries[0].licence = "CC BY 4.0"
+        $script:Zip = New-TestZip $script:Entries
+        $Options.ReleaseZip = $script:Zip.Path; $Options.ExpectedSha256 = $script:Zip.Sha
+        Invoke-NewModelPackage
+        $text = [IO.File]::ReadAllText((Join-Path $script:Out "LICENCES.txt"), [Text.Encoding]::UTF8)
+        $text | Should -BeLike "*m-one: CC BY 4.0. Synthetic m-one.*"
+        $text | Should -BeLike "*Licence: Creative Commons Attribution 4.0 International, https://creativecommons.org/licenses/by/4.0/*"
+        $text | Should -BeLike "*Changes: none. The files are unmodified, byte for byte the files at the revision above,*each checked by its SHA-256.*"
+        ([regex]::Matches($text, "Changes: none")).Count | Should -Be 1
+        $text | Should -Not -BeLike "*Credit: *"
+        # The MIT speech detector gets neither line.
+        $text | Should -BeLike "*silero-vad: MIT. Synthetic silero-vad.*"
+        ([regex]::Matches($text, "creativecommons.org")).Count | Should -Be 1
     }
 
     It "refuses a zip whose SHA-256 is not the one given, and writes nothing" {
