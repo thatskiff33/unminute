@@ -32,7 +32,8 @@
       "shortcut": "Unminute.lnk",
       "event_source": "Unminute",
       "event_source_key": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\EventLog\\Application\\Unminute",
-      "event_message_file": "EventLogMessages.dll"
+      "event_message_file": "EventLogMessages.dll",
+      "firewall_group": "Unminute runtime"
     }
   },
   "exit_codes": {

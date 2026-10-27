@@ -88,12 +88,14 @@
   keep the rules in step with the installed versions without the switch; the
   machine uninstall removes the group. The download process is the same
   program, so the rules also stop model downloads: they are for computers where
-  IT stages the models and sets AllowModelDownloads and AllowGpuComponent to 0.
-  The run warns when those values are not set, and when Windows Firewall is off
-  or ignores this computer's own rules for a network profile, where the rules
-  have no effect. Rules that cannot be added stop the run (exit 1) before it
-  switches version. There is no switch to turn the choice off: the machine
-  uninstall removes it with the rules.
+  IT stages the models and sets AllowModelDownloads to 0, or AllowUserModels
+  and AllowGpuComponent to 0. The run warns when neither is set, and when
+  Windows Firewall is off or ignores this computer's own rules for a network
+  profile, where the rules have no effect. Rules that cannot be added stop the
+  run (exit 1) before it switches version. The same package again with the
+  switch turns it on for the version already installed (nothing is copied).
+  There is no switch to turn the choice off: the machine uninstall removes it
+  with the rules.
   Machine exit codes: 0 installed, 1 failed, 2 not allowed (a 32-bit or
   non-elevated run, a refused switch, a package that states no storage format,
   prerequisites missing, or an install folder holding entries or a link the
@@ -1587,7 +1589,8 @@ function Register-Machine([string]$Target, [string]$Version) {
 # download process all run one of the two, so the rules block downloads too.
 $RuntimePrograms = @("python.exe", "pythonw.exe")
 # The policy values that must be 0 for nothing in the app to need the network.
-# AllowUserModels at 0 (#111 B7a) also stops model downloads on a machine install.
+# AllowUserModels at 0 (#111 B7a) also stops model downloads on a machine install, but
+# not the graphics card components'; AllowModelDownloads at 0 stops both (#455).
 $RuntimeBlockPolicies = @("AllowModelDownloads", "AllowGpuComponent")
 
 # Whether this run keeps the rules: the switch, or an earlier run's choice in the record.
@@ -1691,11 +1694,15 @@ function Complete-RuntimeBlock {
     if ($allowed -contains "AllowModelDownloads") {
         $user = Get-PolicyValue "AllowUserModels"
         if ($user -is [int] -and $user -eq 0) { $allowed = @($allowed | Where-Object { $_ -ne "AllowModelDownloads" }) }
+    } else {
+        # AllowModelDownloads at 0 refuses every download, the graphics card
+        # components' included, so AllowGpuComponent does not matter then (#455).
+        $allowed = @()
     }
     if ($allowed.Count) {
         Write-Warn ("The runtime firewall rules also block downloads, but managed policy still allows them " +
-            "($($allowed -join ', ') not set to 0), so people see downloads fail. Stage the models and set " +
-            "AllowModelDownloads and AllowGpuComponent to 0.")
+            "($($allowed -join ', ') not set to 0), so people see downloads fail. Stage the models and " +
+            "set AllowModelDownloads to 0, or AllowUserModels and AllowGpuComponent to 0.")
         Write-FirewallLog "downloads_allowed"
     }
     $profiles = @()

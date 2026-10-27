@@ -118,9 +118,11 @@ Compatibility, installation and policy
   Credential Manager name `Unminute/HuggingFaceToken`, the data folders `Unminute\workspace` and
   `Unminute\models` under `%LOCALAPPDATA%`, `unminute.ico` and the lock file `install.lock`; for
   machine installs `%ProgramFiles%\Unminute`, the HKLM uninstall key `Unminute`, the Event Log
-  source `Unminute` and the `current` junction (DEC-024); and the decoder's per-user AppContainer
-  profile `Unminute.Decoder` (DEC-048). `packaging/identity.json` mirrors these for tests and is
-  never read at run time. Guard: `tests/test_consistency.py`.
+  source `Unminute` and the `current` junction (DEC-024), and the runtime firewall rules' group
+  `Unminute runtime` (B7b, pinned by #455: the machine uninstall removes the rules by it); and
+  the decoder's per-user AppContainer profile `Unminute.Decoder` (DEC-048).
+  `packaging/identity.json` mirrors these for tests and is never read at run time. Guard:
+  `tests/test_consistency.py`.
 - **K2** A standard user installs with nothing else to install (no Python, Git, FFmpeg or GPU
   tooling), and the processor is always a working baseline. Guard: review.
 - **K3** Managed policy (`HKLM\SOFTWARE\Policies\Unminute`) wins over settings. New behaviour in
@@ -213,10 +215,11 @@ changes, or GitHub owner settings.
   `.github/workflows/` (required checks: `docs/RELEASING.md`). Installer changes also run
   `tools/run_pester.ps1` (tests in `tests/powershell`; Pester pinned by version and SHA-256;
   report only until it passes on 5 consecutive PRs) under Windows PowerShell 5.1. Installer tests
-  use only scratch copies, folders and registry keys, per user and machine mode, as
-  `run_installer` in `tests/test_hardening.py` and `tests/powershell/Isolation.ps1` set up; never
-  run either script or its tests against the real install, per user or machine, nor dot-source
-  an older revision.
+  use only scratch copies, folders and registry keys, per user and machine mode, and a scratch
+  runtime firewall group and policy key, with every Windows Firewall command that changes
+  something renamed or stood in, as `run_installer` in `tests/test_hardening.py` and
+  `tests/powershell/Isolation.ps1` set up; never run either script or its tests against the
+  real install, per user or machine, nor dot-source an older revision.
 - `tests/test_consistency.py` ties together facts kept in several places (version, install
   identity, pins, bridge names, required checks): change every copy at once. `VERSION` is the
   one version source, written by `tools/changelog.py`.
