@@ -65,6 +65,10 @@ LID_RETRY_S = 60.0                  # a lid restore that failed is tried again t
 # and again at once after a download, removal, token or settings change (R7b).
 DISPLAY_CACHE_S = 60.0
 PAGE_ERRORS = 20                    # page script errors recorded per run (report_ui_error)
+# The "You" suggestion (#108): a speaker's default name (speaker_names), and
+# how many meetings' track-activity flags are kept in memory.
+DEFAULT_SPEAKER = re.compile(r"Speaker \d+")
+ACTIVITY_CACHE = 4
 # Copy and open (#109): after one opening of the assistant's page, another is
 # refused for this long (a double click, or a page calling it in a loop). The
 # same 3 seconds as api.DECLINE_PAUSE_S (a test keeps them equal; api imports
@@ -180,6 +184,22 @@ def _model_note(name, state, downloads_allowed=True):
 
 
 _JOINERS = "\u200c\u200d"          # zero-width non-joiner and joiner (_plain_label)
+
+
+def _computer_seconds(journal):
+    """{"computer_seconds": seconds} for a two-track recording's journal (how
+    much computer audio was saved: the crash-recovery report gives each
+    track's, #108), or {} for a microphone-only one. A count only (P3)."""
+    if recorder.journal_format(journal) != recorder.JOURNAL_FORMAT:
+        return {}
+    track = (journal.get("tracks") or {}).get(recorder.COMPUTER)
+    if not isinstance(track, dict):
+        return {}
+    rate, frames = track.get("rate"), track.get("frames", 0)
+    if (isinstance(rate, bool) or not isinstance(rate, int) or rate <= 0
+            or isinstance(frames, bool) or not isinstance(frames, int) or frames < 0):
+        return {"computer_seconds": 0}
+    return {"computer_seconds": round(frames / rate, 1)}
 
 
 def _plain_label(text):
@@ -498,6 +518,8 @@ class Workspace:
         self._power_on = False             # keep-awake and lid are set for a recording
         self._yielded = False             # a worker stop caused by recording, not the user
         self._recording_reports = []       # finished or recovered recordings (no content)
+        self._activity_cache = {}          # meeting id: (file size and time, flags) (#108)
+        self._activity_lock = threading.Lock()
         self._hung = {}                    # folder name -> recording whose writer did not finish
         self.open_stream = recorder._sounddevice_stream     # tests use a fake
         self.open_loopback = None          # computer audio: loopback.open_loopback; tests a fake
@@ -1611,6 +1633,7 @@ class Workspace:
             self._add_report({"title": None, "events": [], "pending": folder.name,
                               "recovered": True, "started_at": journal.get("started_at"),
                               "seconds": round(journal.get("frames", 0) / rate, 1) if rate else 0,
+                              **_computer_seconds(journal),
                               "note": "The app closed while this was recording. Keep it to "
                                       "transcribe it, or delete it."})
             return
@@ -2511,7 +2534,59 @@ class Workspace:
                 isinstance(k, str) and isinstance(o, int) and not isinstance(o, bool)
                 and 0 <= o <= 10**6 for k, o in offsets.items()):
             raise WorkspaceError("Out of range.")
-        return speaker_names.panel(self.store, v["id"], offsets)
+        out = speaker_names.panel(self.store, v["id"], offsets)
+        out["you"] = self._you_suggestion(mid, v["id"], out["speakers"])
+        return out
+
+    def _you_suggestion(self, mid, vid, speakers):
+        """The speaker label to suggest as "You" in the Name speakers panel,
+        or None (#108 slice 5, the owner's decision 5 of 20 Oct 2026). Only for
+        a two-track recording whose track-activity file is there and opens
+        (workspace/activity.py), only for a speaker who still has their
+        default name, and not once anyone is called "You". Only offered: the
+        page asks the user, and nothing is named without them."""
+        if not speakers or any(sp["name"].strip().casefold() == "you" for sp in speakers):
+            return None
+        flag = self._activity_flags(mid)
+        if flag is None:
+            return None
+        from workspace import activity
+        try:
+            label = activity.suggest(speaker_names.spans(self.store, vid), flag)
+        except Exception:
+            return None
+        sp = next((sp for sp in speakers if sp["label"] == label), None)
+        return label if sp is not None and DEFAULT_SPEAKER.fullmatch(sp["name"]) else None
+
+    def _activity_flags(self, mid):
+        """The meeting's track-activity flags, or None (no file: a
+        microphone-only recording, an import, audio cleaned up; or it does
+        not open). Kept in memory for a few meetings, by the file's size and
+        time, so the panel's renders do not open it each time; never logged
+        or shown (P3)."""
+        from workspace import activity
+        folder = media.meeting_folder(self.media, mid)
+        try:
+            st = (folder / activity.FILE).stat()
+        except OSError:
+            with self._activity_lock:
+                self._activity_cache.pop(mid, None)
+            return None
+        sig = (st.st_size, st.st_mtime_ns)
+        with self._activity_lock:
+            hit = self._activity_cache.get(mid)
+        if hit is not None and hit[0] == sig:
+            return hit[1]
+        try:
+            flag = activity.read(folder, self.store.meeting_key(mid, "audio"), mid)[3]
+        except Exception:
+            return None                  # no key (audio cleaned up), damaged, not its own
+        with self._activity_lock:
+            self._activity_cache.pop(mid, None)
+            self._activity_cache[mid] = (sig, flag)
+            while len(self._activity_cache) > ACTIVITY_CACHE:
+                self._activity_cache.pop(next(iter(self._activity_cache)))
+        return flag
 
     def speaker_examples(self, mid, label, offset=0):
         self._meeting(mid)

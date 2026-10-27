@@ -839,7 +839,9 @@ INVARIANT_GUARDS = {
                                  "the_processor"]},
     "C1": {"tests/test_cleanup.py": ["test_copy_or_export_alone_never_deletes",
                                     "test_intent_survives_a_crash_and_is_retried",
-                                    "test_late_worker_result_cannot_recreate_content"]},
+                                    "test_late_worker_result_cannot_recreate_content",
+                                    "test_the_track_activity_file_goes_with_the_audio_and_a_"
+                                    "copy_cannot_be_opened"]},
     "C2": {"tests/test_holds.py": ["test_release_never_deletes_silently"]},
     "C3": {"tests/test_cleanup.py": [
         "test_original_deleted_only_with_authority_root_and_same_identity"]},

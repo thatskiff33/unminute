@@ -78,6 +78,11 @@ CASES = [
     {"name": "meeting-versions", "app": "meeting-versions", "board": "Meeting-Versions.dc.html"},
     {"name": "meeting-panels", "board": "Meeting-Panels.dc.html", "app": "", "w": 1340},
     {"name": "names", "app": "names", "board": "Names.dc.html"},
+    # #108 slice 5: the "You" suggestion, and a recovered two-track recording
+    # (no boards yet: compared with the nearest one, for the owner's look).
+    {"name": "names-you", "app": "names-you", "board": "Names.dc.html"},
+    {"name": "home-recovered-computer", "app": "home-recovered-computer",
+     "board": "Home.dc.html", "props": {"computer": "true"}},
     {"name": "confirm", "app": "confirm", "board": "Confirm.dc.html"},
     {"name": "handoff", "app": "handoff", "board": "Handoff.dc.html"},
     {"name": "handoff-off", "app": "handoff-off", "board": "Handoff.dc.html",

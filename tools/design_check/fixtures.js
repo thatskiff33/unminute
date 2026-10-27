@@ -677,6 +677,16 @@
     },
     // Computer audio (#108): on in Settings, so the line under Record says so.
     "home-computer": { change: (d) => { d.recording.computer_audio = true; }, steps: [] },
+    // A two-track recording recovered after the app closed: each track's length (#108 slice 5).
+    "home-recovered-computer": {
+      change: (d) => {
+        d.recording.computer_audio = true;
+        d.recording.reports = [{ id: "rep-recovered", title: null, events: [], pending: "sample", recovered: true,
+          started_at: at(9, 30), seconds: 1512.4, computer_seconds: 1497.9,
+          note: "The app closed while this was recording. Keep it to transcribe it, or delete it." }];
+      },
+      steps: [],
+    },
     // Recording with computer audio: the thin second bar under the display.
     "recording-computer": {
       change: (d) => {
@@ -820,6 +830,12 @@
     },
     names: { steps: [...openAndPlay(), () => document.getElementById("m-names").click(), wait(600),
                      () => document.querySelector("#n-list input").focus()] },
+    // #108 slice 5: a call recorded with computer audio, speakers not yet
+    // named; the one mostly on the user's microphone is suggested as "You".
+    "names-you": {
+      change: (d) => { d.panelYou = "SPEAKER_00"; d.panelNames = { SPEAKER_00: "Speaker 1", SPEAKER_01: "Speaker 2" }; },
+      steps: [...openAndPlay(), () => document.getElementById("m-names").click(), wait(600)],
+    },
     confirm: { steps: [...openAndPlay(), () => document.getElementById("m-primary").click()] },
     handoff: {
       change: reviewed,
@@ -1104,8 +1120,9 @@
     speaker_examples: (mid, label) => ({ total: 3, items: transcriptPage(mid, 0, 1000).items
       .filter((it) => it.label === label).slice(0, 3).map((it) => ({ id: it.id, start: it.t, end: it.end, text: it.text })) }),
     clip: (mid, start, end) => silence(end - start),
-    speaker_panel: (mid) => ({ can_undo: false, speakers: SPEAKERS.map((sp) => ({ ...sp, offset: 0,
-      examples: { total: 6, items: EXAMPLES[sp.label] } })) }),
+    speaker_panel: (mid) => ({ can_undo: false, you: data.panelYou || null,
+      speakers: SPEAKERS.map((sp) => ({ ...sp, name: (data.panelNames || {})[sp.label] || sp.name, offset: 0,
+                                        examples: { total: 6, items: EXAMPLES[sp.label] } })) }),
     handoff_templates: () => [TEMPLATE],
     handoff_preview: (mid, tid, anonymise) => handoffPreview(!!anonymise),
     set_handoff_options: (mid, omitted, redactions) => { data.options = { omitted, redactions }; return null; },

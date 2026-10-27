@@ -1027,10 +1027,24 @@ async function renderNames() {
   const data = await attempt(() => call("speaker_panel", state.mid, namesState.offsets));
   if (!data || generation !== namesState.generation) return;
   $("n-undo").disabled = !data.can_undo;
-  $("n-list").replaceChildren(...data.speakers.map((sp, i) => speakerBlock(sp, data.speakers, i)));
+  $("n-list").replaceChildren(...data.speakers.map((sp, i) => speakerBlock(sp, data.speakers, i, data.you)));
 }
 
-function speakerBlock(sp, all, index) {
+// A two-track recording (#108): the speaker who was mostly on the user's
+// microphone is suggested as "You". Only offered: the user chooses Use
+// 'You', and nothing is named without them (the owner's decision 5).
+function youSuggestion(sp, name) {
+  const use = el("button", { type: "button", class: "n-you-use", textContent: "Use 'You'",
+    "aria-label": `Use 'You' as the name for ${sp.name}`, on: { click: () => attempt(async () => {
+      await call("rename_speaker", state.mid, sp.label, "You");
+      name.value = "You";
+      say("Name saved");
+      afterNamesChange(true);
+    }) } });
+  return el("p", { class: "n-you" }, el("span", { textContent: "Mostly on your microphone: probably you." }), use);
+}
+
+function speakerBlock(sp, all, index, you) {
   const name = el("input", { value: sp.name, maxLength: 80,
                            "aria-label": `Name for ${sp.name}, ${plural(sp.passages, "passage")}` });
   // Renaming does not rebuild the panel, so focus and typing elsewhere are kept.
@@ -1063,6 +1077,7 @@ function speakerBlock(sp, all, index) {
     el("div", { class: "n-head" },
       el("span", { class: "n-avatar", "aria-hidden": "true", textContent: initials(sp.name) }),
       el("label", { class: "n-label" }, plural(sp.passages, "passage"), name)),
+    you === sp.label ? youSuggestion(sp, name) : null,
     examples,
     more || merge ? el("div", { class: "n-foot" }, more || el("span", {}), merge) : null);
 }
@@ -2832,7 +2847,10 @@ function reportItem(rep) {
   const events = rep.events.length ? ` ${rep.events.map(eventText).join("; ")}.` : "";
   if (rep.pending && rep.recovered) {                // left when the app closed: the user decides
     const when = rep.started_at ? ` from ${new Date(rep.started_at * 1000).toLocaleString()}` : "";
-    return notice("alert", `Recovered recording${when} (about ${fmtSeconds(rep.seconds)}). ${rep.note}`,
+    // A two-track recording says how much of each track was saved (#108).
+    const saved = rep.computer_seconds == null ? `about ${fmtSeconds(rep.seconds)}`
+      : `about ${fmtSeconds(rep.seconds)} of microphone and ${fmtSeconds(rep.computer_seconds)} of computer audio`;
+    return notice("alert", `Recovered recording${when} (${saved}). ${rep.note}`,
       button("Keep and transcribe", () => attempt(() => call("retry_recording_import", rep.id).then(renderRecorder)),
              { primary: true }),
       linkButton("Delete…", () => confirmDialog({ title: "Delete this recording?",

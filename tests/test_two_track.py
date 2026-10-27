@@ -1753,6 +1753,56 @@ class WorkspaceTwoTrackTests(unittest.TestCase):
         self.assertEqual(info["sources"], ["microphone", "computer"])
         self.assertEqual(ws.store.recording_key_ids(), [])
 
+    def test_the_import_leaves_a_sealed_track_activity_file_beside_the_audio(self):
+        # #108 slice 5: the levels of both tracks in 10 ms steps, and whether
+        # the microphone carried its own voice, sealed under the meeting's
+        # audio key in its media folder; nothing plain, and it goes with the
+        # folder (audio cleanup, discard).
+        from workspace import activity, media
+        ws, mic, comp = self.start_two()
+        mic.feed(6)
+        comp.feed(6)
+        ws.stop_recording()
+        self.assertTrue(ws.wait_idle(120))
+        mid = ws.meetings()[0]["id"]
+        folder = media.meeting_folder(ws.media, mid)
+        self.assertEqual(sorted(p.name for p in folder.iterdir()),
+                         sorted([media.AUDIO_FILE, activity.FILE]))
+        _, mic_db, comp_db, flag = activity.read(folder, ws.store.meeting_key(mid, "audio"), mid)
+        self.assertEqual(len(flag), 600)                       # 6 s in 10 ms steps
+        self.assertGreater(int(np.median(mic_db)), -30)        # both tones were heard
+        self.assertGreater(int(np.median(comp_db)), -30)
+        blob = (folder / activity.FILE).read_bytes()
+        self.assertNotIn(activity.encode(mic_db, comp_db, flag)[:64], blob)
+        self.assertNotIn(mic_db.tobytes()[:64], blob)
+
+    def test_a_recovered_two_track_recording_reports_each_tracks_seconds(self):
+        # The crash-recovery report gives how much of each track was saved
+        # (design: "the report says how much of each was saved"); counts only.
+        ws, mic, comp = self.start_two()
+        mic.feed(4)
+        comp.feed(2)
+        rec = ws._recording
+        time.sleep(0.6)
+        ws._recording = None                    # let go first (#148), as a crash would
+        rec._stop.set()                         # the app closes without stopping it
+        rec._writer.join(5)
+        journal = json.loads((rec.folder / "journal.json").read_text())
+        journal["state"] = "recording"
+        (rec.folder / "journal.json").write_text(json.dumps(journal))
+        ws.close()
+        ws = self.make()
+        ws.start()
+        self.assertTrue(ws.wait_idle(60))
+        waiting = ws.recording_status()["reports"][-1]
+        self.assertTrue(waiting.get("recovered"), waiting)
+        track = journal["tracks"]["computer"]
+        self.assertEqual(waiting["seconds"], round(journal["frames"] / journal["rate"], 1))
+        self.assertEqual(waiting["computer_seconds"], round(track["frames"] / track["rate"], 1))
+        self.assertGreater(waiting["computer_seconds"], 0)
+        self.assertNotEqual(waiting["seconds"], waiting["computer_seconds"])
+        self.assertNotIn("Test speakers", json.dumps(waiting))   # no device name (P3)
+
     def test_policy_turned_off_mid_recording_stops_only_the_computer_track(self):
         from workspace import policy
         ws, mic, comp = self.start_two()

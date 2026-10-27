@@ -439,6 +439,32 @@ class CleanupTests(unittest.TestCase):
             with self.assertRaises(audiocrypt.AudioCryptError):
                 audiocrypt.AudioReader(copy, k, media.audio_context(self.mid))
 
+    def test_the_track_activity_file_goes_with_the_audio_and_a_copy_cannot_be_opened(self):
+        # #108 slice 5: a two-track meeting's track-activity file is part of
+        # its audio (C1): removed with the folder at audio cleanup, sealed
+        # under the audio key, so a stray copy opens with no key left.
+        import numpy as np
+
+        from workspace import activity
+        from workspace.store import KeyMissing
+        folder = self.media / self.mid
+        n = 3000
+        result = (np.full(n, -30, np.int8), np.full(n, -40, np.int8), np.ones(n, np.uint8))
+        activity.write(folder, self.store.meeting_key(self.mid, "audio"), self.mid, result)
+        copy = self.root / "copy"
+        copy.mkdir()
+        (copy / activity.FILE).write_bytes((folder / activity.FILE).read_bytes())
+        activity.read(copy, self.store.meeting_key(self.mid, "audio"), self.mid)   # control
+        self.assertEqual(self.run_job(cleanup.confirm_transcript_reviewed(self.store, self.mid)),
+                         JobResult.DONE)
+        self.assertFalse(folder.exists())
+        with self.assertRaises(KeyMissing):
+            self.store.meeting_key(self.mid, "audio")
+        keys = [self.store.meeting_key(self.mid, "text"), self.store.keyring.workspace_key]
+        for k in keys:
+            with self.assertRaises(activity.ActivityError):
+                activity.read(copy, k, self.mid)
+
     def test_no_wrapped_audio_key_is_left_in_the_database_files(self):
         wrapped = self.checkpointed_key(self.mid, "audio")
         self.run_job(cleanup.confirm_transcript_reviewed(self.store, self.mid))
