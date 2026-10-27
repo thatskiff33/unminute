@@ -298,6 +298,19 @@ real time, and remove it when the cause is fixed.
 - **Pester's package has deep paths.** Unpacked under a long folder it passes 260
   characters and `ExtractToDirectory` fails; `tools/run_pester.ps1` unpacks into a short
   folder name under `-ModuleRoot`, which should itself be short (CI uses `RUNNER_TEMP`).
+- **The PowerShell Gallery fails now and then (#427).** `Install-Module` reported "Source
+  Location ... is not valid" and "Package ... failed to download" on 27 October 2026, and a
+  re-run passed. CI no longer uses `Install-Module`: PSScriptAnalyzer (its job in `ci.yml`)
+  and Pester (`tools/run_pester.ps1`) are fetched as `.nupkg` files from
+  `https://www.powershellgallery.com/api/v2/package/<name>/<version>`, which redirects to
+  `cdn.powershellgallery.com`, with up to 3 attempts, and cached by version and SHA-256. To
+  move a pin, download the package, take its SHA-256 (`Get-FileHash`), and check that the
+  file's SHA-512, in base64, equals the `PackageHash` the Gallery publishes for it
+  (`https://www.powershellgallery.com/api/v2/FindPackagesById()?id='<name>'&$filter=Version eq '<version>'`;
+  the `Packages(Id=...,Version=...)` form returned 404). Then change the version and hash
+  together: in the job's `env` for PSScriptAnalyzer; in `tools/run_pester.ps1` and the
+  `pester` job's `env` in `quality.yml` for Pester (`tests/test_consistency.py` holds those
+  two equal). A new key starts a new cache entry; the old one expires unused.
 
 ## Claude Code hooks on Windows
 

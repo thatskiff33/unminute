@@ -6,7 +6,8 @@
   Pester 5.9.1 comes from the PowerShell Gallery as its .nupkg file and is used only
   when the file's SHA-256 equals the one recorded below (the owner's decision B6-5,
   21 October 2026: pinned by version and hash). The package is downloaded into
-  -ModuleRoot unless a copy is already there, checked, unpacked into a new folder,
+  -ModuleRoot unless a copy matching the hash is already there (a copy that does not
+  match is removed), with up to 3 attempts (#427), checked, unpacked into a new folder,
   and imported from that folder by path, so no other Pester (Windows ships 3.4.0)
   is used. Then every *.Tests.ps1 file under tests/powershell runs, with LOCALAPPDATA
   and APPDATA in a new scratch folder under -ModuleRoot; the run fails if this
@@ -22,8 +23,8 @@
   in the package.
 
   Exit codes: 0 every test passed, 1 a test failed, none ran or the real install
-  changed, 2 the Pester package
-  did not match its recorded SHA-256 (nothing was unpacked or run).
+  changed, 2 no Pester package matching its recorded SHA-256 could be obtained
+  (nothing was unpacked or run).
 #>
 [CmdletBinding()]
 param(
@@ -40,14 +41,34 @@ $PesterUrl = "https://www.powershellgallery.com/api/v2/package/Pester/$PesterVer
 $ModuleRoot = [IO.Path]::GetFullPath($ModuleRoot)
 [void][IO.Directory]::CreateDirectory($ModuleRoot)
 $package = Join-Path $ModuleRoot "pester.$PesterVersion.nupkg"
-if (-not (Test-Path -LiteralPath $package -PathType Leaf)) {
-    Write-Host "Downloading Pester $PesterVersion from the PowerShell Gallery..."
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest -Uri $PesterUrl -OutFile $package -UseBasicParsing
+function Test-PesterPackage([string]$Path) {
+    (Test-Path -LiteralPath $Path -PathType Leaf) -and
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash -eq $PesterSha256
 }
-$actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $package).Hash.ToLowerInvariant()
-if ($actual -ne $PesterSha256) {
-    [Console]::Error.WriteLine("The Pester package does not match its recorded SHA-256 ($actual), so nothing was run.")
+# A copy already there (an earlier run's, or in CI the Actions cache's) is used only if
+# it matches; any other file is removed and the package downloaded afresh (#427).
+if ((Test-Path -LiteralPath $package) -and -not (Test-PesterPackage $package)) {
+    Write-Host "The Pester package in -ModuleRoot does not match its recorded SHA-256; downloading it again."
+    Remove-Item -LiteralPath $package -Force
+}
+# The PowerShell Gallery fails now and then: up to 3 attempts, waiting longer each time.
+# A download is kept only if it matches.
+$part = "$package.part"
+for ($attempt = 1; $attempt -le 3 -and -not (Test-Path -LiteralPath $package); $attempt++) {
+    if ($attempt -gt 1) { Start-Sleep -Seconds (15 * ($attempt - 1)) }
+    Write-Host "Downloading Pester $PesterVersion from the PowerShell Gallery (attempt $attempt of 3)..."
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri $PesterUrl -OutFile $part -UseBasicParsing -TimeoutSec 300
+        if (Test-PesterPackage $part) { Move-Item -LiteralPath $part -Destination $package }
+        else { Write-Host "The download does not match the recorded SHA-256." }
+    } catch {
+        Write-Host "The download failed: $($_.Exception.Message)"
+    }
+    Remove-Item -LiteralPath $part -Force -ErrorAction SilentlyContinue
+}
+if (-not (Test-PesterPackage $package)) {
+    [Console]::Error.WriteLine("No Pester package matching its recorded SHA-256 could be obtained, so nothing was run.")
     exit 2
 }
 
