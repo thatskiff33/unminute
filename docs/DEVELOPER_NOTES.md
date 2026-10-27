@@ -319,10 +319,9 @@ real time, and remove it when the cause is fixed.
   (`https://www.powershellgallery.com/api/v2/FindPackagesById()?id='<name>'&$filter=Version eq '<version>'`;
   the `Packages(Id=...,Version=...)` form works too; the Gallery sometimes returns a
   transient 404 for either, so try again before concluding the package is missing).
-  Then change the version and hash
-  together: in the job's `env` for PSScriptAnalyzer; in `tools/run_pester.ps1` and the
-  `pester` job's `env` in `quality.yml` for Pester (`tests/test_consistency.py` holds those
-  two equal). A new key starts a new cache entry; the old one expires unused.
+  Then change the version and hash together: in the job's `env` for PSScriptAnalyzer; in
+  `tools/run_pester.ps1` and the `pester` job's `env` in `quality.yml` for Pester
+  (`tests/test_consistency.py` holds those two equal). A new key starts a new cache entry; the old one expires unused.
 
 ## Claude Code hooks on Windows
 

@@ -84,10 +84,15 @@ class BudgetTests(unittest.TestCase):
         path = ROOT / "docs" / "perf-budgets.json"
         data = json.loads(path.read_text(encoding="utf-8"))
         states = set(perf_check.STATES) | {"startup", "worker", "leak", "store"}
-        metrics = set(perf_check.BUDGETED) | {"exit_after_last_use_s", "private_growth_mb"}
+        # The store's figures are budgeted under "store" only, and only they are
+        # (#430 review): a store figure under another state would never be compared.
+        store = set(perf_check.STORE_FIGURES)
+        metrics = ((set(perf_check.BUDGETED) - store)
+                   | {"exit_after_last_use_s", "private_growth_mb"})
         for state, limits in data["budgets"].items():
             self.assertIn(state, states, f"unknown state in {path.name}")
-            self.assertTrue(set(limits) <= metrics, f"{state}: unknown metric in {path.name}")
+            allowed = store if state == "store" else metrics
+            self.assertTrue(set(limits) <= allowed, f"{state}: unknown metric in {path.name}")
             for metric, limit in limits.items():
                 self.assertTrue(limit is None or limit > 0, f"{state} {metric}")
 
