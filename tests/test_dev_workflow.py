@@ -421,6 +421,18 @@ class ReviewRecordTests(unittest.TestCase):
         self.assertIn("Reviewer: <the reviewing session or agent>", out)
         self.assertNotIn("fresh agent", out)
 
+    def test_a_dismissed_review_is_no_record(self):
+        # #442: dismissing a review withdraws it; review-record.yml re-runs on it.
+        review = {"body": self.RECORD, "authorAssociation": "COLLABORATOR", "state": "COMMENTED"}
+        view = {"number": 9, "headRefOid": self.HEAD, "body": self.BODY, "comments": [],
+                "reviews": [review]}
+        self.assertEqual(0, self.run_check(view)[0])
+        for state in ("DISMISSED", "dismissed"):
+            with self.subTest(state=state):
+                dismissed = {**view, "reviews": [{**review, "state": state}]}
+                self.assertEqual([], dev_status.notes_of(dismissed))
+                self.assertEqual(1, self.run_check(dismissed)[0])
+
     def test_the_command_checks_the_commit_its_run_was_started_for(self):
         new = "1234567890abcdef1234567890abcdef12345678"
         view = {"number": 9, "headRefOid": new, "body": self.BODY, "reviews": [],
@@ -466,13 +478,33 @@ class ReviewRecordWorkflowTests(unittest.TestCase):
         return dict(re.findall(r"^\s+([\w-]+): (read|write)\b", block, re.MULTILINE))
 
     def test_only_the_expected_triggers(self):
-        for text, trigger in ((self.check, "pull_request"), (self.rerun, "issue_comment")):
-            with self.subTest(trigger=trigger):
+        for text, expected in ((self.check, ["pull_request", "pull_request_review"]),
+                               (self.rerun, ["issue_comment"])):
+            with self.subTest(triggers=expected):
                 triggers = re.findall(r"^  (\w+):", self.section(text, "on", 0), re.MULTILINE)
-                self.assertEqual([trigger], triggers)
+                self.assertEqual(expected, triggers)
                 for risky in ("pull_request_target", "workflow_run", "workflow_dispatch"):
                     self.assertNotRegex(text, rf"\b{risky}\b")
                 self.assertIn("\npermissions: {}\n", text)
+
+    def test_reviews_and_comment_edits_start_the_check(self):
+        # #442: a review submitted, edited or dismissed runs the check itself (its
+        # body can be a record); a comment created, edited or deleted re-runs it.
+        on = self.section(self.check, "on", 0)
+        self.assertIn("  pull_request_review:\n    types: [submitted, edited, dismissed]\n", on)
+        self.assertIn("  pull_request:\n    branches: [main]\n", on)
+        # pull_request_review takes no branch filter, so the job matches main itself.
+        self.assertIn("    if: github.event.pull_request.base.ref == 'main'\n",
+                      self.section(self.check, "  record", 0))
+        self.assertIn("    types: [created, edited, deleted]\n", self.section(self.rerun, "on", 0))
+
+    def test_the_check_runs_the_parser_from_the_base_commit(self):
+        # #442: the pull request's own dev_status.py never judges its own record.
+        job = self.section(self.check, "  record", 0)
+        self.assertEqual(["${{ github.event.pull_request.base.sha }}"],
+                         re.findall(r"^\s+ref: (.+)$", job, re.MULTILINE))
+        self.assertNotIn("head.ref", job)
+        self.assertEqual(1, job.count("actions/checkout@"))
 
     def test_the_check_reads_only(self):
         job = self.section(self.check, "  record", 0)
@@ -497,11 +529,39 @@ class ReviewRecordWorkflowTests(unittest.TestCase):
 
     def test_the_rerun_runs_only_for_trusted_comments_on_pull_requests(self):
         condition = one_line(self.section(self.rerun, "  rerun", 0).split("    runs-on:")[0])
-        self.assertIn("github.event.issue.pull_request &&", condition)
+        self.assertIn("github.event.issue.pull_request && github.event.issue.state == 'open' &&",
+                      condition)
         listed = re.search(r"fromJSON\('(\[[^\]]*\])'\), github\.event\.comment\."
                            r"author_association\)", condition)
         self.assertIsNotNone(listed, condition)
         self.assertEqual(dev_status.TRUSTED, set(json.loads(listed.group(1))))
+
+    def test_the_rerun_rereads_the_head_and_reruns_only_a_run_for_it(self):
+        # #442, the race: a run for an older head would join the pull request's
+        # concurrency group and cancel the newer head's run. Every pass reads the
+        # pull request again, and a run is re-run only when its head_sha is the head.
+        job = self.section(self.rerun, "  rerun", 0)
+        script = job[job.index("        run: |"):]
+        loop = script[script.index("for try in"):script.index("          done\n")]
+        self.assertIn('gh api "repos/$GH_REPO/pulls/$PR_NUMBER"', loop)
+        self.assertIn('if [ "$state" != "open" ]; then', loop)
+        self.assertIn('[ "$status" = "completed" ] && [ "$run_head" = "$head" ]', loop)
+        self.assertIn("head_sha=$head", loop)
+        before_loop = script[:script.index("for try in")]
+        self.assertNotIn("gh api", before_loop)
+        # After a re-run the loop reads the head again before it stops.
+        self.assertIn('if [ "$head" = "$done_for" ]; then', loop)
+        self.assertLess(loop.index('if [ "$head" = "$done_for" ]'), loop.index("/rerun"))
+
+    def test_the_docs_state_the_rerun_tokens_real_scope(self):
+        # #442: actions: write can do more than re-run; the docs say so.
+        for path in ("docs/SECURITY_MODEL.md", "docs/RELEASING.md", "docs/CONTROL_MATRIX.md"):
+            with self.subTest(path=path):
+                text = (ROOT / path).read_text(encoding="utf-8")
+                self.assertIn("actions: write", text)
+                self.assertNotIn("can only re-run", text)
+        self.assertIn("actions: write also allows", self.rerun)
+        self.assertNotIn("nothing else", self.rerun)
 
 
 def one_line(text):

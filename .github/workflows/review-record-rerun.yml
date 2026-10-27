@@ -1,20 +1,27 @@
 # Re-runs the "Review record" check (review-record.yml, #410) when a collaborator
-# comments on a pull request, so posting the review record turns the check green
-# without a push. A run for an issue_comment event reports on main's latest
-# commit, not the pull request's head, so this workflow does not check anything
-# itself: it re-runs the pull request's own Review record run for its head commit.
+# comments on an open pull request, or edits or deletes a comment, so posting the
+# review record turns the check green without a push. A run for an issue_comment
+# event reports on main's latest commit, not the pull request's head, so this
+# workflow does not check anything itself: it re-runs the pull request's own
+# Review record run for its head commit.
 #
 # GitHub runs this file from main, with a token that can write even for a pull
 # request from a fork, so it is held to more than the rules in ci.yml's header:
 # - it checks out nothing and runs no code from the pull request;
-# - it never reads the comment's text; it uses only the pull request's number and
-#   the commenter's author association, both set by GitHub, passed through
-#   environment variables, never written into the script;
-# - it runs only for a comment on a pull request by an account with write access
-#   (owner, member or collaborator), the only comments that can count as a record;
-# - its token can re-run workflow runs and read pull requests, nothing else.
-# The new run uses the pull request's own workflow and code, with that run's
-# original read-only token. Nothing here can be tested before it is on main
+# - it never reads the comment's text; it uses only the pull request's number,
+#   its state and the commenter's author association, all set by GitHub, passed
+#   through environment variables or the job's condition, never written into the
+#   script;
+# - it runs only for a comment on an open pull request by an account with write
+#   access (owner, member or collaborator), the only comments that can count as
+#   a record;
+# - its token has actions: write, used only to re-run the check, and
+#   pull-requests: read. actions: write also allows other things this script
+#   never does: cancelling, deleting or re-running any run, deleting logs, caches
+#   and artifacts, turning workflows on or off, and starting a workflow that can
+#   be run by hand, such as audit.yml (docs/SECURITY_MODEL.md, T15).
+# The new run uses the pull request's own workflow, with that run's original
+# event and read-only token. Nothing here can be tested before it is on main
 # (docs/RELEASING.md, "Review record").
 name: Review record re-run
 
@@ -24,8 +31,10 @@ on:
 
 permissions: {}
 
-# One re-run at a time per pull request; never cancelled, so a later comment
-# waits and then re-runs the check again.
+# One re-run job at a time per pull request, never cancelled while it runs.
+# GitHub keeps at most one more waiting in the group and cancels an older
+# waiting one when a newer comment queues another; that is still correct, since
+# the newest comment's job re-runs the check after every earlier comment.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.issue.number }}
   cancel-in-progress: false
@@ -34,16 +43,22 @@ jobs:
   rerun:
     name: Re-run the review record check
     if: >-
-      github.event.issue.pull_request &&
+      github.event.issue.pull_request && github.event.issue.state == 'open' &&
       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       actions: write          # re-run the pull request's Review record run
-      pull-requests: read     # the pull request's head commit
+      pull-requests: read     # the pull request's state and head commit
     steps:
-      # The latest Review record run for the head commit is re-run once it has
-      # finished (a run still going may have read the comments before this one).
+      # Each pass reads the pull request again, and re-runs only a finished run
+      # for the head it has now (#442): a run for an older head would join the
+      # pull request's concurrency group and cancel the run for the new one. A run
+      # still going may have read the comments before this one, so it is left to
+      # finish first. After a re-run the head is read once more: if a push moved
+      # it meanwhile, the new head's run (which the re-run may have cancelled) is
+      # re-run in turn; if not, any later push's run starts after this re-run and
+      # supersedes it.
       - name: Re-run the check for the pull request's head
         shell: bash
         env:
@@ -53,22 +68,45 @@ jobs:
         run: |
           set -euo pipefail
           if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then echo "Not a pull request number."; exit 1; fi
-          head=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq .head.sha)
-          if ! [[ "$head" =~ ^[0-9a-f]{40}$ ]]; then echo "No head commit found."; exit 1; fi
-          runs="repos/$GH_REPO/actions/workflows/review-record.yml/runs?event=pull_request&head_sha=$head&per_page=1"
+          done_for=""; seen=""; missing=0
           for try in $(seq 1 60); do
-            run=$(gh api "$runs" --jq '.workflow_runs[0] // empty | "\(.id) \(.status)"')
-            # A pull request opened before this check existed has no run to re-run.
-            if [ -z "$run" ] && [ "$try" -ge 6 ]; then
-              echo "No Review record run for ${head:0:7}: push, or edit the description, to start one."
+            pull=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '"\(.state) \(.head.sha)"')
+            state=${pull%% *}; head=${pull#* }
+            if [ "$state" != "open" ]; then echo "The pull request is not open: nothing to re-run."; exit 0; fi
+            if ! [[ "$head" =~ ^[0-9a-f]{40}$ ]]; then echo "No head commit found."; exit 1; fi
+            if [ "$head" = "$done_for" ]; then
+              echo "Re-ran the Review record check for ${head:0:7}."
               exit 0
             fi
-            if [ -n "$run" ] && [ "${run#* }" = "completed" ]; then
-              gh api --method POST "repos/$GH_REPO/actions/runs/${run%% *}/rerun" > /dev/null
-              echo "Re-ran the Review record check (run ${run%% *}) for ${head:0:7}."
-              exit 0
+            if [ "$head" != "$seen" ]; then seen=$head; missing=0; fi
+            runs="repos/$GH_REPO/actions/workflows/review-record.yml/runs?event=pull_request&head_sha=$head&per_page=1"
+            run=$(gh api "$runs" --jq '.workflow_runs[0] // empty | "\(.id) \(.status) \(.head_sha)"')
+            if [ -z "$run" ]; then
+              # A pull request opened before this check existed has no run to re-run.
+              missing=$((missing + 1))
+              if [ "$missing" -ge 6 ]; then
+                echo "No Review record run for ${head:0:7}: push, or edit the description, to start one."
+                exit 0
+              fi
+            else
+              read -r id status run_head <<< "$run"
+              if ! [[ "$id" =~ ^[0-9]+$ ]]; then echo "No run id found."; exit 1; fi
+              if [ "$status" = "completed" ] && [ "$run_head" = "$head" ]; then
+                # GitHub re-runs a run at most 50 times, and only within 30 days of
+                # its first run (docs/RELEASING.md, "Review record").
+                if ! gh api --method POST "repos/$GH_REPO/actions/runs/$id/rerun" > /dev/null; then
+                  echo "GitHub did not re-run run $id: push, or edit the description, to start a new run."
+                  exit 1
+                fi
+                done_for=$head
+                continue
+              fi
             fi
             sleep 10
           done
-          echo "No finished Review record run for ${head:0:7} within 10 minutes: push, or edit the description, to start one."
+          if [ -n "$done_for" ]; then
+            echo "Re-ran the Review record check for ${done_for:0:7}, but the head moved: comment again, or push."
+          else
+            echo "No finished Review record run for the head within 10 minutes: push, or edit the description, to start one."
+          fi
           exit 1
