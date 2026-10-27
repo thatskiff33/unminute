@@ -20,6 +20,7 @@
 #   python tools/dev_status.py --pr 363            # what stops arming this PR (exit 1 if any)
 #   python tools/dev_status.py --register          # the release register (#121, #411)
 #   python tools/dev_status.py --ci-time           # how long the required CI took from push
+#   python tools/dev_status.py --review-record 363 # the "Review record" check (#410)
 #
 # The release register is generated, not kept by hand: it lists every open issue
 # and PR whose description has a line "Release gate: <gate>" (and, optionally,
@@ -27,6 +28,12 @@
 # each issue. --ci-time reads the latest completed first-attempt runs of ci.yml and
 # prints how long their "Unit tests (Windows)" job took from the push that started
 # each run: the measured figure behind AGENTS.md's CI-time budget (#386).
+#
+# --review-record is the "Review record" CI job (.github/workflows/review-record.yml,
+# #410): it passes only when a comment records an independent review of the PR's
+# head commit, or carries one to it by an identical range-diff, with the same
+# parsing as --pr. It reads GitHub only (no fetch), prints commit names and fixed
+# text only (never a comment's words), and exits 1 when no such record is found.
 #
 # --pr reads what the repository shows. It does not read a review's verdict,
 # unresolved review threads, code-scanning alerts or open owner decisions, and it
@@ -58,7 +65,8 @@ SPLIT_LINES = 1000           # lines changed outside tests/ before a PR is split
 CONFLICT_DAYS = 2            # days a conflicting draft may go without a rebase
 TEST_DIR = "tests/"
 VIEW_FIELDS = ("number,state,isDraft,mergeStateStatus,headRefOid,statusCheckRollup,"
-               "comments,reviews,autoMergeRequest")
+               "comments,reviews,autoMergeRequest,body")
+RECORD_FIELDS = "number,headRefOid,body,comments,reviews"
 GH_FILE_LIMIT = 100          # gh returns at most this many files per pull request
 PASSED = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 WAITING = {"", "PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED", "WAITING", "REQUESTED"}
@@ -83,6 +91,26 @@ REVIEWED = re.compile(rf"(?im)^{_GAP}(?:commit|range) reviewed{_GAP}:{_GAP}"
                       rf"(?:([0-9a-f]{{7,40}})\.\.)?({_SHA})")
 RANGE_DIFF = re.compile(rf"(?im)^{_GAP}range-diff{_GAP}:{_GAP}([0-9a-f]{{7,40}})\.\.({_SHA})"
                         rf"{_GAP}identical\b")
+# Reviewer independence (#410). Every agent posts as the same GitHub account, so
+# the account cannot show who reviewed. A "Commit reviewed:" or "Range reviewed:"
+# line counts as independent only when the comment or review holding it has a
+# "Reviewer: <session or agent>" line, the PR names its writer in a "Writer: <session
+# or agent>" line (in the description or a comment), and no reviewer named is a
+# writer named. Both are the agents' own statements, checked for presence and
+# difference only. A line may name several, separated by commas or semicolons; a
+# closing remark in brackets is ignored ("unminute-cc (directing)").
+WHO = re.compile(r"(?im)^[^\w\n]*(writers?|reviewers?)[^\w\n]*:[ \t]*(.*?)[ \t]*$")
+HTML_COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
+# Only comments and reviews by an account with write access count: on a public
+# repository anyone can comment (GitHub's author association).
+TRUSTED = {"OWNER", "MEMBER", "COLLABORATOR"}
+HEX = re.compile(r"[0-9a-fA-F]{7,40}")
+RECORD_HOW = ("Record the review in a PR comment, each on its own line: 'Commit reviewed: <full "
+              "sha>' (or 'Range reviewed: <reviewed sha>..<sha>' for a later change, or "
+              "'Range-diff: <reviewed sha>..<sha> identical' after a rebase that changed "
+              "nothing) and 'Reviewer: <the reviewing session or agent>'; the PR description "
+              "has 'Writer: <the session or agent that wrote it>'. The finish-pr skill gives "
+              "the format.")
 NOT_CHECKED = ("Not checked here: the review's verdict and findings answered, unresolved "
                "review threads, code-scanning alerts, open owner decisions, the reason for "
                "any failing check that is not required, and the range-diff itself (a "
@@ -207,10 +235,55 @@ def touching(prs, paths, root=ROOT):
     return found
 
 
+def visible(text):
+    """Text as GitHub shows it: HTML comments, which it hides, are removed."""
+    return HTML_COMMENT.sub("", text or "")
+
+
+def trusted(item):
+    """A comment or review by an account with write access. gh writes the author
+    association as authorAssociation, the REST API as author_association."""
+    association = item.get("authorAssociation") or item.get("author_association") or ""
+    return association.upper() in TRUSTED
+
+
 def notes_of(pr):
-    """The text of a PR's comments and reviews."""
-    return ([c.get("body") or "" for c in pr.get("comments") or []]
-            + [r.get("body") or "" for r in pr.get("reviews") or []])
+    """The text of a PR's comments and reviews by accounts with write access, as
+    GitHub shows it. Anyone else's comment never counts as a record."""
+    return [visible(item.get("body")) for item in
+            (pr.get("comments") or []) + (pr.get("reviews") or []) if trusted(item)]
+
+
+def names(value):
+    """The sessions or agents one Writer or Reviewer line names, in a form to
+    compare: split at commas and semicolons, a closing remark in brackets and
+    surrounding markup dropped, spaces collapsed, case ignored."""
+    found = []
+    for part in re.split(r"[,;]", value):
+        part = re.sub(r"\s*\([^()]*\)\s*$", "", part).strip(" \t*`_.'\"")
+        part = " ".join(part.split()).casefold()
+        if part:
+            found.append(part)
+    return found
+
+
+def named(text, role):
+    """The names on the text's "Writer:" or "Reviewer:" lines (role "writer" or
+    "reviewer"; the plural label counts too)."""
+    return [name for label, value in WHO.findall(visible(text))
+            if label.lower().removesuffix("s") == role for name in names(value)]
+
+
+def writers_of(body, notes):
+    """Every writer the PR names: in its description and in its trusted notes."""
+    return named(body, "writer") + [n for text in notes for n in named(text, "writer")]
+
+
+def independent(text, writers):
+    """A note whose review lines count as independent: it names a reviewer, the PR
+    names a writer, and no reviewer named is a writer named (#410)."""
+    reviewers = set(named(text, "reviewer"))
+    return bool(reviewers) and bool(writers) and not reviewers & set(writers)
 
 
 def same_commit(a, b):
@@ -219,13 +292,15 @@ def same_commit(a, b):
     return a.startswith(b) or b.startswith(a)
 
 
-def reviews_of(head, notes):
+def reviews_of(head, notes, links=None):
     """The recorded reviews that cover the head commit. A "Commit reviewed:" line
     naming one commit is a root. A range, "Range reviewed: old..new" (a review of
     the changes since old) or "Range-diff: old..new identical" (a rebase that
     changed nothing, as AGENTS.md "Authority" allows), covers new only when old
     is itself covered, so every commit traces back to a root. An author's note
-    that only mentions the commit does not count, and the verdict is not read."""
+    that only mentions the commit does not count, and the verdict is not read.
+    The review lines are read from notes, the range-diff lines from links
+    (notes when not given): a range-diff is the writer's record, not a review."""
     reviewed, carried = set(), []
     for text in notes:
         for m in REVIEWED.finditer(text):
@@ -233,6 +308,7 @@ def reviews_of(head, notes):
                 carried.append((m.group(1), m.group(2).lower()))
             else:
                 reviewed.add(m.group(2).lower())
+    for text in notes if links is None else links:
         carried += [(m.group(1), m.group(2).lower()) for m in RANGE_DIFF.finditer(text)]
     grew = True
     while grew:
@@ -242,6 +318,31 @@ def reviews_of(head, notes):
                 reviewed.add(new)
                 grew = True
     return sorted(r for r in reviewed if head.lower().startswith(r))
+
+
+def review_record(head, body, notes):
+    """(passed, problems) for the "Review record" check (#410): it passes when an
+    independent review covers the head commit, as reviews_of reads it from the
+    notes that independent() accepts (range-diff lines from every note). The
+    problems are fixed text and commit names only, never a note's words."""
+    writers = writers_of(body, notes)
+    if head and reviews_of(head, [t for t in notes if independent(t, writers)], links=notes):
+        return True, []
+    short = head[:7] or "unknown"
+    if not head or not reviews_of(head, notes):
+        return False, [f"no 'Commit reviewed:' line names the head commit {short}, and no "
+                       "'Range reviewed:' or 'Range-diff: ... identical' line carries a "
+                       "recorded review to it"]
+    problems = [f"a review of {short} is recorded, but no record shows it is independent"]
+    if not writers:
+        problems.append("the PR names no writer: add a 'Writer:' line to its description")
+    records = [t for t in notes if REVIEWED.search(t)]
+    if any(not named(t, "reviewer") for t in records):
+        problems.append("a comment with a review line has no 'Reviewer:' line")
+    if writers and any(set(named(t, "reviewer")) & set(writers) for t in records):
+        problems.append("a 'Reviewer:' line names a writer of the PR: the review must come "
+                        "from a session or agent that did not write or direct the change")
+    return False, problems
 
 
 def assess(pr, required, notes):
@@ -271,6 +372,12 @@ def assess(pr, required, notes):
     if reviewed:
         info.append(f"a review of {head} is recorded; confirm it is independent and read "
                     "its verdict")
+        if not review_record(oid, pr.get("body"), notes)[0]:
+            # Report only for now (#410): a note, not a blocker, until the owner
+            # makes the "Review record" check required.
+            info.append("the record does not show an independent reviewer (a 'Reviewer:' "
+                        "line in the comment and a different 'Writer:' line on the PR), so "
+                        "the 'Review record' check fails: run --review-record for the details")
     elif oid:
         blockers.append(f"no 'Commit reviewed:' line names the head commit {head}: record "
                         "the independent review of this exact commit; a 'Range reviewed:' "
@@ -598,6 +705,42 @@ def show_pr(number, required):
     return 1 if blockers else 0
 
 
+def show_review_record(number, head=None):
+    """The "Review record" check: exit 0 when an independent review of the head is
+    recorded, 1 when not. head is the commit the CI run was started for; without
+    it, the PR's head now. Prints commit names and fixed text only."""
+    pr = gh_json(["pr", "view", str(number), "--json", RECORD_FIELDS])
+    current = (pr.get("headRefOid") or "").lower()
+    head = (head or current).lower()
+    passed, problems = review_record(head, pr.get("body"), notes_of(pr))
+    print(f"Review record for PR #{number} at {head[:7] or 'unknown'}: "
+          + ("an independent review is recorded." if passed else "not found."))
+    if current and head and not same_commit(head, current):
+        print(f"  note: the PR's head is now {current[:7]}; this run checks {head[:7]}, the "
+              "commit it was started for")
+    for problem in problems:
+        print(f"  - {problem}")
+    if not passed:
+        print(f"  {RECORD_HOW}")
+    print("  The verdict and the findings are not read here (AGENTS.md, Authority).")
+    return 0 if passed else 1
+
+
+def commit_name(text):
+    """--head's SHA: a 7 to 40 character hex commit name."""
+    if not HEX.fullmatch(text):
+        raise argparse.ArgumentTypeError("SHA must be a 7 to 40 character hex commit name")
+    return text.lower()
+
+
+def pr_number(text):
+    """--review-record's N: a whole number of at least 1."""
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"N must be 1 or more, not {value}")
+    return value
+
+
 def show_register(required):
     issues = gh_json(["issue", "list", "--state", "open", "--limit", "200", "--search",
                       '"release gate" in:body', "--json", REGISTER_ISSUE_FIELDS])
@@ -668,9 +811,19 @@ def main(argv=None):
                        metavar="RUNS",
                        help=f"how long '{CI_TIME_JOB}' took from push in the latest RUNS "
                        f"successful runs (default {CI_TIME_RUNS})")
+    group.add_argument("--review-record", type=pr_number, metavar="N",
+                       help="the 'Review record' check (#410): exit 1 unless an independent "
+                       "review of PR N's head is recorded")
+    parser.add_argument("--head", type=commit_name, metavar="SHA",
+                        help="with --review-record: the commit to check (default: the PR's "
+                        "head now)")
     parser.add_argument("--no-fetch", action="store_true",
                         help="use origin's refs as they are")
     args = parser.parse_args(argv)
+    if args.head and not args.review_record:
+        parser.error("--head goes with --review-record")
+    if args.review_record:               # reads GitHub only: nothing to fetch
+        return show_review_record(args.review_record, args.head)
     if not args.no_fetch:
         run(["git", "fetch", "origin", "--prune", "--quiet"])
     if args.pr:

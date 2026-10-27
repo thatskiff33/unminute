@@ -465,10 +465,14 @@ class DocsTests(unittest.TestCase):
     # from a release tag. One exception: a job run in parts by a matrix (the
     # Windows unit tests, #386) is not required itself; the job that needs it
     # and always runs is, and test_matrix_parts_stand_behind_a_required_job
-    # holds that.
+    # holds that. review-record.yml's "Review record" runs on every pull request
+    # but is not required yet: the owner adds it to the ruleset after about a week
+    # (#410), and it then moves to REQUIRED_WORKFLOWS and docs/RELEASING.md's list.
+    # review-record-rerun.yml only re-runs it when a collaborator comments.
     REQUIRED_WORKFLOWS = ("ci.yml", "changelog.yml", "audit.yml", "codeql.yml")
     REPORT_ONLY_WORKFLOWS = ("quality.yml",)
-    OTHER_WORKFLOWS = ("release.yml",)
+    PENDING_REQUIRED_WORKFLOWS = ("review-record.yml",)
+    OTHER_WORKFLOWS = ("release.yml", "review-record-rerun.yml")
 
     @staticmethod
     def workflow_jobs(name):
@@ -532,11 +536,13 @@ class DocsTests(unittest.TestCase):
         # A new workflow joins one of the lists above, so its jobs are either
         # required or left out on purpose.
         present = {p.name for p in (ROOT / ".github" / "workflows").glob("*.y*ml")}
-        known = set(self.REQUIRED_WORKFLOWS + self.REPORT_ONLY_WORKFLOWS + self.OTHER_WORKFLOWS)
+        known = set(self.REQUIRED_WORKFLOWS + self.REPORT_ONLY_WORKFLOWS
+                    + self.PENDING_REQUIRED_WORKFLOWS + self.OTHER_WORKFLOWS)
         self.assertEqual(present, known, "classify each workflow in DocsTests")
 
     def test_other_workflow_jobs_found_and_all_named(self):
-        for name in self.REQUIRED_WORKFLOWS + self.REPORT_ONLY_WORKFLOWS:
+        for name in (self.REQUIRED_WORKFLOWS + self.REPORT_ONLY_WORKFLOWS
+                     + self.PENDING_REQUIRED_WORKFLOWS):
             with self.subTest(workflow=name):
                 ids, names = self.workflow_jobs(name)
                 self.assertTrue(ids, f"the job pattern no longer matches {name}")
