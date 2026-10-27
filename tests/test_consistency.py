@@ -253,15 +253,17 @@ class InstallIdentityTests(unittest.TestCase):
     def test_the_decoder_profile_and_grant_match_the_app(self):
         # #299: the uninstaller removes the profile the app makes, and the
         # installer grants read to the SID the app's container reads through.
-        # The name is pinned: a rename would leave the old profile behind.
+        # The name is pinned (K1, the owner's approval of 25 October 2026): a
+        # rename would leave the old profile behind.
         profile = one(r'^PROFILE = "([^"]+)"', read("workspace/appcontainer.py"), "PROFILE")
         self.assertEqual("Unminute.Decoder", profile)
         self.assertEqual(profile, one(r'^\$DecoderProfile = "([^"]+)"', self.uninstall,
                                       "$DecoderProfile in uninstall.ps1"))
         sid = one(r'^ALL_APPLICATION_PACKAGES = "([^"]+)"', read("workspace/appcontainer.py"),
                   "ALL_APPLICATION_PACKAGES")
-        self.assertEqual(sid, one(r'^\$AllApplicationPackages = "([^"]+)"', self.install,
-                                  "$AllApplicationPackages in install.ps1"))
+        self.assertEqual(sid, one(r'^\$AppPackagesSid = "([^"]+)"', self.install,
+                                  "$AppPackagesSid in install.ps1"))
+        self.assertIn("SecurityIdentifier $AppPackagesSid", self.install)
         self.assertIn("Grant-DecoderRead $versions", self.install)
         self.assertIn('Grant-DecoderRead (Join-Path $Options.InstallDir "versions")', self.install)
 
@@ -303,6 +305,9 @@ class InstallIdentityTests(unittest.TestCase):
         self.assertEqual(identity["icon"], "unminute.ico")
         self.assertEqual(identity["mutex"], r"Local\Unminute.Workspace")
         self.assertEqual(identity["event_source"], "Unminute")
+        # The decoder's AppContainer profile (#299) joined K1 with the owner's
+        # approval (25 October 2026).
+        self.assertEqual(identity["decoder_profile"], "Unminute.Decoder")
         self.assertEqual(identity["data_folders"], {
             "root": r"%LOCALAPPDATA%\Unminute",
             "workspace": r"%LOCALAPPDATA%\Unminute\workspace",
@@ -352,6 +357,10 @@ class InstallIdentityTests(unittest.TestCase):
                          one(r'^SOURCE = "([^"]+)"', read("workspace/audit.py"), "SOURCE"))
         self.assertEqual(identity["workspace_lock"],
                          one(r'^NAME = "([^"]+)"', read("workspace/instance.py"), "NAME"))
+        self.assertEqual(identity["decoder_profile"],
+                         one(r'^PROFILE = "([^"]+)"', read("workspace/appcontainer.py"), "PROFILE"))
+        self.assertEqual(identity["decoder_profile"],
+                         one(r'^\$DecoderProfile = "([^"]+)"', self.uninstall, "$DecoderProfile"))
         user = identity["modes"]["user"]
         for script, text in (("install.ps1", self.install), ("uninstall.ps1", self.uninstall)):
             with self.subTest(script=script):
@@ -775,6 +784,7 @@ INVARIANT_GUARDS = {
                                         "test_the_install_identity_names_are_pinned",
                                         "test_the_identity_file_pins_the_install_names",
                                         "test_the_app_and_the_scripts_match_the_identity_file",
+                                        "test_the_decoder_profile_and_grant_match_the_app",
                                         "test_no_earlier_app_name_is_left_in_shipped_code"]},
     "K2": {},
     "K3": {"tests/test_policy.py": ["WorkspacePolicyTests",

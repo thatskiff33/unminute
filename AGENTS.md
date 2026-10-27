@@ -115,8 +115,10 @@ Compatibility, installation and policy
   (17 October 2026, #136), with no migration. In both install modes also the lock file
   `install.lock` (#111 B6a); for machine installs (#111 B6b) also `%ProgramFiles%\Unminute`,
   the HKLM uninstall key `Unminute`, the Event Log source `Unminute` and the `current`
-  junction (the user's approval, 21 October 2026, confirmed 22 October 2026, #111).
-  `packaging/identity.json` mirrors these names for tests and is never read at run time.
+  junction (the user's approval, 21 October 2026, confirmed 22 October 2026, #111); and the
+  decoder's per-user AppContainer profile `Unminute.Decoder` (the user's approval, 25 October
+  2026, #299). `packaging/identity.json` mirrors these names for tests and is never read at
+  run time.
   Guard: `tests/test_consistency.py`.
 - **K2** A standard user installs with nothing else to install (no Python, Git, FFmpeg or GPU
   tooling), and the processor is always a working baseline. Guard: review.

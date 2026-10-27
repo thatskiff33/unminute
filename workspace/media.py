@@ -306,7 +306,7 @@ def _python():
 def _runtime():
     """The decoder's interpreter and import path: this process's own (the
     installed runtime and app folders, which the container can read). Tests
-    point it at a scratch copy the container can read (tests/decoder_runtime.py)."""
+    point it at a scratch copy the container can read (tools/decoder_runtime.py)."""
     return _python(), list(sys.path)
 
 

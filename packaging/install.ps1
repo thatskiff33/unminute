@@ -672,17 +672,18 @@ function Invoke-LockRetry([scriptblock]$Action) {
 
 # -- the decoder's read access (#299) -------------------------------------------------
 # The app decodes recordings in a Windows AppContainer with no capabilities, which can
-# read only what ALL APPLICATION PACKAGES (S-1-15-2-1) may read. Program Files grants
-# that by default; a per-user install folder does not. So the versions folder grants it
+# read only what ALL APPLICATION PACKAGES (S-1-15-2-1) may read. A machine install's
+# folder grants that in its own permissions (Get-MachineRule); a per-user install
+# folder does not. So the per-user versions folder grants it
 # read and execute, inherited by every version in it (the runtime and the app code; the
 # install record and the uninstaller beside versions are not covered). Nothing here lets
 # a container write. Each install, update, repair and rollback makes sure the grant is
 # there; it stays harmless for a version from before #299, which does not use it.
-$AllApplicationPackages = "S-1-15-2-1"
+# The SID is $AppPackagesSid (with the machine permissions below).
 
 function Grant-DecoderRead([string]$Folder) {
     $dir = [IO.DirectoryInfo]::new($Folder)
-    $sid = New-Object Security.Principal.SecurityIdentifier $AllApplicationPackages
+    $sid = New-Object Security.Principal.SecurityIdentifier $AppPackagesSid
     $rights = [Security.AccessControl.FileSystemRights]::ReadAndExecute
     $inherit = [Security.AccessControl.InheritanceFlags]"ContainerInherit, ObjectInherit"
     $acl = $dir.GetAccessControl([Security.AccessControl.AccessControlSections]::Access)
@@ -705,9 +706,10 @@ function Grant-DecoderRead([string]$Folder) {
 function New-StagedCopy([string]$Root, [string]$Version) {
     $versions = Join-Path $Options.InstallDir "versions"
     New-Item -ItemType Directory -Force -Path $versions | Out-Null
-    # Before the copy, so every new file inherits it (#299). Machine mode's install
-    # folder grants it already (Get-MachineRule) and refuses an explicit entry.
-    if (-not $Options.Machine) { Grant-DecoderRead $versions }
+    # Before the copy, so every new file inherits it (#299). Per-user only: machine
+    # mode copies with New-MachineStagedCopy, and its install folder grants this in
+    # its own permissions (Get-MachineRule), where an explicit entry is refused.
+    Grant-DecoderRead $versions
     $staging = Join-Path $versions "$Version.partial"
     Remove-OwnFolder $staging
     $script:StagedCopy = $staging

@@ -338,6 +338,7 @@ Describe "packaging/identity.json mirrors the scripts" {
         . (Confirm-Loadable $path); Set-ScratchTarget
         $user = $script:Identity.modes.user
         $AppName | Should -BeExactly $script:Identity.name
+        $DecoderProfile | Should -BeExactly $script:Identity.decoder_profile     # #299, K1
         Get-TopString $path "RegKey" | Should -BeExactly ($user.uninstall_key -replace '^HKCU\\', 'HKCU:\')
         $InstallDir | Should -BeExactly ([Environment]::ExpandEnvironmentVariables($user.install_folder))
         $OwnEntries -join "," | Should -BeExactly ($script:Identity.install_root_entries -join ",")
