@@ -2,7 +2,11 @@
 # checked against the host allowlist (needed behind a proxy, where this
 # computer never looks up the target name), the setup that must happen before
 # huggingface_hub is imported, and plain-language errors. No network is used.
-#   python -m unittest discover -s tests -v
+# The tests that call the real download process (setup._download_main) do so on
+# purpose, in this process, with its setup patched to stop before any download:
+# they opt out of the runner's download guard with
+# download_guard.real_download_process() (#382).
+#   python tools/run_tests.py --only test_download_process
 
 import importlib.util
 import json
@@ -14,7 +18,9 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tests"))
 
+import download_guard  # noqa: E402
 from workspace import offline_guard as og  # noqa: E402
 
 HAVE_DOWNLOAD_LIBS = all(importlib.util.find_spec(m) for m in ("huggingface_hub", "truststore",
@@ -126,8 +132,10 @@ class RequestCheckTests(unittest.TestCase):
 
             def recv(self):
                 raise AssertionError("must not read the token after a failed setup")
+        # The real download process on purpose (#382): it stops at its setup.
         with mock.patch.object(self.setup, "prepare_download_process",
-                               side_effect=ImportError("no truststore")):
+                               side_effect=ImportError("no truststore")), \
+                download_guard.real_download_process():
             self.setup._download_main(Pipe(), "parakeet-tdt-0.6b-v2", ".")
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0][0], "error")
@@ -163,7 +171,9 @@ class RequestCheckTests(unittest.TestCase):
         def prepare(hosts):
             seen.append(hosts)
             raise ImportError("stop here")
-        with mock.patch.object(self.setup, "prepare_download_process", side_effect=prepare):
+        # The real download process on purpose (#382): it stops at its setup.
+        with mock.patch.object(self.setup, "prepare_download_process", side_effect=prepare), \
+                download_guard.real_download_process():
             for name in ("parakeet-tdt-0.6b-v2", gpu.COMPONENT, gpu.WHISPER_COMPONENT):
                 self.setup._download_main(Pipe(), name, ".")
         self.assertEqual(seen, [self.setup.DOWNLOAD_HOSTS, self.setup.DOWNLOAD_HOSTS,
