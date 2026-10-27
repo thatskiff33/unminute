@@ -466,7 +466,7 @@ class MixerTests(unittest.TestCase):
         block, stamp = mixed(m, 100.4)
         self.assertEqual(stamp, 100.0)
         self.assertEqual(block.tolist(), [1] * (2 * q) + [3] * (2 * q))
-        # An input's audio lands at its stamp past MIX_RESYNC_S (c started
+        # An input's audio lands at its stamp past MIX_GAP_S (c started
         # 0.2 s after it opened), and the next mix carries on where this ended.
         m.join("c", 100.4)
         m.add("a", np.full(4 * q, 1, np.int16), 100.4)
@@ -484,7 +484,7 @@ class MixerTests(unittest.TestCase):
         m.add("a", np.full(480, 1, np.int16), 0.02 - 0.02)   # 20 ms early: jitter too
         block, _ = mixed(m, 1440 / CRATE)
         self.assertEqual(block.tolist(), [1] * 1440)          # no gap, no frame twice
-        m.add("a", np.full(480, 1, np.int16), 0.03 + 0.5)    # a real gap (past MIX_RESYNC_S)
+        m.add("a", np.full(480, 1, np.int16), 0.03 + 0.5)    # a real gap (past MIX_GAP_S)
         block, _ = mixed(m, 0.53 + 0.01)
         self.assertEqual(int(np.count_nonzero(block)), 480)
         self.assertEqual(len(block), int(round(0.53 * CRATE)) + 480 - 1440)
@@ -579,6 +579,95 @@ class MixerTests(unittest.TestCase):
         self.assertFalse(any(np.any(b) for b, _ in out))
         for (b, s), (_, s2) in zip(out, out[1:], strict=False):
             self.assertAlmostEqual(s + len(b) / CRATE, s2)
+
+
+def drifting_output(ppm, seconds, rate=4800, hz=3.3, seed=379):
+    """One output whose device clock runs ppm fast (negative: slow), read
+    every POLL_S through Pacer, deliver and Mixer as _OutputReader does, with
+    the reader waking up to 10 ms late and Windows handing on up to 10 ms
+    less than the device has made (synthetic: no device is opened). The
+    device plays a pure tone of hz. A lower rate than LOOPBACK_RATE keeps the
+    test quick; every limit in the Mixer is in seconds, so it is the same.
+    Returns the mixed track and the device rate."""
+    rng = np.random.default_rng(seed)
+    dev = rate * (1 + ppm * 1e-6)
+    w = 2 * np.pi * hz / dev                       # the tone, per device sample
+    t0 = 1000.0
+    mixer = loopback.Mixer(rate, t0)
+    pacer = loopback.Pacer(rate, t0)
+    mixer.join("out", pacer.end)
+    made, out = 0, []
+
+    def add(block, stamp):
+        mixer.add("out", block, stamp)
+
+    for k in range(1, int(seconds / loopback.POLL_S) + 1):
+        now = t0 + k * loopback.POLL_S + rng.uniform(0, 0.01)
+        upto = max(made, int((now - t0 - rng.uniform(0, 0.01)) * dev))
+        block = np.round(12000 * np.sin(w * np.arange(made, upto))).astype(np.int16)
+        made = upto
+        loopback.deliver(pacer, [block], now, add)
+        out.extend(b for b, _ in mixer.mix(now))
+    return np.concatenate(out), dev
+
+
+@unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
+class MixerDriftTests(unittest.TestCase):
+    """#379: each output's device clock drift is corrected smoothly, with no
+    audio skipped and no silence put in. Before, an output that drifted
+    MIX_RESYNC_S (0.1 s) from its stamps was realigned in one step: a fast
+    clock lost up to 0.1 s of its audio, a slow one got up to 0.1 s of
+    silence, and in between it ran up to 0.1 s off the app's clock."""
+
+    def check(self, ppm, seconds=600):
+        # A tone of 3.3 Hz (0.3 s a cycle): a step of about 0.1 s moves its
+        # phase a third of a cycle, never a whole one, so no step hides.
+        rate, hz = 4800, 3.3
+        track, dev = drifting_output(ppm, seconds, rate, hz)
+        y = track[rate:].astype(np.float64)          # past the start's lead-in
+        self.assertGreater(len(y), (seconds - 3) * rate)
+        # No silence put in: the tone crosses zero in at most a frame or two.
+        zero = np.concatenate(([0], (y == 0).astype(np.int8), [0]))
+        edges = np.flatnonzero(np.diff(zero))
+        self.assertLessEqual(int((edges[1::2] - edges[::2]).max(initial=0)), 2)
+        # No audio skipped, and the track keeps time with the app's clock:
+        # the tone's phase at each frame gives the device sample it holds.
+        # From frame to frame that moves on by dev / rate, never jumps (a
+        # skip), and over the whole run it stays within 30 ms of where the
+        # app's clock puts it (the steps let it wander 0.1 s first).
+        q = int(round(rate / hz / 4))                # a quarter of the tone
+        phase = np.unwrap(np.arctan2(y[:-q], y[q:]))
+        held = phase / (2 * np.pi * hz / dev)        # device samples
+        lag = held - np.arange(len(held)) * dev / rate
+        self.assertLess(float(np.abs(np.diff(lag)).max()), 2.0)
+        self.assertLess(float(lag.max() - lag.min()), 0.03 * dev)
+
+    def test_a_fast_output_clock_loses_no_audio(self):
+        for ppm in (100, 200):
+            with self.subTest(ppm=ppm):
+                self.check(ppm)
+
+    def test_a_slow_output_clock_gets_no_silence_put_in(self):
+        for ppm in (-100, -200):
+            with self.subTest(ppm=ppm):
+                self.check(ppm)
+
+    def test_after_a_gap_an_output_on_time_passes_unchanged(self):
+        # An output whose samples ran 20 ms behind their stamps is being
+        # drawn back (resampled) when a gap puts its next block at its stamp.
+        # From there its lag is measured afresh: on time, it passes unchanged.
+        m = loopback.Mixer(CRATE, 0.0)
+        m.join("a", 0.0)
+        n = CRATE // 20                                       # 50 ms blocks
+        for k in range(200):                                  # 10 s
+            m.add("a", np.full(n, 100, np.int16), k * 0.05 + (0.02 if k else 0.0))
+        data = np.random.default_rng(379).integers(-9000, 9000, 20 * n).astype(np.int16)
+        for k in range(20):                                   # from 12 s, after a gap
+            m.add("a", data[k * n:(k + 1) * n], 12.0 + k * 0.05)
+        block, stamp = mixed(m, 13.0)
+        self.assertEqual(stamp, 0.0)
+        self.assertEqual(len(block), 13 * CRATE)
+        self.assertEqual(block[12 * CRATE:].tolist(), data.tolist())
 
 
 class FakeOutputClient(FakeClient):
