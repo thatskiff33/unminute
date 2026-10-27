@@ -2,7 +2,9 @@
 
 ## Supported versions
 
-Only the release marked Latest on the [releases page](https://github.com/thatskiff33/unminute/releases) receives security fixes. Pre-releases and older versions do not.
+Only the newest pre-release from v0.5.0-preview.4 onward, on the [releases page](https://github.com/thatskiff33/unminute/releases), receives security fixes. Older versions do not: v0.4.3 was built before the security hardening tracked in #111, and v0.5.0-preview.2 and v0.5.0-preview.3 have only part of it.
+
+The Summary of the threat model, [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md#summary), lists what is protected today and what is still planned.
 
 ## Reporting a vulnerability
 
