@@ -206,6 +206,8 @@ def listing(folder, out=print):
             f"{c['wheel_version']}, {kind}")
         for p in c["covers"]:
             out(f"    covers {p}")
+        for p in c.get("linked_into", []):
+            out(f"    compiled into {p}")
 
 
 def main(argv=None):

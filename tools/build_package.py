@@ -31,7 +31,9 @@
 #     sbom.cdx.json           CycloneDX software bill of materials (also beside the zip)
 #     THIRD_PARTY_NOTICES.txt every bundled component, its licence and licence texts
 #     licences/               licence texts collected from upstream for components
-#                             whose wheels ship none (#176; packaging/licences/)
+#                             whose wheels ship none, for libraries bundled inside
+#                             wheels and for code compiled into them (#176;
+#                             packaging/licences/)
 #     binary-inventory.json   every executable file with its SHA-256 and signer
 #     model-manifest.json     the pinned model files (models are not in the package)
 #
@@ -137,7 +139,8 @@ ALLOWLIST = PACKAGING / "binary-allowlist.json"
 APP_ALLOWLIST = PACKAGING / "app-allowlist.json"     # the app folder's source files (#136)
 BUDGETS = "tests/budgets.json"
 # Licence texts collected from each project's own source release (#176), for
-# the wheels that ship none and the libraries bundled inside wheels. They are
+# the wheels that ship none, the libraries bundled inside wheels and the code
+# compiled into them (Rust crates, OpenSSL, oneMKL and others). They are
 # committed under packaging/licences/ (stored byte for byte: .gitattributes
 # "-text"), each pinned by SHA-256 in its manifest, and copied to the package's
 # top-level licences/ folder. tools/collect_licences.py (a developer tool, never
@@ -959,13 +962,16 @@ def native_libraries(site, name):
 
 # -- Licence texts collected from upstream (#176) ---------------------------------------
 # packaging/licences/manifest.json: {"schema": 1, "components": [...]}, one entry per
-# component and version. "covers" is empty for texts of the wheel's own code, or
-# names the DLLs in that wheel the texts are for (paths under runtime/lib).
+# component and version. "covers" names the DLLs in that wheel the texts are for
+# (paths under runtime/lib); "linked_into" names the wheel's libraries (.pyd or
+# .dll) the component is compiled into; with neither, the texts are for the
+# wheel's own code. "sbom" ties a Rust crate to the wheel's own SBOM, and
+# "bundle" puts many small texts (the crates) into one file in the package.
 # docs/PACKAGING.md, "Licence texts", describes every field.
 
 LICENCE_KEYS = {"id", "name", "version", "licence", "wheel", "wheel_version", "covers",
-                "source", "files", "note", "in_wheel"}
-LICENCE_OPTIONAL = {"note", "in_wheel", "source"}
+                "source", "files", "note", "in_wheel", "linked_into", "sbom", "bundle"}
+LICENCE_OPTIONAL = {"note", "in_wheel", "source", "linked_into", "sbom", "bundle"}
 _LICENCE_ID = re.compile(r"[a-z0-9][a-z0-9.+_-]*")
 _LICENCE_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+_-]*")
 _LICENCE_FILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,59}")
@@ -979,7 +985,19 @@ _LICENCE_COVERS = re.compile(
 # Or one exact file, with no wildcard (owner decision, 22 Oct 2026): a name the
 # pattern rule cannot express, such as torch/lib/uv.dll or a DLL in sklearn/.libs.
 _LICENCE_EXACT = re.compile(r"(?:[A-Za-z0-9._+-]+/)*[A-Za-z0-9_+-][A-Za-z0-9._+-]*\.dll")
+# A library a component is compiled into: one exact .pyd or .dll, no wildcard.
+_LICENCE_LINKED = re.compile(r"(?:[A-Za-z0-9._+-]+/)*[A-Za-z0-9_+-][A-Za-z0-9._+-]*\.(?:pyd|dll)")
+# A Rust crate as the wheel's CycloneDX SBOM names it, without qualifiers.
+_LICENCE_CRATE = re.compile(r"pkg:cargo/[A-Za-z0-9_-]+@[A-Za-z0-9.+_-]+")
+_LICENCE_BUNDLE = re.compile(r"[a-z0-9][a-z0-9._+-]{0,59}")
 MAX_LICENCE_PATH = 100        # under licences/ in the package (MAX_RELATIVE_PATH holds)
+
+
+def licence_linked_path(path):
+    """Whether a "linked_into" entry is allowed: one exact library path."""
+    return (isinstance(path, str) and _LICENCE_LINKED.fullmatch(path) is not None
+            and not any(part in (".", "..") or part.startswith("..")
+                        for part in path.split("/")))
 
 
 def licence_pattern(pattern):
@@ -1040,15 +1058,37 @@ def licence_component_problems(c, ids, paths):
             problems.append(f"{label}: {key} must be text")
     if "note" in c and (not isinstance(c["note"], str) or not c["note"].strip()):
         problems.append(f"{label}: note must be text")
-    # in_wheel: the wheel's own texts already cover these DLLs (its own code, or
-    # a library its texts name); the entry records that answer, with no files.
+    # linked_into: the wheel's libraries this component is compiled into, each
+    # one exact path (#176 D1).
+    linked = c.get("linked_into", [])
+    if not isinstance(linked, list) or ("linked_into" in c and not linked):
+        problems.append(f"{label}: linked_into must list at least one library")
+        linked = []
+    else:
+        problems += [f"{label}: linked_into entry {p!r} is not an exact .pyd or .dll path"
+                     for p in linked if not licence_linked_path(p)]
+        if len(set(map(str, linked))) != len(linked):
+            problems.append(f"{label}: a linked_into entry is listed twice")
+    # in_wheel: the wheel's own texts already cover these DLLs or this compiled-in
+    # code (its own code, or a library its texts name); the entry records that
+    # answer, with no files.
     in_wheel = c.get("in_wheel", False)
     if in_wheel not in (True, False):
         problems.append(f"{label}: in_wheel must be true or false")
-    elif in_wheel and (c["files"] != [] or not c["covers"]):
-        problems.append(f"{label}: an in_wheel entry names DLLs in covers and has no files")
+    elif in_wheel and (c["files"] != [] or not (c["covers"] or linked)):
+        problems.append(f"{label}: an in_wheel entry names DLLs in covers or libraries in "
+                        "linked_into, and has no files")
     elif not in_wheel and "source" not in c:
         problems.append(f"{label}: missing field source")
+    # sbom: a Rust crate in the wheel's own SBOM, compiled into its libraries.
+    if "sbom" in c and not (isinstance(c["sbom"], str) and _LICENCE_CRATE.fullmatch(c["sbom"])
+                            and linked):
+        problems.append(f"{label}: sbom must be a pkg:cargo name@version, with linked_into")
+    # bundle: the package holds this component's texts in licences/<bundle>.txt.
+    if "bundle" in c and not (isinstance(c["bundle"], str)
+                              and _LICENCE_BUNDLE.fullmatch(c["bundle"]) and not in_wheel):
+        problems.append(f"{label}: bundle must be a short lower-case name, on an entry "
+                        "with files")
     if not isinstance(c["id"], str) or not _LICENCE_ID.fullmatch(c["id"]):
         problems.append(f"{label}: id must be lower case letters, digits and . + _ -")
     elif c["id"] in ids:
@@ -1134,6 +1174,16 @@ def licence_manifest(text):
     ids, paths, problems = set(), set(), []
     for c in data["components"]:
         problems += licence_component_problems(c, ids, paths)
+    if not problems:
+        # A bundle's file must not take the name of a component's folder, and one
+        # Rust crate is recorded once for each wheel.
+        folders = {f"{c['id']}-{c['version']}".casefold() for c in data["components"]}
+        problems += [f"{b}: the bundle's file name is a component folder's name"
+                     for b in sorted({c["bundle"] for c in data["components"] if "bundle" in c})
+                     if f"{b}.txt".casefold() in folders]
+        crates = [(canonical(c["wheel"]), c["sbom"]) for c in data["components"] if "sbom" in c]
+        problems += [f"{w}: {s} is recorded twice" for w, s in sorted(set(crates))
+                     if crates.count((w, s)) > 1]
     if problems:
         sys.exit(f"{where} has problems:\n" + "\n".join(problems))
     return data["components"]
@@ -1182,6 +1232,97 @@ def licence_coverage(components, libraries):
     return covered, stale
 
 
+def licence_linked(components, binaries):
+    """binaries: {canonical wheel name: [.pyd and .dll paths under runtime/lib]}.
+    Returns ({wheel: [components compiled into its libraries]}, stale): a
+    linked_into path that is not in its wheel is stale, and stops the build."""
+    linked, stale = {}, []
+    for c in components:
+        if not c.get("linked_into"):
+            continue
+        have = set(binaries.get(canonical(c["wheel"]), []))
+        stale += [f"{c['id']}: {p} is not in {c['wheel']}" for p in c["linked_into"]
+                  if p not in have]
+        linked.setdefault(canonical(c["wheel"]), []).append(c)
+    return linked, stale
+
+
+def sbom_crates(data):
+    """The Rust crates a wheel's CycloneDX SBOM says are compiled in: pkg:cargo
+    purls, without qualifiers, that are not scope "excluded" (build tools) and not
+    the project's own local crates (a download_url=file qualifier). The wheel's
+    own licence texts cover those."""
+    try:
+        doc = json.loads(data)
+    except ValueError as exc:
+        sys.exit(f"A wheel's SBOM is not JSON ({exc}).")
+    found, todo = set(), list(doc.get("components") or []) if isinstance(doc, dict) else []
+    while todo:
+        c = todo.pop()
+        if not isinstance(c, dict):
+            continue
+        todo += c.get("components") or []
+        purl = c.get("purl")
+        if (not isinstance(purl, str) or not purl.startswith("pkg:cargo/")
+                or c.get("scope") == "excluded" or "download_url=file" in purl):
+            continue
+        found.add(purl.split("?", 1)[0].split("#", 1)[0])
+    return sorted(found)
+
+
+def wheel_sbom_crates(site, name):
+    """The Rust crates every SBOM a wheel installed (<dist-info>/sboms/*.json) names."""
+    crates = set()
+    for f in wheel_files(site, name):
+        if re.fullmatch(r"[^/]+\.dist-info/sboms/[^/]+\.json", f):
+            crates.update(sbom_crates((site / f).read_bytes()))
+    return sorted(crates)
+
+
+def licence_sbom_problems(components, crates):
+    """crates: {canonical wheel name: [pkg:cargo purls its SBOM names]}. Returns
+    (gaps, stale): gaps {wheel: [crates]} the SBOM names with no entry (a release
+    stops); stale, entries whose crate the SBOM does not name (any build stops)."""
+    recorded = {(canonical(c["wheel"]), c["sbom"]) for c in components if "sbom" in c}
+    gaps = {w: [p for p in crates[w] if (w, p) not in recorded] for w in crates}
+    gaps = {w: g for w, g in gaps.items() if g}
+    stale = [f"{c['id']}: {c['sbom']} is not in {c['wheel']}'s SBOM" for c in components
+             if "sbom" in c and c["sbom"] not in crates.get(canonical(c["wheel"]), [])]
+    return gaps, stale
+
+
+def licence_package_paths(c):
+    """Where a component's texts are in the package (paths from its root)."""
+    if c.get("bundle"):
+        return [f"licences/{c['bundle']}.txt"]
+    return [f"licences/{f['path']}" for f in c["files"]]
+
+
+def licence_bundles(components, files):
+    """{bundle file name: bytes}: each bundle's texts one after another, in
+    manifest order, each after a header naming its component, source and
+    SHA-256. The texts themselves are unchanged."""
+    out = {}
+    for c in components:
+        if not c.get("bundle"):
+            continue
+        name = f"{c['bundle']}.txt"
+        if name not in out:
+            out[name] = (b"Licence texts collected from each project's own release "
+                         b"(packaging/licences in Unminute's\nsource, #176). Each text "
+                         b"follows a header that names its component, where it\ncame from "
+                         b"and its SHA-256, and is reproduced exactly as published.\n")
+        for f in c["files"]:
+            where = f.get("url") or f"{f['archive']['member']} in {f['archive']['url']}"
+            text = files[f["path"]]
+            out[name] += ("\n" + "=" * 78 + f"\n{c['name']} {c['version']} ({c['licence']})\n"
+                          f"File: {f['path']}\nSource: {where}\nSHA-256: {f['sha256']}\n"
+                          + "=" * 78 + "\n").encode("utf-8") + text
+            if not text.endswith(b"\n"):
+                out[name] += b"\n"
+    return out
+
+
 def licence_texts(sha=None):
     """(components, {path: bytes}) from packaging/licences: as stored in commit
     `sha` for a release, else from the working folder. Stops the build on any
@@ -1203,12 +1344,19 @@ def licence_texts(sha=None):
     return components, files
 
 
-def copy_licences(folder, files):
-    """The collected texts, byte for byte, in the package's licences/ folder."""
+def copy_licences(folder, files, components=()):
+    """The collected texts, byte for byte, in the package's licences/ folder: a
+    bundled component's texts in its bundle's file, every other text as is."""
+    bundled = {f["path"] for c in components if c.get("bundle") for f in c["files"]}
     for path, data in sorted(files.items()):
+        if path in bundled:
+            continue
         target = folder / "licences" / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
+    for name, data in sorted(licence_bundles(components, files).items()):
+        (folder / "licences").mkdir(parents=True, exist_ok=True)
+        (folder / "licences" / name).write_bytes(data)
 
 
 def licence_coverage_required(release):
@@ -1224,21 +1372,26 @@ def notices(installed, site, folder, version, signed, licences=(), required=Fals
     with `required`, a wheel or DLL without a text stops the build."""
     rows = packages(installed)
     libraries = {canonical(name): native_libraries(site, name) for name, *_ in rows}
+    binaries = {canonical(name): [f for f in wheel_files(site, name)
+                                  if f.lower().endswith((".dll", ".pyd"))] for name, *_ in rows}
+    crates = {canonical(name): wheel_sbom_crates(site, name) for name, *_ in rows}
     covered, stale = licence_coverage(licences, libraries)
+    linked, stale_linked = licence_linked(licences, binaries)
+    crate_gaps, stale_crates = licence_sbom_problems(licences, crates)
+    stale += stale_linked + stale_crates
     if stale:
-        sys.exit(f"A licence-text pattern in {LICENCES_DIR}/{LICENCE_MANIFEST} is stale:\n"
+        sys.exit(f"An entry in {LICENCES_DIR}/{LICENCE_MANIFEST} is stale:\n"
                  + "\n".join(stale))
     own = {}
     for c in licences:
-        if not c["covers"]:
+        if not c["covers"] and not c.get("linked_into"):
             own.setdefault(canonical(c["wheel"]), []).append(c)
     gaps, body = [], [f"Python {PYTHON_VERSION} (CPython embeddable package)",
                       "  Licence: PSF-2.0", "  Texts: runtime/LICENSE.txt", ""]
     named = ["runtime/LICENSE.txt"]
     for name, ver, (_, licence), _, _ in rows:
         texts = licence_files(site, name)
-        collected = [f"licences/{f['path']}" for c in own.get(canonical(name), [])
-                     for f in c["files"]]
+        collected = [p for c in own.get(canonical(name), []) for p in licence_package_paths(c)]
         named += texts + collected
         if not texts and not collected:
             gaps.append(f"{name} {ver}: the wheel ships no licence text")
@@ -1253,10 +1406,22 @@ def notices(installed, site, folder, version, signed, licences=(), required=Fals
             if not covered.get(f):
                 gaps.append(f"runtime/{SITE}/{f}: no licence text recorded")
             for c in covered.get(f, []):
-                files = [f"licences/{x['path']}" for x in c["files"]]
+                files = licence_package_paths(c)
                 named += files
                 body.append(f"      {c['name']} {c['version']} ({c['licence']}): "
                             + (", ".join(files) or f"the {name} texts above"))
+        # #176 D1: code from other projects compiled into the wheel's libraries.
+        inside = linked.get(canonical(name), [])
+        if inside:
+            body.append("  Compiled into its libraries:")
+        for c in inside:
+            files = licence_package_paths(c)
+            named += files
+            body.append(f"    {c['name']} {c['version']} ({c['licence']}), in "
+                        + ", ".join(f"runtime/{SITE}/{p}" for p in c["linked_into"]) + ": "
+                        + (", ".join(files) or f"the {name} texts above"))
+        gaps += [f"{name} {ver}: {p} (in the wheel's SBOM) has no licence text recorded"
+                 for p in crate_gaps.get(canonical(name), [])]
         body.append("")
     if gaps and required:
         sys.exit(f"Licence texts are missing ({LICENCES_DIR}, #176):\n" + "\n".join(gaps))
@@ -1266,15 +1431,18 @@ def notices(installed, site, folder, version, signed, licences=(), required=Fals
     missing = [p for p in named if not (folder / p).is_file()]
     if missing:
         sys.exit("The notices name files that are not in the package:\n" + "\n".join(missing))
-    native = ("those are listed with their signers, and not all of their licence texts are",
-              "included yet (to follow, #176). Models are not included: see") if gaps else (
-              "those are listed with their signers and their licence texts, collected in",
-              "licences/ from each project's own release. Models are not included: see")
+    # A development build can have gaps (a release stops on them): say so plainly.
+    native = ("Some licence texts are missing from this development build; a release",
+              "build stops until each has one.") if gaps else (
+              "Their licence texts were collected in licences/ from each project's own",
+              "release.")
     lines = [f"Unminute {version}: third-party software", "",
              "Unminute includes the software below, each under its own licence. The",
              "licence texts are in the files named for each component (paths are inside",
-             "the package). Some components bundle native libraries from other projects;",
-             *native, "model-manifest.json.", "",
+             "the package). Some components bundle native libraries from other projects,",
+             "listed with their signers, or have code from other projects compiled into",
+             "their own libraries, listed under \"Compiled into its libraries\".",
+             *native, "Models are not included: see model-manifest.json.", "",
              # #248: the optional graphics card components are user downloads.
              "The optional graphics card components are not included either. On a",
              "computer with an NVIDIA card, the user may download them in Settings >",
@@ -1512,7 +1680,7 @@ def build(version, out, cache, release=False, update_allowlist=False):
             canonical(i["metadata"]["name"]): i["metadata"]["version"] for i in installed})
         if problems:
             sys.exit("Licence texts do not match the lock (#176):\n" + "\n".join(problems))
-        copy_licences(folder, licence_data)
+        copy_licences(folder, licence_data, licences)
         if release:
             export_app(folder / "app", sha)
         else:
