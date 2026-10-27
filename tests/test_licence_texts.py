@@ -12,7 +12,9 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import urllib.error
 import urllib.parse
+import urllib.request
 import zipfile
 from pathlib import Path
 from unittest import mock
@@ -767,6 +769,358 @@ class CollectorTests(unittest.TestCase):
         self.write_manifest(entry())
         with self.assertRaisesRegex(cl.CollectError, "Not in the manifest: nope"):
             cl.collect(self.folder, ["nope"], fake_web({}), lambda _: None)
+
+
+# The crate mode (#448): synthetic wheels, crates and GitHub trees only. Nothing
+# here reaches the network: every fetch goes to a fake that records it.
+MIT = b"MIT License\n\nPermission is hereby granted, free of charge...\n"
+APACHE = b"Apache License\nVersion 2.0, January 2004\n"
+ZLIB = b"zlib License\n\nThis software is provided 'as-is'...\n"
+C1, C2 = "1" * 40, "2" * 40
+
+
+def git_blob(data):
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def crate_of(name, version, files, repository=None, commit=C1, where="", vcs=True,
+             link=None):
+    """A .crate: a gzipped tar of <name>-<version>/ with Cargo.toml, the VCS
+    record and the given files; `link` adds a licence file that is a symbolic link."""
+    top = f"{name}-{version}/"
+    repository = repository or f"https://github.com/example/{name}"
+    toml = (f'[package]\nname = "{name}"\nversion = "{version}"\n'
+            f'repository = "{repository}"\nlicense = "MIT"\n').encode()
+    members = {top + "Cargo.toml": toml, top + "src/lib.rs": b"// code\n",
+               top + "src/license.rs": b"// not a licence text\n"}
+    if vcs:
+        members[top + ".cargo_vcs_info.json"] = json.dumps(
+            {"git": {"sha1": commit}, "path_in_vcs": where}).encode()
+    members.update({top + rel: data for rel, data in files.items()})
+    return tar_of(members, link=top + link if link else None)
+
+
+def sbom_of(crates):
+    """A CycloneDX SBOM naming these crates ({purl: .crate bytes or a SHA-256}),
+    plus a build tool and a local crate, which need no entry."""
+    def sha(v):
+        return v if isinstance(v, str) else hashlib.sha256(v).hexdigest()
+    return json.dumps({"bomFormat": "CycloneDX", "components": [
+        {"purl": purl, "scope": "required", "hashes": [{"alg": "SHA-256", "content": sha(v)}],
+         "licenses": [{"expression": "MIT OR Apache-2.0"}]} for purl, v in crates.items()] + [
+        {"purl": "pkg:cargo/cc@1.0.0", "scope": "excluded",
+         "hashes": [{"alg": "SHA-256", "content": "e" * 64}]},
+        {"purl": "pkg:cargo/demo-core@1.0.0?download_url=file://core", "scope": "required"}]})
+
+
+def tree_of(owner, repo, commit, files, links=()):
+    """The GitHub API's recursive tree at a commit, as JSON bytes."""
+    tree = [{"path": p, "mode": "100644", "type": "blob", "sha": git_blob(d)}
+            for p, d in files.items()]
+    tree += [{"path": p, "mode": "120000", "type": "blob", "sha": "f" * 40} for p in links]
+    return json.dumps({"sha": "0" * 40, "truncated": False, "tree": tree,
+                       "url": f"https://api.github.com/repos/{owner}/{repo}/git/trees/"
+                              f"{commit}"}).encode()
+
+
+def crate_url(name, version):
+    return f"https://static.crates.io/crates/{name}/{name}-{version}.crate"
+
+
+def tree_url(owner, repo, commit):
+    return f"https://api.github.com/repos/{owner}/{repo}/git/trees/{commit}?recursive=1"
+
+
+def crate_web(pages, refuse=None):
+    """An open_url for the crate mode that serves pages and records each request;
+    refuse: {url: HTTP status} answered with that error."""
+    requests = []
+
+    def open_url(request, timeout):
+        requests.append(request)
+        if refuse and request.full_url in refuse:
+            raise urllib.error.HTTPError(request.full_url, refuse[request.full_url], "No",
+                                         {}, None)
+        if request.full_url not in pages:
+            raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, None)
+        return FakeResponse(pages[request.full_url], request.full_url)
+    open_url.requests = requests
+    return open_url
+
+
+class CrateModeTests(unittest.TestCase):
+    WHEEL = "demo-1.0-cp310-abi3-win_amd64.whl"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.folder = Path(self.tmp.name)
+        # alpha: texts at its repository's root, one of them Markdown; the crate
+        # spells its repository in lower case with ".git".
+        self.alpha = crate_of("alpha", "1.0.0", {"LICENSE-MIT": MIT, "LICENSE.md": ZLIB},
+                              repository="https://github.com/example/alpha.git")
+        # beta: a workspace member whose LICENSE-APACHE is a link to the root's text
+        # in its repository, and which holds the same text twice.
+        self.beta = crate_of("beta", "2.0.0", {"LICENSE-APACHE": APACHE,
+                                               "runtime/LICENSE-APACHE": APACHE,
+                                               "src/tables/LICENSE-ZLIB": ZLIB},
+                             repository="https://github.com/example/workspace", commit=C2,
+                             where="crates/beta")
+        # gamma: records no commit; an entry made by hand for it is kept.
+        self.gamma = crate_of("gamma", "1.0.0", {"LICENSE": MIT}, vcs=False)
+        self.pages = {
+            crate_url("alpha", "1.0.0"): self.alpha,
+            crate_url("beta", "2.0.0"): self.beta,
+            crate_url("gamma", "1.0.0"): self.gamma,
+            crate_url("delta", "0.1.0"): b"not the crate the SBOM names",
+            tree_url("example", "alpha", C1): tree_of("Example", "alpha", C1,
+                                                      {"LICENSE-MIT": MIT, "LICENSE.md": ZLIB}),
+            tree_url("example", "workspace", C2): tree_of(
+                "example", "workspace", C2,
+                {"LICENSE-APACHE": APACHE, "crates/beta/src/tables/LICENSE-ZLIB": ZLIB},
+                links=["crates/beta/LICENSE-APACHE"]),
+        }
+        sbom = sbom_of({"pkg:cargo/alpha@1.0.0": self.alpha, "pkg:cargo/beta@2.0.0": self.beta,
+                        "pkg:cargo/gamma@1.0.0": self.gamma, "pkg:cargo/delta@0.1.0": "d" * 64})
+        self.wheel = self.folder / self.WHEEL
+        self.wheel.write_bytes(zip_of({"demo-1.0.dist-info/sboms/demo.cyclonedx.json": sbom,
+                                       "demo/_demo.pyd": b"MZ"}))
+        self.lock = ("demo==1.0 \\\n    --hash=sha256:"
+                     + hashlib.sha256(self.wheel.read_bytes()).hexdigest() + "\n")
+        self.kept = entry(id="demo.gamma", name="gamma", version="1.0.0", wheel_version="0.9",
+                          linked_into=["demo/_demo.pyd"], sbom="pkg:cargo/gamma@1.0.0",
+                          bundle="demo-0.9-rust-crates", note="Made by hand.",
+                          files=[{**entry()["files"][0], "path": "demo.gamma-1.0.0/LICENSE"}])
+        self.gone = entry(id="demo.omega", name="omega", version="3.0", wheel_version="0.9",
+                          linked_into=["demo/_demo.pyd"], sbom="pkg:cargo/omega@3.0",
+                          bundle="demo-0.9-rust-crates",
+                          files=[{**entry()["files"][0], "path": "demo.omega-3.0/LICENSE"}])
+        self.other = entry()
+        (self.folder / "manifest.json").write_text(
+            manifest(self.other, self.kept, self.gone), encoding="utf-8")
+
+    def run_mode(self, web, token=None):
+        out = []
+        gaps = cl.crate_entries(self.folder, self.wheel, self.lock, web, token, out.append)
+        data = json.loads((self.folder / "manifest.json").read_text(encoding="utf-8"))
+        return gaps, {c["id"]: c for c in data["components"]}, out
+
+    def test_makes_each_crates_entry_from_the_crate_and_its_commit(self):
+        web = crate_web(self.pages)
+        gaps, entries, out = self.run_mode(web)
+        alpha = entries["demo.alpha"]
+        self.assertEqual(alpha["source"], {"repository": "https://github.com/Example/alpha",
+                                           "ref": "alpha 1.0.0 (crates.io)", "commit": C1})
+        self.assertEqual((alpha["wheel"], alpha["wheel_version"], alpha["linked_into"],
+                          alpha["sbom"], alpha["bundle"], alpha["licence"], alpha["covers"]),
+                         ("demo", "1.0", ["demo/_demo.pyd"], "pkg:cargo/alpha@1.0.0",
+                          "demo-1.0-rust-crates", "MIT OR Apache-2.0", []))
+        raw = f"https://raw.githubusercontent.com/Example/alpha/{C1}/"
+        # Each file's hash is the crate's own copy's, so collecting it later says
+        # "unchanged" only when the text is byte-identical.
+        self.assertEqual(alpha["files"], [
+            {"path": "demo.alpha-1.0.0/LICENSE-MIT", "url": raw + "LICENSE-MIT",
+             "sha256": hashlib.sha256(MIT).hexdigest()},
+            {"path": "demo.alpha-1.0.0/LICENSE.md.txt", "url": raw + "LICENSE.md",
+             "sha256": hashlib.sha256(ZLIB).hexdigest()}])
+        # A workspace member's link goes to the root's text; a text held twice is
+        # listed once; a text in a sub-folder keeps its folders in its name.
+        raw = f"https://raw.githubusercontent.com/example/workspace/{C2}/"
+        self.assertEqual([(f["path"], f["url"]) for f in entries["demo.beta"]["files"]], [
+            ("demo.beta-2.0.0/LICENSE-APACHE", raw + "LICENSE-APACHE"),
+            ("demo.beta-2.0.0/src.tables.LICENSE-ZLIB",
+             raw + "crates/beta/src/tables/LICENSE-ZLIB")])
+        # An entry made by hand for a crate the mode cannot make is kept, for the
+        # new wheel version; a crate with no entry is a gap; a crate the SBOM no
+        # longer names loses its entry, and its text is named for removal.
+        self.assertEqual(entries["demo.gamma"], {**self.kept, "wheel_version": "1.0",
+                                                 "bundle": "demo-1.0-rust-crates"})
+        self.assertEqual(gaps, 1)
+        self.assertNotIn("demo.omega", entries)
+        self.assertIn(self.other["id"], entries)
+        text = "\n".join(out)
+        self.assertIn("pkg:cargo/delta@0.1.0: NO ENTRY", text)
+        self.assertIn("does not match the SBOM's SHA-256", text)
+        self.assertIn("gamma@1.0.0: kept the entry made by hand (gamma 1.0.0: the crate "
+                      "records no commit.)", text)
+        self.assertIn("remove it: packaging/licences/demo.omega-3.0/LICENSE", text)
+        # The build accepts what was written.
+        bp.licence_manifest((self.folder / "manifest.json").read_text(encoding="utf-8"))
+        # Only the crate hosts were reached, one tree per repository and commit, and
+        # never a build tool or a local crate; no text was fetched.
+        hosts = {urllib.parse.urlsplit(r.full_url).hostname for r in web.requests}
+        self.assertEqual(hosts, set(cl.CRATE_HOSTS))
+        self.assertEqual(sorted(r.full_url for r in web.requests),
+                         sorted([crate_url("alpha", "1.0.0"), crate_url("beta", "2.0.0"),
+                                 crate_url("gamma", "1.0.0"), crate_url("delta", "0.1.0"),
+                                 tree_url("example", "alpha", C1),
+                                 tree_url("example", "workspace", C2)]))
+
+    def test_collecting_what_it_made_says_unchanged_for_the_crates_own_texts(self):
+        # Step 4: the texts come from a collector host, and a byte-identical one
+        # says "unchanged"; one that differs says "CHANGED".
+        self.run_mode(crate_web(self.pages))
+        raw = {f"https://raw.githubusercontent.com/Example/alpha/{C1}/LICENSE-MIT": MIT,
+               f"https://raw.githubusercontent.com/Example/alpha/{C1}/LICENSE.md": ZLIB}
+        out = []
+        self.assertEqual(cl.collect(self.folder, ["demo.alpha"], fake_web(raw), out.append), 0)
+        self.assertTrue(all(line.endswith("(unchanged)") for line in out), out)
+        raw[f"https://raw.githubusercontent.com/Example/alpha/{C1}/LICENSE-MIT"] = MIT + b"x"
+        cl.collect(self.folder, ["demo.alpha"], fake_web(raw), out.append)
+        self.assertIn("(CHANGED)", "\n".join(out))
+
+    def test_a_text_no_file_at_the_commit_has_is_a_gap(self):
+        # Windows line endings in the crate, for example: no blob matches.
+        self.pages[tree_url("example", "alpha", C1)] = tree_of(
+            "example", "alpha", C1, {"LICENSE-MIT": MIT.replace(b"\n", b"\r\n"),
+                                     "LICENSE.md": ZLIB})
+        gaps, entries, out = self.run_mode(crate_web(self.pages))
+        self.assertEqual(gaps, 2)
+        self.assertNotIn("demo.alpha", entries)
+        self.assertIn(f"no file at example/alpha {C1} has the bytes of its LICENSE-MIT",
+                      "\n".join(out))
+
+    def test_a_linked_or_binary_licence_file_is_a_gap(self):
+        for crate, why in ((crate_of("alpha", "1.0.0", {}, link="LICENSE"), "is a link"),
+                           (crate_of("alpha", "1.0.0", {"COPYING": b"\0\1"}), "NUL bytes"),
+                           (crate_of("alpha", "1.0.0", {}), "has no licence file")):
+            with self.subTest(why=why):
+                pages = {**self.pages, crate_url("alpha", "1.0.0"): crate}
+                sbom = sbom_of({"pkg:cargo/alpha@1.0.0": crate})
+                self.wheel.write_bytes(zip_of({"demo-1.0.dist-info/sboms/x.json": sbom,
+                                               "demo/_demo.pyd": b"MZ"}))
+                self.lock = ("demo==1.0 --hash=sha256:"
+                             + hashlib.sha256(self.wheel.read_bytes()).hexdigest() + "\n")
+                gaps, _, out = self.run_mode(crate_web(pages))
+                self.assertEqual(gaps, 1)
+                self.assertIn(why, "\n".join(out))
+
+    def test_the_wheel_must_be_a_file_the_lock_pins(self):
+        before = (self.folder / "manifest.json").read_bytes()
+        for lock, why in (("demo==1.0 --hash=sha256:" + "0" * 64 + "\n", "SHA-256 differs"),
+                          ("demo==2.0 --hash=sha256:" + "0" * 64 + "\n", "not in the lock")):
+            with self.subTest(why=why), self.assertRaisesRegex(cl.CollectError, why):
+                cl.crate_entries(self.folder, self.wheel, lock, crate_web(self.pages), None,
+                                 lambda _: None)
+        self.assertEqual((self.folder / "manifest.json").read_bytes(), before)
+
+    def test_githubs_rate_limit_stops_the_run_and_writes_nothing(self):
+        before = (self.folder / "manifest.json").read_bytes()
+        web = crate_web(self.pages, refuse={tree_url("example", "alpha", C1): 403})
+        with self.assertRaisesRegex(cl.CollectError, "set GITHUB_TOKEN"):
+            self.run_mode(web)
+        self.assertEqual((self.folder / "manifest.json").read_bytes(), before)
+
+    def test_the_sbom_crates_are_the_ones_the_build_counts(self):
+        sbom = sbom_of({"pkg:cargo/alpha@1.0.0": "a" * 64, "pkg:cargo/beta@2.0.0": "b" * 64})
+        self.assertEqual(sorted(cl.sbom_crate_hashes(sbom)), bp.sbom_crates(sbom))
+        self.assertEqual(cl.sbom_crate_hashes(sbom)["pkg:cargo/alpha@1.0.0"],
+                         ("a" * 64, "MIT OR Apache-2.0"))
+
+    def test_the_lock_is_read_with_its_continuation_lines(self):
+        lock = ("# via x\nHF_Xet==1.6.0 \\\n    --hash=sha256:" + "a" * 64 + " \\\n"
+                "    --hash=sha256:" + "b" * 64 + "\n    # via y\nother==2 --hash=sha256:"
+                + "c" * 64 + "\n")
+        self.assertEqual(cl.locked_hashes(lock), {("hf_xet", "1.6.0"): {"a" * 64, "b" * 64},
+                                                  ("other", "2"): {"c" * 64}})
+
+    def test_repository_urls_are_github_owner_and_name_only(self):
+        self.assertEqual(cl.github_repository("https://github.com/o/r.git"), ("o", "r"))
+        self.assertEqual(cl.github_repository("https://github.com/o/r/tree/main/x"), ("o", "r"))
+        for url in ("https://gitlab.com/o/r", "http://github.com/o/r", "https://github.com/o",
+                    "https://github.com/o/..", "https://github.com/o/.",
+                    "https://github.com/../r", "https://github.com/./r",
+                    "https://user@github.com/o/r"):
+            with self.subTest(url=url):
+                self.assertIsNone(cl.github_repository(url))
+
+    def test_a_cargo_toml_whose_package_is_not_a_table_is_a_gap(self):
+        # Not a traceback: the crate is a gap like any other it cannot read.
+        for toml in (b'package = "alpha"\n', b"package = [1]\n", b"[other]\nx = 1\n"):
+            with self.subTest(toml=toml):
+                crate = crate_of("alpha", "1.0.0", {"LICENSE": MIT, "Cargo.toml": toml})
+                with self.assertRaisesRegex(cl.CrateGap, "names another package"):
+                    cl.crate_parts(crate, "alpha", "1.0.0")
+
+
+class CrateHostTests(unittest.TestCase):
+    """Owner decision DEC-075 (#448): the crate hosts are for the crate mode only."""
+
+    def test_the_crate_hosts_are_not_collector_hosts(self):
+        self.assertEqual(set(cl.CRATE_HOSTS), {"static.crates.io", "api.github.com"})
+        self.assertFalse(set(cl.CRATE_HOSTS) & set(bp.LICENCE_HOSTS))
+        web = fake_web({})
+        for host in cl.CRATE_HOSTS:
+            url = f"https://{host}/x"
+            with self.subTest(host=host):
+                self.assertIsNone(bp.licence_url_parts(url))
+                self.assertFalse(cl.allowed_url(url))
+                with self.assertRaisesRegex(cl.CollectError, "collector host"):
+                    cl.fetch(url, 100, web)
+                self.assertRegex(bp.licence_url_problem(url, COMMIT), "collector host")
+        self.assertEqual(web.calls, [])
+
+    def test_the_build_and_the_app_never_name_the_crate_hosts(self):
+        # Only tools/collect_licences.py may; the build never imports it (above).
+        code = [ROOT / "tools" / "build_package.py"]
+        code += sorted((ROOT / "workspace").rglob("*.py"))
+        code += [p for p in sorted((ROOT / "packaging").rglob("*"))
+                 if p.suffix.lower() in (".ps1", ".psm1", ".cmd", ".py")]
+        self.assertGreater(len(code), 10)
+        for path in code:
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for name in (*cl.CRATE_HOSTS, "CRATE_HOSTS", "crate_fetch"):
+                with self.subTest(path=path.relative_to(ROOT).as_posix(), name=name):
+                    self.assertNotIn(name, text)
+
+    def test_the_crate_mode_reaches_only_the_crate_hosts(self):
+        web = crate_web({})
+        for url in ("https://raw.githubusercontent.com/o/r/" + COMMIT + "/LICENSE",
+                    "https://files.pythonhosted.org/x.whl", "http://static.crates.io/x",
+                    "https://static.crates.io:8443/x", "https://u@api.github.com/x",
+                    "https://example.com/x"):
+            with self.subTest(url=url), self.assertRaisesRegex(cl.CollectError, "crate host"):
+                cl.crate_fetch(url, 100, web)
+        self.assertEqual(web.requests, [])
+        with self.assertRaisesRegex(cl.CollectError, "redirects off the crate hosts"):
+            cl.CrateRedirects().redirect_request(
+                mock.Mock(full_url="https://static.crates.io/x"), None, 302, "Found", {},
+                "https://raw.githubusercontent.com/o/r/x")
+
+        def moved(request, timeout):
+            return FakeResponse(b"x", "https://example.com/x")
+        with self.assertRaisesRegex(cl.CollectError, "off the crate hosts"):
+            cl.crate_fetch("https://static.crates.io/x", 100, moved)
+
+    def test_the_default_opener_checks_each_redirect(self):
+        # The final-URL check would catch an off-host redirect only after the
+        # request had gone; CrateRedirects refuses it before.
+        with mock.patch.object(urllib.request, "build_opener") as build:
+            build.return_value.open.return_value = FakeResponse(
+                b"crate", "https://static.crates.io/x")
+            self.assertEqual(cl.crate_fetch("https://static.crates.io/x", 100), b"crate")
+        build.assert_called_once_with(cl.CrateRedirects)
+
+    def test_the_token_goes_to_the_github_api_only_and_never_across_a_redirect(self):
+        web = crate_web({"https://static.crates.io/x": b"crate",
+                         "https://api.github.com/repos/o/r": b"{}"})
+        cl.crate_fetch("https://static.crates.io/x", 100, web, token="secret-token")
+        cl.crate_fetch("https://api.github.com/repos/o/r", 100, web, token="secret-token")
+        crate, api = web.requests
+        self.assertIsNone(crate.get_header("Authorization"))
+        self.assertEqual(api.unredirected_hdrs, {"Authorization": "Bearer secret-token"})
+        moved = cl.CrateRedirects().redirect_request(
+            api, None, 301, "Moved", {}, "https://api.github.com/repositories/1")
+        self.assertFalse(moved.has_header("Authorization"))
+        # No error names it.
+        web = crate_web({}, refuse={"https://api.github.com/repos/o/r": 500})
+        with self.assertRaises(cl.CollectError) as caught:
+            cl.crate_fetch("https://api.github.com/repos/o/r", 100, web, token="secret-token")
+        self.assertNotIn("secret-token", str(caught.exception))
+
+    def test_crates_takes_a_wheel_not_ids(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            cl.main(["--crates", "x.whl", "demo"])
 
 
 if __name__ == "__main__":
