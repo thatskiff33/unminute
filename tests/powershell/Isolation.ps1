@@ -27,6 +27,20 @@
 $script:RealUninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Unminute"
 $script:RealMachineKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Unminute"
 $script:RealEventSourceKey = "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\Unminute"
+# The runtime firewall rule (#111 B7b): the real rules' group and the policy key that
+# install.ps1 reads. The tests point both at throwaway ones (Set-ScratchTarget) and
+# stand in every Windows Firewall command (Enter-ScratchProfile), so no test adds,
+# changes or removes a firewall rule, even on CI's elevated runner.
+$script:RealFirewallGroup = "Unminute runtime"
+$script:RealPolicyKey = "HKLM:\SOFTWARE\Policies\Unminute"
+# The functions through which the scripts reach Windows Firewall, and only they.
+$script:FirewallFunctions = @("Get-RuntimeRule", "Remove-RuntimeRule", "Add-RuntimeRule", "Get-FirewallProfileState")
+# The Windows Firewall commands a test could run by mistake; each throws in a test
+# unless the test stands it in with Mock.
+$script:FirewallCommands = @("New-NetFirewallRule", "Remove-NetFirewallRule", "Set-NetFirewallRule",
+    "Enable-NetFirewallRule", "Disable-NetFirewallRule", "Copy-NetFirewallRule", "Rename-NetFirewallRule",
+    "Get-NetFirewallRule", "Get-NetFirewallApplicationFilter", "Get-NetFirewallProfile",
+    "Set-NetFirewallProfile")
 $script:ScratchKeyPrefix = "HKCU:\Software\Unminute-PesterTest-"
 
 # This account's real install folder, data folder, Start menu Programs folder and
@@ -223,9 +237,29 @@ function Enter-ScratchProfile([string]$Root) {
     $script:ScratchKey = $script:ScratchTop + "\Uninstall\Unminute"
     $script:ScratchMachineKey = $script:ScratchTop + "\Machine\Uninstall\Unminute"
     $script:ScratchEventSourceKey = $script:ScratchTop + "\Machine\EventLog\Unminute"
+    $script:ScratchPolicyKey = $script:ScratchTop + "\Policies\Unminute"
+    $script:ScratchFirewallGroup = "Unminute-PesterTest-" + [guid]::NewGuid().ToString("N")
+    # Every Windows Firewall command throws until the tests end, unless a test stands it
+    # in with Mock (#111 B7b). Each stand-in takes the real command's parameters (so a
+    # Mock of it sees them as the script passes them) and runs nothing. Global, so the
+    # scripts' functions find these first; removed by Exit-ScratchProfile.
+    # Get-RealMachineState reads the real rules another way.
+    foreach ($command in $script:FirewallCommands) {
+        $binding = "[CmdletBinding()]"; $params = ""
+        try {
+            $meta = [Management.Automation.CommandMetadata]::new((Get-Command -Name "NetSecurity\$command" -ErrorAction Stop))
+            $binding = [Management.Automation.ProxyCommand]::GetCmdletBindingAttribute($meta)
+            $params = [Management.Automation.ProxyCommand]::GetParamBlock($meta)
+        } catch { }
+        Set-Item -Path "function:global:$command" -Value ("$binding param($params) " +
+            "throw 'A test reached Windows Firewall without standing it in, so nothing was changed.'")
+    }
 }
 
 function Exit-ScratchProfile {
+    foreach ($command in $script:FirewallCommands) {
+        if (Test-Path -LiteralPath "function:global:$command") { Remove-Item -LiteralPath "function:global:$command" }
+    }
     $env:LOCALAPPDATA = $script:SavedLocal
     $env:APPDATA = $script:SavedRoaming
     if ($script:ScratchTop -and (Test-ScratchKey $script:ScratchTop) -and (Test-Path -LiteralPath $script:ScratchTop)) {
@@ -313,16 +347,35 @@ function Assert-RedirectableTarget([string]$Path) {
         '$ProgramFilesFolder = [Environment]::GetFolderPath("ProgramFiles")',
         '$CommonProgramsFolder = [Environment]::GetFolderPath("CommonPrograms")',
         ('$MachineRegKey = "' + $script:RealMachineKey + '"'),
-        ('$EventSourceKey = "' + $script:RealEventSourceKey + '"')
+        ('$EventSourceKey = "' + $script:RealEventSourceKey + '"'),
+        ('$FirewallGroup = "' + $script:RealFirewallGroup + '"'),
+        ('$PolicyKey = "' + $script:RealPolicyKey + '"')
     )
     $present = @($lines | Where-Object { $top -ccontains $_ })
+    # Windows Firewall (#111 B7b): its commands are named directly, each inside one of
+    # $script:FirewallFunctions, which the tests stand in, and nowhere else (not even
+    # in a string), and the rules' group only in its line at the top.
+    $firewall = @($ast.FindAll({ param($n)
+        $n -is [Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -match 'NetFirewall' }, $true))
+    foreach ($command in $firewall) {
+        $owner = $command.Parent
+        while ($owner -and $owner -isnot [Management.Automation.Language.FunctionDefinitionAst]) { $owner = $owner.Parent }
+        if (-not $owner -or $script:FirewallFunctions -cnotcontains $owner.Name) {
+            throw "$Path reaches Windows Firewall other than through its firewall functions, so it was not loaded."
+        }
+    }
+    # Each command's name once (a verb, then -NetFirewall); a parameter such as
+    # -AssociatedNetFirewallRule is not a command.
+    if (([regex]::Matches($code, "[a-z]-NetFirewall", "IgnoreCase")).Count -ne $firewall.Count) {
+        throw "$Path reaches Windows Firewall other than through its firewall functions, so it was not loaded."
+    }
     $reads = @('"HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$WebView2Client"',
                '"HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$WebView2Client"',
                '$base.OpenSubKey($subKey)')
     $reach = @("GetFolderPath", "SpecialFolder", "CurrentVersion\Uninstall", "Services\EventLog", "HKLM:",
                "HKEY_", "Registry::", "Start Menu\", "env:Program", "env:ALLUSERSPROFILE", "env:PUBLIC",
                "CreateSubKey", "DeleteSubKey", "DeleteValue", "OpenSubKey", "EventSource(", "New-EventLog",
-               "Remove-EventLog")
+               "Remove-EventLog", $script:RealFirewallGroup)
     foreach ($word in $reach) {
         $pattern = [regex]::Escape($word)
         $count = ([regex]::Matches($code, $pattern, "IgnoreCase")).Count
@@ -411,6 +464,8 @@ function Set-ScratchTarget {
     Set-Variable -Name CommonProgramsFolder -Value $script:ScratchCommonPrograms -Scope 1
     Set-Variable -Name MachineRegKey -Value $script:ScratchMachineKey -Scope 1
     Set-Variable -Name EventSourceKey -Value $script:ScratchEventSourceKey -Scope 1
+    Set-Variable -Name PolicyKey -Value $script:ScratchPolicyKey -Scope 1
+    Set-Variable -Name FirewallGroup -Value $script:ScratchFirewallGroup -Scope 1
     Assert-ScratchTarget
 }
 
@@ -456,6 +511,16 @@ function Get-RealMachineState {
         } catch { $found = "unreadable" }
         $state += $found
     }
+    # The runtime firewall rules (#111 B7b): each rule in their real group, its name,
+    # program and whether it is on, read through Windows Firewall's COM interface (a
+    # tenth of a second, where Get-NetFirewallRule takes seconds, and past the tests'
+    # stand-ins for the firewall commands).
+    try {
+        $policy = New-Object -ComObject HNetCfg.FwPolicy2
+        $rules = @($policy.Rules | Where-Object { $_.Grouping -eq $script:RealFirewallGroup } |
+            ForEach-Object { "$($_.Name) $($_.ApplicationName) $($_.Enabled)" } | Sort-Object)
+        $state += ($rules -join "|")
+    } catch { $state += "unreadable" }
     return ($state -join "`n")
 }
 
@@ -472,9 +537,14 @@ function Assert-ScratchTarget {
     }
     $keys = [ordered]@{
         "the uninstall key" = [string]$RegKey; "the machine uninstall key" = [string]$MachineRegKey
-        "the Event Log source key" = [string]$EventSourceKey
+        "the Event Log source key" = [string]$EventSourceKey; "the policy key" = [string]$PolicyKey
     }
     foreach ($name in $keys.Keys) {
         if (-not (Test-ScratchKey $keys[$name])) { throw "Not scratch: $name. Nothing was run." }
+    }
+    # The runtime firewall rules' group (#111 B7b): this run's throwaway one.
+    if ([string]$FirewallGroup -cne $script:ScratchFirewallGroup -or
+        -not ([string]$FirewallGroup).StartsWith("Unminute-PesterTest-", [StringComparison]::Ordinal)) {
+        throw "Not scratch: the firewall group. Nothing was run."
     }
 }

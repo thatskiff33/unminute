@@ -125,6 +125,7 @@ Describe "install.ps1 -Machine" {
         $Options.Machine = $true; $Options.Silent = $true; $Options.SkipShortcut = $false
         $Options.InstallDirGiven = $false; $Options.SelfService = $false; $Options.Managed = $false
         $Options.Rollback = $false; $Options.RemoveSlot = ""; $Options.Package = ""
+        $Options.BlockRuntimeNetwork = $false; $script:RuntimeBlock = $false
         $script:LogFile = $null; $script:LogVersion = "-"; $script:LogError = $null
     }
 
@@ -738,6 +739,227 @@ Describe "install.ps1 -Machine" {
         }
     }
 
+    Context "the runtime firewall rule (#111 B7b)" {
+        # Windows Firewall is stood in: the group's rules live in $script:Rules (name to
+        # program), the network profiles in $script:Profiles and the policy values in
+        # $script:Policy. No rule is ever added to this computer's firewall (and the
+        # real commands throw in a test, Isolation.ps1).
+        BeforeEach {
+            $script:Rules = @{}
+            $script:AddedAt = @()
+            $script:Warnings = @()
+            $script:Policy = @{ AllowModelDownloads = 0; AllowGpuComponent = 0 }
+            $script:Profiles = @(foreach ($name in "Domain", "Private", "Public") {
+                [pscustomobject]@{ Name = $name; Enabled = "True"; AllowLocalFirewallRules = "NotConfigured" } })
+            Mock Get-RuntimeRule { $copy = @{}; foreach ($k in $script:Rules.Keys) { $copy[$k] = $script:Rules[$k] }; $copy }
+            Mock Add-RuntimeRule {
+                $script:Rules[$Name] = $Program
+                $at = Get-LinkTarget (Join-Path $script:Root "current")
+                $where = if ($at) { Split-Path -Leaf $at } else { "none" }
+                $script:AddedAt += "$Name@$where"
+            }
+            Mock Remove-RuntimeRule { $script:Rules.Remove($Name) }
+            Mock Get-FirewallProfileState { $script:Profiles }
+            Mock Get-PolicyValue { $script:Policy[$Name] }
+            Mock Write-Warn { $script:Warnings += $Message }
+
+            # The group's rule names, sorted, without the throwaway group's name.
+            function Get-RuleList {
+                return ((@($script:Rules.Keys | ForEach-Object { $_.Substring($FirewallGroup.Length + 1) }) | Sort-Object) -join ",")
+            }
+        }
+
+        It "adds an outbound block rule for each runtime program of the new version, by its real path, before it becomes current" {
+            Invoke-TestInstall (New-TestZip "1.0.0") @{ BlockRuntimeNetwork = $true }
+            Get-RuleList | Should -BeExactly "1.0.0 python.exe,1.0.0 pythonw.exe"
+            $runtime = Join-Path $script:Root "versions\1.0.0\runtime"
+            $script:Rules["$FirewallGroup 1.0.0 python.exe"] | Should -BeExactly (Join-Path $runtime "python.exe")
+            $script:Rules["$FirewallGroup 1.0.0 pythonw.exe"] | Should -BeExactly (Join-Path $runtime "pythonw.exe")
+            # Added before the junction pointed anywhere, so the version never ran unblocked.
+            $script:AddedAt | Should -Be @("$FirewallGroup 1.0.0 python.exe@none", "$FirewallGroup 1.0.0 pythonw.exe@none")
+            (Get-Record).block_runtime_network | Should -BeTrue
+            Get-Current | Should -BeExactly "1.0.0"
+            $script:Warnings | Should -BeNullOrEmpty
+            $log = [IO.File]::ReadAllText((Join-Path $script:Root "logs\install.log"))
+            $log | Should -Match "mode=machine version=1\.0\.0 step=firewall result=ok"
+            $log | Should -Match "step=done result=ok code=0"
+        }
+
+        It "keeps the choice without the switch, and the rules in step with the versions kept" {
+            Invoke-TestInstall (New-TestZip "1.0.0" -Schema 1) @{ BlockRuntimeNetwork = $true }
+            Invoke-TestInstall (New-TestZip "2.0.0" -Schema 2) @{ BlockRuntimeNetwork = $false }
+            Get-Kept | Should -BeExactly "1.0.0,2.0.0"
+            Get-RuleList | Should -BeExactly "1.0.0 python.exe,1.0.0 pythonw.exe,2.0.0 python.exe,2.0.0 pythonw.exe"
+            Invoke-TestInstall (New-TestZip "3.0.0" -Schema 3) @{ BlockRuntimeNetwork = $false }
+            Get-Kept | Should -BeExactly "2.0.0,3.0.0"
+            Get-RuleList | Should -BeExactly "2.0.0 python.exe,2.0.0 pythonw.exe,3.0.0 python.exe,3.0.0 pythonw.exe"
+            # Each new version's rules came while the one before was still current.
+            @($script:AddedAt | Where-Object { $_ -like "*3.0.0 *" }) | Should -Be @(
+                "$FirewallGroup 3.0.0 python.exe@2.0.0", "$FirewallGroup 3.0.0 pythonw.exe@2.0.0")
+            (Get-Record).block_runtime_network | Should -BeTrue
+        }
+
+        It "reaches no firewall rule, and records no choice, when it was never made" {
+            Invoke-TestInstall (New-TestZip "1.0.0")
+            Invoke-TestInstall (New-TestZip "1.1.0")
+            Should -Invoke Get-RuntimeRule -Times 0 -Exactly
+            Should -Invoke Add-RuntimeRule -Times 0 -Exactly
+            Should -Invoke Get-FirewallProfileState -Times 0 -Exactly
+            @((Get-Record).PSObject.Properties.Name) | Should -Not -Contain "block_runtime_network"
+        }
+
+        It "puts back a rule that names another program, and removes the group's other rules" {
+            $script:Rules["$FirewallGroup 1.0.0 python.exe"] = "C:\elsewhere\python.exe"
+            $script:Rules["$FirewallGroup 0.1.0 pythonw.exe"] = "C:\gone\pythonw.exe"
+            Invoke-TestInstall (New-TestZip "1.0.0") @{ BlockRuntimeNetwork = $true }
+            Get-RuleList | Should -BeExactly "1.0.0 python.exe,1.0.0 pythonw.exe"
+            $script:Rules["$FirewallGroup 1.0.0 python.exe"] | Should -BeExactly (Join-Path $script:Root "versions\1.0.0\runtime\python.exe")
+        }
+
+        It "stops before the switch (exit 1) when a rule cannot be added" {
+            Invoke-TestInstall (New-TestZip "1.0.0") @{ BlockRuntimeNetwork = $true }
+            Mock Add-RuntimeRule { throw "denied" }
+            { Invoke-TestInstall (New-TestZip "1.1.0") @{ BlockRuntimeNetwork = $false } } | Should -Throw "STOP 1"
+            Get-Current | Should -BeExactly "1.0.0"
+            (Get-Record).version | Should -BeExactly "1.0.0"
+            (Get-ItemProperty -LiteralPath $script:RegPath).DisplayVersion | Should -BeExactly "1.0.0"
+        }
+
+        It "warns while managed policy still allows downloads: <Label>" -TestCases @(
+            @{ Label = "neither value set"; Policy = @{}; Says = "AllowModelDownloads, AllowGpuComponent not set to 0" }
+            @{ Label = "GPU components allowed"; Policy = @{ AllowModelDownloads = 0; AllowGpuComponent = 1 }; Says = "AllowGpuComponent not set to 0" }
+            @{ Label = "a value that is text, not a number"; Policy = @{ AllowModelDownloads = "0"; AllowGpuComponent = 0 }; Says = "AllowModelDownloads not set to 0" }
+            @{ Label = "user models off but GPU components allowed (#111 B7a)"; Policy = @{ AllowUserModels = 0 }; Says = "AllowGpuComponent not set to 0" }
+        ) {
+            param($Label, $Policy, $Says)
+            $null = $Label
+            $script:Policy = $Policy
+            Invoke-TestInstall (New-TestZip "1.0.0") @{ BlockRuntimeNetwork = $true }
+            @($script:Warnings).Count | Should -Be 1
+            $script:Warnings[0] | Should -BeLike "*($Says)*"
+            [IO.File]::ReadAllText((Join-Path $script:Root "logs\install.log")) | Should -Match "step=firewall result=downloads_allowed"
+            Get-Current | Should -BeExactly "1.0.0"
+        }
+
+        It "does not warn about downloads when user models are off and GPU components are too" {
+            $script:Policy = @{ AllowUserModels = 0; AllowGpuComponent = 0 }
+            Invoke-TestInstall (New-TestZip "1.0.0") @{ BlockRuntimeNetwork = $true }
+            $script:Warnings | Should -BeNullOrEmpty
+        }
+
+        It "warns, and logs, that the rules are not in effect when <Label>" -TestCases @(
+            @{ Label = "a profile ignores this computer's own rules"; Kind = "merge"; Says = "Firewall rules not in effect*: Public. *" }
+            @{ Label = "the firewall is off for a profile"; Kind = "off"; Says = "Firewall rules not in effect*: Domain. *" }
+            @{ Label = "the profiles cannot be read"; Kind = "unreadable"; Says = "*could not be checked*" }
+        ) {
+            param($Label, $Kind, $Says)
+            $null = $Label
+            switch ($Kind) {
+                "merge" { $script:Profiles[2].AllowLocalFirewallRules = "False" }
+                "off" { $script:Profiles[0].Enabled = "False" }
+                "unreadable" { Mock Get-FirewallProfileState { throw "unavailable" } }
+            }
+            Invoke-TestInstall (New-TestZip "1.0.0") @{ BlockRuntimeNetwork = $true }
+            @($script:Warnings).Count | Should -Be 1
+            $script:Warnings[0] | Should -BeLike $Says
+            $result = if ($Kind -eq "unreadable") { "unchecked" } else { "not_in_effect" }
+            [IO.File]::ReadAllText((Join-Path $script:Root "logs\install.log")) | Should -Match "step=firewall result=$result"
+            # The rules are still added, and the install completes.
+            Get-RuleList | Should -BeExactly "1.0.0 python.exe,1.0.0 pythonw.exe"
+            Get-Current | Should -BeExactly "1.0.0"
+        }
+
+        It "-Rollback keeps the rules of the versions still installed, and removes a newer format's" {
+            Invoke-TestInstall (New-TestZip "1.0.0") @{ BlockRuntimeNetwork = $true }
+            Invoke-TestInstall (New-TestZip "1.1.0") @{ BlockRuntimeNetwork = $false }
+            Invoke-TestInstall "" @{ Rollback = $true }
+            Get-Current | Should -BeExactly "1.0.0"
+            Get-RuleList | Should -BeExactly "1.0.0 python.exe,1.0.0 pythonw.exe,1.1.0 python.exe,1.1.0 pythonw.exe"
+            (Get-Record).block_runtime_network | Should -BeTrue
+            Invoke-TestInstall (New-TestZip "2.0.0" -Schema 3) @{ Rollback = $false }
+            Invoke-TestInstall "" @{ Rollback = $true }
+            Get-Current | Should -BeExactly "1.0.0"
+            Get-Kept | Should -BeExactly "1.0.0"
+            Get-RuleList | Should -BeExactly "1.0.0 python.exe,1.0.0 pythonw.exe"
+        }
+
+        It "-RemoveSlot removes that version's rules and keeps the choice" {
+            Invoke-TestInstall (New-TestZip "1.0.0" -Schema 1) @{ BlockRuntimeNetwork = $true }
+            Invoke-TestInstall (New-TestZip "2.0.0" -Schema 2) @{ BlockRuntimeNetwork = $false }
+            Invoke-TestInstall (New-TestZip "2.1.0" -Schema 2)
+            Get-RuleList | Should -BeExactly ("1.0.0 python.exe,1.0.0 pythonw.exe,2.0.0 python.exe,2.0.0 pythonw.exe," +
+                "2.1.0 python.exe,2.1.0 pythonw.exe")
+            Invoke-TestInstall "" @{ RemoveSlot = "1.0.0" }
+            Get-RuleList | Should -BeExactly "2.0.0 python.exe,2.0.0 pythonw.exe,2.1.0 python.exe,2.1.0 pythonw.exe"
+            (Get-Record).block_runtime_network | Should -BeTrue
+        }
+
+        It "refuses -BlockRuntimeNetwork with <Label> (exit 2), changing nothing" -TestCases @(
+            @{ Label = "-Rollback"; With = @{ Rollback = $true; BlockRuntimeNetwork = $true } }
+            @{ Label = "-RemoveSlot"; With = @{ RemoveSlot = "1.0.0"; BlockRuntimeNetwork = $true } }
+        ) {
+            param($Label, $With)
+            $null = $Label
+            Invoke-TestInstall (New-TestZip "1.0.0")
+            Invoke-TestInstall (New-TestZip "1.1.0")
+            $before = Get-Snapshot $script:Root
+            $stopped = $null
+            try { Invoke-TestInstall "" $With } catch { $stopped = $_.Exception.Message }
+            $stopped | Should -BeExactly "STOP 2"
+            Get-Snapshot $script:Root | Should -BeExactly $before
+            Should -Invoke Add-RuntimeRule -Times 0 -Exactly
+        }
+    }
+
+    Context "the firewall commands the rule uses (#111 B7b)" {
+        It "asks Windows Firewall for an outbound block rule for that one program, in the group, in this computer's own rules" {
+            Mock New-NetFirewallRule { $script:Asked = @{} + $PesterBoundParameters }
+            $program = Join-Path $script:Root "versions\1.0.0\runtime\pythonw.exe"
+            Add-RuntimeRule "$FirewallGroup 1.0.0 pythonw.exe" $program
+            Should -Invoke New-NetFirewallRule -Times 1 -Exactly
+            $script:Asked.Name | Should -BeExactly "$FirewallGroup 1.0.0 pythonw.exe"
+            $script:Asked.DisplayName | Should -BeExactly "$FirewallGroup 1.0.0 pythonw.exe"
+            $script:Asked.Group | Should -BeExactly $FirewallGroup
+            $script:Asked.Group | Should -BeLike "Unminute-PesterTest-*"
+            $script:Asked.Program | Should -BeExactly $program
+            "$($script:Asked.Direction)" | Should -BeExactly "Outbound"
+            "$($script:Asked.Action)" | Should -BeExactly "Block"
+            "$($script:Asked.Profile)" | Should -BeExactly "Any"
+            "$($script:Asked.Enabled)" | Should -BeExactly "True"
+            $script:Asked.PolicyStore | Should -BeExactly "PersistentStore"
+        }
+
+        It "reads the group's rules and their programs, and an empty group as none" {
+            Mock Get-NetFirewallRule {
+                $script:AskedGroup = $Group; $script:AskedStore = $PolicyStore
+                @([pscustomobject]@{ Name = "$FirewallGroup 1.0.0 python.exe" })
+            }
+            # A stand-in rule is not the CIM object the real command takes.
+            Mock Get-NetFirewallApplicationFilter -RemoveParameterType AssociatedNetFirewallRule {
+                [pscustomobject]@{ Program = "C:\x\python.exe" }
+            }
+            $found = Get-RuntimeRule
+            $found.Count | Should -Be 1
+            $found["$FirewallGroup 1.0.0 python.exe"] | Should -BeExactly "C:\x\python.exe"
+            "$($script:AskedGroup)" | Should -BeExactly $FirewallGroup
+            $script:AskedStore | Should -BeExactly "PersistentStore"
+            Mock Get-NetFirewallRule {
+                throw [Management.Automation.ErrorRecord]::new([Exception]::new("none"), "NotFound",
+                    [Management.Automation.ErrorCategory]::ObjectNotFound, $null)
+            }
+            (Get-RuntimeRule).Count | Should -Be 0
+            Mock Get-NetFirewallRule { throw "the service is stopped" }
+            { Get-RuntimeRule } | Should -Throw "*service is stopped*"
+        }
+
+        It "removes a rule by its name from this computer's own rules" {
+            Mock Remove-NetFirewallRule { $script:Asked = @{} + $PesterBoundParameters }
+            Remove-RuntimeRule "$FirewallGroup 1.0.0 python.exe"
+            "$($script:Asked.Name)" | Should -BeExactly "$FirewallGroup 1.0.0 python.exe"
+            $script:Asked.PolicyStore | Should -BeExactly "PersistentStore"
+        }
+    }
+
     Context "a per-user install on a computer with a machine install" {
         It "finds the machine uninstall entry in the 64-bit view" {
             # $MachineRegKey is this test's throwaway HKCU key (Set-ScratchMachineTarget).
@@ -758,6 +980,9 @@ Describe "uninstall.ps1 -Machine" {
         Mock Get-FolderSecurity { Get-MachineRootSecurity }
         Mock Get-Process { }
         Mock Invoke-LidRestore { throw "a profile was read" }
+        # Windows Firewall stood in (#111 B7b): no runtime rule unless a test adds one.
+        Mock Get-RuntimeRule { @{} }
+        Mock Remove-RuntimeRule { throw "no rule to remove" }
 
         # A machine install as install.ps1 -Machine leaves it: versions (each with its
         # storage format), the current junction, current.json, the log, the
@@ -925,6 +1150,34 @@ Describe "uninstall.ps1 -Machine" {
         try { { Invoke-TestUninstall } | Should -Throw "STOP 3" } finally { $held.Dispose() }
         Get-Snapshot $root | Should -BeExactly $before
         Test-Path -LiteralPath $script:RegPath | Should -BeTrue
+    }
+
+    It "removes every rule in the runtime firewall group, whether or not current.json records the choice (#111 B7b)" {
+        $script:Removed = @()
+        Mock Get-RuntimeRule { @{ "$FirewallGroup 1.0.0 python.exe" = "x"; "$FirewallGroup 0.9.0 pythonw.exe" = $null } }
+        Mock Remove-RuntimeRule { $script:Removed += $Name }
+        $root = New-TestMachineInstall @{ "1.0.0" = 2 } "1.0.0"
+        Invoke-TestUninstall
+        [IO.Directory]::Exists($root) | Should -BeFalse
+        ((@($script:Removed) | Sort-Object) -join ",") | Should -BeExactly "$FirewallGroup 0.9.0 pythonw.exe,$FirewallGroup 1.0.0 python.exe"
+        $FirewallGroup | Should -BeLike "Unminute-PesterTest-*"
+        # And when the folder has already gone.
+        $script:Removed = @()
+        New-Item -Path $script:RegPath -Force | Out-Null
+        Invoke-TestUninstall
+        @($script:Removed).Count | Should -Be 2
+    }
+
+    It "still uninstalls, and warns, when the runtime firewall rules cannot be removed (#111 B7b)" {
+        $script:Warnings = @()
+        Mock Get-RuntimeRule { @{ "$FirewallGroup 1.0.0 python.exe" = "x" } }
+        Mock Remove-RuntimeRule { throw "denied" }
+        Mock Write-Warn { $script:Warnings += $Message }
+        $root = New-TestMachineInstall @{ "1.0.0" = 2 } "1.0.0"
+        Invoke-TestUninstall
+        [IO.Directory]::Exists($root) | Should -BeFalse
+        Test-Path -LiteralPath $script:RegPath | Should -BeFalse
+        @($script:Warnings) | Should -Be @("The runtime firewall rules could not be removed; remove the rules in their group by hand.")
     }
 
     It "removes what is left when the folder has gone, and says there is nothing to remove otherwise" {

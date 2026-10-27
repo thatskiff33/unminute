@@ -14,7 +14,7 @@ This guide covers the packaged workspace, as it is in the project's latest code.
 | | Where it is |
 | --- | --- |
 | **Recordings you import** | Read where they are. The app keeps its own working copy of the audio until you confirm the transcript is reviewed. |
-| **Transcription and speaker identification** | Done on this computer. Nothing is uploaded. While processing, the app refuses its own Python network connections; for managed devices, an outbound firewall rule is the stronger control. |
+| **Transcription and speaker identification** | Done on this computer. Nothing is uploaded. While processing, the app refuses its own Python network connections. Where your IT team installed it for everyone on the computer, they can also block the app's network use with a firewall rule; then model downloads are blocked too, and your IT team provides the models. |
 | **Transcripts, edits, speaker names, holds** | In the workspace on this computer (`%LOCALAPPDATA%\Unminute\workspace`), encrypted with a key that Windows keeps for your account on this computer. This is not a synced folder. The app's working copy of each meeting's audio, and each recording as it is saved (the microphone, and computer audio when it is on), are encrypted the same way. Your settings are not encrypted. |
 | **Models** | Downloaded once, when you choose, from Hugging Face. Each file is checked against a published checksum. They are stored in `%LOCALAPPDATA%\Unminute\models`. |
 | **Handoff to an AI assistant** | Only when you copy or save it. **Copy and open** also opens the assistant's web page in your browser, but sends nothing: you paste and send. What you paste or upload is then handled by that assistant under your organisation's account and policies, not by this app. |

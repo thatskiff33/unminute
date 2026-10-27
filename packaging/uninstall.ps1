@@ -55,8 +55,9 @@
   installer does, refuses while the app runs for anyone on the computer, and
   removes only the installer's own entries (the versions, the current junction
   as a link, current.json, the logs, install.lock, staging folders and this
-  script), the Start menu entry for all users, the Event Log source and, last,
-  the machine-wide uninstall entry. While a version kept for people whose workspace has
+  script), the Start menu entry for all users, the runtime firewall rules (#111
+  B7b: every rule in their group; a failure only warns), the Event Log source
+  and, last, the machine-wide uninstall entry. While a version kept for people whose workspace has
   not moved to the current storage format is installed, it removes nothing
   unless -IncludeKeptSlots is given (exit 5), so a misconfigured "uninstall
   previous version" in Intune fails safe (#111 B6-11). It never reads or writes
@@ -974,6 +975,38 @@ function Get-EventMessageFile {
     return $null
 }
 
+# The runtime firewall rule (#111 B7b): the group that holds the outbound block rules
+# for each installed version's runtime\python.exe and runtime\pythonw.exe, in this
+# computer's own firewall rules (the persistent store). Set once, here, so the tests
+# can point it at a throwaway group (scratch_text, tests/powershell/Isolation.ps1).
+# Windows Firewall is reached only through Get-RuntimeRule, Remove-RuntimeRule and,
+# in install.ps1, Add-RuntimeRule and Get-FirewallProfileState, which the Pester tests
+# stand in (Isolation.ps1 refuses a script that reaches it anywhere else).
+$FirewallGroup = "Unminute runtime"
+$FirewallStore = "PersistentStore"
+
+# The group's rules, as a table of each rule's name and the program it names (null when
+# Windows gives none). No rule there is an empty table; any other failure throws.
+function Get-RuntimeRule {
+    $found = @{}
+    try { $rules = @(Get-NetFirewallRule -Group $FirewallGroup -PolicyStore $FirewallStore -ErrorAction Stop) }
+    catch {
+        if ($_.CategoryInfo.Category -eq [Management.Automation.ErrorCategory]::ObjectNotFound) { return $found }
+        throw
+    }
+    foreach ($rule in $rules) {
+        $program = $null
+        try { $program = [string](Get-NetFirewallApplicationFilter -AssociatedNetFirewallRule $rule -ErrorAction Stop).Program } catch { }
+        $found[[string]$rule.Name] = $program
+    }
+    return $found
+}
+
+# Removes one of the group's rules, by its name.
+function Remove-RuntimeRule([string]$Name) {
+    Remove-NetFirewallRule -Name $Name -PolicyStore $FirewallStore -ErrorAction Stop
+}
+
 # -- end of the shared machine section ----------------------------------------------------
 
 # -- machine mode: the uninstall (#111 B6b) ---------------------------------------------
@@ -1016,6 +1049,15 @@ function Unregister-EventSource {
         $key = Get-EventSourceKey
         if (Test-Path -LiteralPath $key) { Remove-Item -LiteralPath $key -Recurse -Force }
     } catch { Write-Warn "The Event Log source could not be removed." }
+}
+
+# Removes every rule in the runtime firewall group (#111 B7b), whether or not
+# current.json still records the choice, once the versions they name are gone. A
+# failure only warns: a block rule for a program that no longer exists does nothing.
+function Remove-RuntimeBlock {
+    try {
+        foreach ($name in @((Get-RuntimeRule).Keys)) { Remove-RuntimeRule $name }
+    } catch { Write-Warn "The runtime firewall rules could not be removed; remove the rules in their group by hand." }
 }
 
 function Invoke-MachineUninstall {
@@ -1114,6 +1156,7 @@ function Invoke-MachineUninstall {
         try { Remove-OwnFolder $root } catch { }
     }
     if (Test-Path -LiteralPath $link) { Remove-Item -LiteralPath $link -Force }
+    Remove-RuntimeBlock
     Unregister-EventSource
     # Last: while any of it remains, the app still shows as installed (Intune detection).
     if (Test-Path -LiteralPath $regKey) { Remove-Item -LiteralPath $regKey -Recurse -Force }

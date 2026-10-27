@@ -16,8 +16,12 @@
 #      reach the network.
 #
 # This is a tripwire for Python code, not a firewall: native libraries with
-# their own sockets are not covered. On managed devices an outbound firewall
-# rule for the runtime is the enforcing control (#111 B7).
+# their own sockets are not covered. The operating-system block beneath it is
+# the runtime firewall rule (#111 B7b), and only where IT chose it: a machine
+# install with install.ps1 -Machine -BlockRuntimeNetwork, models staged by IT
+# and downloads turned off by policy (the rule blocks the download process
+# too), and only while Windows Firewall applies the computer's own rules.
+# Elsewhere, including every per-user install, this guard is all there is.
 #
 # Stdlib only, so it is importable (and testable) without the app's packages.
 

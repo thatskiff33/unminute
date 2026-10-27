@@ -6,9 +6,14 @@
 # with no capabilities (workspace/appcontainer.py, #299), suspended; puts it in
 # a Windows job (workspace/jobs.py); checks its token from outside; and only
 # then lets it run. In the container Windows gives it no access to the user's
-# files, the workspace or its key, and no network, loopback included: it reads
+# files, the workspace or its key, and no network (loopback measured blocked;
+# the internet block is AppContainer's documented behaviour, to confirm on a
+# managed laptop, #189): it reads
 # the runtime and the app code (readable by ALL APPLICATION PACKAGES), the
 # recording through one read-only handle the app opened for it, and its pipes.
+# The runtime firewall rule (#111 B7b) is a further block only on a machine
+# install where IT chose it (install.ps1 -Machine -BlockRuntimeNetwork, with
+# models staged and downloads off); nothing here relies on it.
 # It runs at Low integrity (the container's level; lower_integrity() confirms
 # it), so it cannot open the app's process or send messages to other windows,
 # and the job stops it starting processes (docs/SECURITY_MODEL.md T2, T3).
