@@ -422,7 +422,13 @@ function Install-ModelFolder([string]$Models, $Model) {
             $aside = [IO.Path]::Combine($Models, ".retired-" + [guid]::NewGuid().ToString("N"))
             Invoke-LockRetry { [IO.Directory]::Move($target, $aside) }
         }
-        Invoke-LockRetry { [IO.Directory]::Move($staging, $target) }
+        try {
+            Invoke-LockRetry { [IO.Directory]::Move($staging, $target) }
+        } catch {
+            # The old copy goes back, so the model is not left missing until the next run.
+            if ($aside -and -not [IO.Directory]::Exists($target)) { try { [IO.Directory]::Move($aside, $target) } catch { } }
+            throw
+        }
         if ($aside) { try { Remove-OwnFolder $aside } catch { } }    # else the next run removes it
     } finally {
         if ([IO.Directory]::Exists($staging)) { try { Remove-OwnFolder $staging } catch { } }
@@ -556,6 +562,11 @@ function Invoke-ModelInstall {
     $script:LogStep = "copy"
     Write-ModelLog "begun"
     [void][IO.Directory]::CreateDirectory($models)
+    # No package counts as installed while models change: the detection file comes back
+    # only once every model is in place (Set-DetectionFile).
+    foreach ($file in [IO.DirectoryInfo]::new($models).GetFiles()) {
+        if (-not (Test-Link $file) -and $file.Name -cmatch $DetectPattern) { $file.Delete() }
+    }
     $busy = 0
     foreach ($model in $manifest.models) {
         try {

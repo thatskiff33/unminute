@@ -343,7 +343,7 @@ Describe "Install-Models.ps1" {
 
     It "leaves a folder in use and exits 3, without the detection file" {
         Invoke-TestInstall
-        Remove-Item -LiteralPath (Get-ChildItem -LiteralPath $script:Models -Filter "package-*.json").FullName
+        @(Get-ChildItem -LiteralPath $script:Models -Filter "package-*.json").Count | Should -Be 1
         [IO.File]::WriteAllText((Join-Path $script:One "sub\weights.bin"), "weights 0ne")
         # As the app holds a model open: read, sharing reading only.
         $open = [IO.File]::Open((Join-Path $script:One "config.json"), "Open", "Read", "Read")
@@ -352,6 +352,22 @@ Describe "Install-Models.ps1" {
         } finally { $open.Dispose() }
         [IO.File]::ReadAllText((Join-Path $script:One "sub\weights.bin")) | Should -BeExactly "weights 0ne"
         @(Get-ChildItem -LiteralPath $script:Models -Filter "package-*.json").Count | Should -Be 0
+        @([IO.DirectoryInfo]::new($script:Models).GetDirectories() | Where-Object { $_.Name.StartsWith(".") }).Count | Should -Be 0
+    }
+
+    It "puts the old copy back when the new one cannot be moved into place" {
+        Invoke-TestInstall
+        [IO.File]::WriteAllText((Join-Path $script:One "sub\weights.bin"), "weights 0ne")
+        # The first rename (the old copy aside) works; the second (the new copy into
+        # place) is refused as a file in use.
+        $script:Moves = 0
+        Mock Invoke-LockRetry {
+            $script:Moves++
+            if ($script:Moves -ge 2) { throw [IO.IOException]::new("in use", -2147024864) }
+            $Action.Invoke()
+        }
+        { Invoke-TestInstall } | Should -Throw "STOP 3"
+        [IO.File]::ReadAllText((Join-Path $script:One "sub\weights.bin")) | Should -BeExactly "weights 0ne"
         @([IO.DirectoryInfo]::new($script:Models).GetDirectories() | Where-Object { $_.Name.StartsWith(".") }).Count | Should -Be 0
     }
 
