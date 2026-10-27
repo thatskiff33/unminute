@@ -48,8 +48,9 @@
 # source, kept, follows the Windows default output instead, decision 6); a
 # computer track that fails stops on its own and the
 # microphone carries on. On stop the two tracks become ONE mix
-# (workspace/mixdown.py), made in memory as it is streamed to the decoder and
-# transcribed once (decision 10).
+# (workspace/mixdown.py), with the computer audio's echo taken off the
+# microphone (workspace/echo.py, #376), made in memory as it is streamed to
+# the decoder and transcribed once (decision 10).
 #
 # No audio leaves the computer; the recording folder lives inside the workspace.
 
@@ -1226,7 +1227,8 @@ class RecordingAudio:
     microphone track alone, or the ONE mix of both tracks (format 2,
     workspace/mixdown.py) made in memory block by block. Nothing plain is
     written. rate and frames are the microphone's; readable is False when no
-    chunk of any track could be read."""
+    chunk of any track could be read; echo_skipped says why the mix has no
+    echo cancellation when it should have had it (mixdown.Mix), else None."""
 
     def __init__(self, mic, computer, journal, notes):
         self.mic, self.computer = mic, computer
@@ -1236,6 +1238,7 @@ class RecordingAudio:
         if computer is not None:
             from workspace import mixdown
             self._mix = mixdown.Mix(journal, mic, computer, notes)
+        self.echo_skipped = self._mix.echo_skipped if self._mix is not None else None
 
     @property
     def seconds(self):

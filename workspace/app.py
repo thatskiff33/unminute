@@ -1652,6 +1652,8 @@ class Workspace:
         try:
             audio = recorder.open_recording(folder, journal, key, events)
             key = None
+            if audio.echo_skipped:               # the plain mix, with its event (#376)
+                self.log.write("echo_skipped", cause=audio.echo_skipped)
             if not audio.readable:               # no chunk opened: kept, never deleted
                 self._add_report(unreadable)
                 return

@@ -33,7 +33,9 @@
 # and the page drawing (drawing_report()); otherwise the run stops, exit 2.
 #
 # Before the windowed runs, a release run measures the sealed store once, with
-# no window (#111 C7, the C2b-2 design's section 4.8): measure_store().
+# no window (#111 C7, the C2b-2 design's section 4.8): measure_store(); and the
+# import of a synthetic 1-hour two-track recording, with its echo cancellation
+# (#376): measure_import().
 
 import argparse
 import json
@@ -128,6 +130,14 @@ STORE_OPENS = 10                   # opens timed, median
 STORE_READS = 5                    # listings, pages and searches timed, median
 STORE_TIMEOUT_S = 3600
 STORE_FIGURES = evidence.PERF_STORE_FIGURES
+# The import step (#376): no window, run once, in its own throwaway folder. A
+# synthetic two-track recording (both tracks at the usual 48 kHz, the
+# microphone hearing the computer audio's echo) imported as the app imports
+# one after Stop: its one mix with echo cancellation, the decoder, the store.
+IMPORT_SECONDS = 3600
+IMPORT_RATE = SYNTHETIC_RATE
+IMPORT_FIGURES = ("import_two_track_1h_s",)
+IMPORT_TIMEOUT_S = 3600
 # Machines whose figures can be compared (--compare): these fields must match.
 COMPARABLE = ("cpu", "cores", "logical_processors", "memory_gb", "power_plan",
               "on_mains_power")
@@ -257,6 +267,18 @@ docs/perf-budgets.json, set from v0.5.0-preview.4's release run (#430), and
 proposed again from each run. --quick leaves it out and does not compare it;
 release evidence needs it (tools/evidence.py).
 
+Import step (#376): after the store step, once and with no window, in its own
+throwaway folder, a synthetic 1-hour two-track recording (microphone and
+computer audio, both 48 kHz, with the computer audio's echo on the microphone)
+is saved as the recorder saves one and imported by the app's own code
+("import": import_two_track_1h_s, from the start of the import until the
+meeting is stored; making the synthetic recording is not timed). That time
+includes the one mix with its echo cancellation (two passes), the sandboxed
+decoder and the store. A step whose mix fell back to the plain mix
+(mix_echo_skipped) stops the run. Its budget is not set yet: the owner's
+decision of 28 Oct 2026 (#376) sets it from a release run's figure, which
+each run proposes. --quick leaves it out.
+
 --compare <report>: a local copy of an earlier release's evidence-perf.json
 (nothing is fetched). Figures present in both reports are listed side by
 side ("compared"), with both machines; if the machines differ in processor,
@@ -264,8 +286,8 @@ cores, memory, power plan or mains power, each figure is "not comparable".
 
 Release run (docs/RELEASING.md): 3 runs, 60 s settle, 300 s windows and
 --leak-minutes 30, with --speech and --draft-models, about two and
-three-quarter hours, plus the store step. --quick is 1 run, 20 s settle and
-60 s windows (about 10 minutes, or 13 with the drafts-on states), for
+three-quarter hours, plus the store and import steps. --quick is 1 run, 20 s
+settle and 60 s windows (about 10 minutes, or 13 with the drafts-on states), for
 before-and-after checks during development.
 """
 
@@ -311,8 +333,10 @@ def compare(figures, budgets, skip=()):
 
 
 # The figures a budget can bound, and propose() proposes: the per-state
-# figures, startup's workspace_s and the store step's figures (#111 C7, #430).
-BUDGETED = ("cpu_percent_of_one_core", "private_mb", "startup_s", "workspace_s") + STORE_FIGURES
+# figures, startup's workspace_s and the store and import steps' figures
+# (#111 C7, #430, #376).
+BUDGETED = (("cpu_percent_of_one_core", "private_mb", "startup_s", "workspace_s")
+            + STORE_FIGURES + IMPORT_FIGURES)
 
 
 def worst_worker(runs):
@@ -359,9 +383,10 @@ def _figures(report):
         for metric, value in (metrics or {}).items():
             if _number(value):
                 out[(state, metric)] = value
-    for metric, value in (report.get("store") or {}).items():
-        if _number(value):
-            out[("store", metric)] = value
+    for step in ("store", "import"):
+        for metric, value in (report.get(step) or {}).items():
+            if _number(value):
+                out[(step, metric)] = value
     return out
 
 
@@ -389,6 +414,13 @@ def store_problems(store):
     if not isinstance(store, dict):
         return ["the store step did not run"]
     return [f for f in STORE_FIGURES if not _number(store.get(f))]
+
+
+def import_problems(figures):
+    """What the import step left out (empty when it measured everything)."""
+    if not isinstance(figures, dict):
+        return ["the import step did not run"]
+    return [f for f in IMPORT_FIGURES if not _number(figures.get(f))]
 
 
 # -- the recording states (pure apart from PacedStream's thread; tested) --------------
@@ -1641,6 +1673,11 @@ def parent(args):
             missing = store_problems(report["store"])
             if missing:
                 raise RuntimeError(f"the store step did not measure {', '.join(missing)}")
+            print("import step (no window)", flush=True)     # #376
+            report["import"] = import_step(args)
+            missing = import_problems(report["import"])
+            if missing:
+                raise RuntimeError(f"the import step did not measure {', '.join(missing)}")
         if asked:                     # once, no window, before the windowed runs (#104)
             print("decoding the public speech for the drafts-on states", flush=True)
             speech_dir = Path(tempfile.mkdtemp(prefix="unminute-speech-"))
@@ -1677,13 +1714,14 @@ def parent(args):
     report["median"] = figures
     budgets = json.loads(BUDGETS.read_text(encoding="utf-8")) if BUDGETS.exists() else {}
     skip = () if args.leak_minutes >= LEAK_BUDGET_MINUTES else ("leak",)
-    if args.quick:                    # --quick has no store step to compare
-        skip += ("store",)
+    if args.quick:                    # --quick has no store or import step to compare
+        skip += ("store", "import")
     if args.quick and not asked:      # nor, without --speech, the drafts-on states;
         skip += DRAFT_STATES          # a release run without them is not measured
-    # The store step's figures are measured once, not per run, so they are
-    # compared and proposed as they are, beside the medians (#430).
-    gated = dict(figures, store=report["store"]) if report.get("store") else figures
+    # The store and import steps' figures are measured once, not per run, so
+    # they are compared and proposed as they are, beside the medians (#430, #376).
+    gated = dict(figures, **{step: report[step] for step in ("store", "import")
+                             if report.get(step)})
     over, missing = compare(gated, budgets.get("budgets", {}), skip)
     report["over_budget"] = [{"state": s, "metric": m, "value": v, "budget": b}
                              for s, m, v, b in over]
@@ -1713,11 +1751,13 @@ def parent(args):
     if "leak" in skip:
         print(f"Not compared: the leak check needs --leak-minutes {LEAK_BUDGET_MINUTES} or more.")
     if "store" in skip:
-        print("Not compared: the store step does not run with --quick.")
+        print("Not compared: the store and import steps do not run with --quick.")
     if DRAFT_STATES[0] in skip:
         print("Not compared: the drafts-on states need --speech and --draft-models.")
     if report.get("store"):
         print("store step: " + json.dumps(report["store"]))
+    if report.get("import"):
+        print("import step: " + json.dumps(report["import"]))
     comparison = report.get("comparison")
     if comparison and comparison["machines_differ_in"]:
         print("Compared with the earlier report: not comparable, the machines differ in "
@@ -1740,17 +1780,28 @@ def earlier_report(path):
 def store_step(args):
     """Run measure_store() once in a child (the package's runtime, as the
     window child runs), in a throwaway folder removed afterwards."""
-    workdir = Path(tempfile.mkdtemp(prefix="unminute-store-"))
+    return _no_window_step(args, "store", STORE_TIMEOUT_S)
+
+
+def import_step(args):
+    """Run measure_import() once in a child, like store_step() (#376)."""
+    return _no_window_step(args, "import", IMPORT_TIMEOUT_S)
+
+
+def _no_window_step(args, step, timeout):
+    """Run this tool with --<step>-child once, in a throwaway folder removed
+    afterwards: the figures from its last PREFIX line."""
+    workdir = Path(tempfile.mkdtemp(prefix=f"unminute-{step}-"))
     command, env = child_command(args, workdir)
-    command[command.index("--child")] = "--store-child"
+    command[command.index("--child")] = f"--{step}-child"
     try:
         r = subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
-                           env=env, timeout=STORE_TIMEOUT_S)
+                           env=env, timeout=timeout)
         found = [json.loads(line[len(PREFIX):]) for line in r.stdout.splitlines()
                  if line.startswith(PREFIX)]
         if r.returncode or not found:
             # The report is published: no throwaway path, home folder or user name (P3).
-            raise RuntimeError(f"the store step failed (exit {r.returncode}): "
+            raise RuntimeError(f"the {step} step failed (exit {r.returncode}): "
                                f"{residue.redact(r.stderr[-800:], workdir)}")
         return found[-1]
     finally:
@@ -1930,6 +1981,15 @@ def measure_store(root, protector=None, meetings=STORE_MEETINGS, passages=STORE_
 
 def store_child(args):
     """--store-child: measure_store() in this process, figures on stdout."""
+    return _step_child(args, measure_store)
+
+
+def import_child(args):
+    """--import-child: measure_import() in this process, figures on stdout."""
+    return _step_child(args, measure_import)
+
+
+def _step_child(args, measure):
     app = Path(args.app) if args.app else ROOT
     evidence.add_app(app)
     from workspace import offline_guard     # as the app itself starts
@@ -1937,10 +1997,104 @@ def store_child(args):
     offline_guard.install()
     if args.app:
         evidence.require_app_modules(app)
-    figures = measure_store(Path(args.workdir))
+    figures = measure(Path(args.workdir))
     sys.stdout.write(PREFIX + json.dumps(figures) + "\n")
     sys.stdout.flush()
     return 0
+
+
+def synthetic_call(seconds, rate, seed=376):
+    """(microphone, computer audio) as int16 arrays for a synthetic call on
+    laptop speakers: the computer plays bursts of shaped noise (a stand-in for
+    the far side talking), which the microphone hears 40 ms later through a
+    decaying 0.2 s room at half its level; for the second half of every
+    minute the person in the room talks too (other bursts). One minute (or
+    less, for a shorter call) is made, to be repeated. Synthetic only: no
+    recording of anyone."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    minute = min(int(seconds * rate), 60 * rate)
+
+    def bursts(amp):
+        out = np.zeros(minute)
+        pos = 0
+        while pos < minute:
+            n = min(int(rng.uniform(0.08, 0.3) * rate), minute - pos)
+            shaped = np.cumsum(rng.standard_normal(n))       # most power at low pitch
+            shaped -= np.linspace(shaped[0], shaped[-1], n)
+            out[pos:pos + n] = shaped / (np.std(shaped) + 1e-9) * np.hanning(n)
+            pos += n + int(rng.uniform(0.02, 0.3) * rate)
+        return out / (np.sqrt(np.mean(out ** 2)) + 1e-9) * amp
+
+    far, near = bursts(2000.0), bursts(1500.0)
+    near[:minute // 2] = 0
+    tail = int(0.2 * rate)
+    room = rng.standard_normal(tail) * np.exp(-6.9 * np.arange(tail) / (0.15 * rate))
+    room[0] += 3.0
+    room = np.concatenate([np.zeros(int(0.04 * rate)), room / np.sqrt(np.sum(room ** 2)) * 0.5])
+    size = 1 << int(np.ceil(np.log2(minute + len(room))))
+    heard = np.fft.irfft(np.fft.rfft(far, size) * np.fft.rfft(room, size), size)[:minute]
+
+    def as16(x):
+        return np.clip(np.round(x), -32768, 32767).astype(np.int16)
+    return as16(near + heard), as16(far)
+
+
+def measure_import(root, protector=None, seconds=IMPORT_SECONDS, rate=IMPORT_RATE):
+    """The time to import a synthetic two-track recording (#376), with no
+    window: the recording (synthetic_call()) is saved as the recorder saves
+    one, in encrypted chunks under its own key, both tracks lined up from the
+    same start, and imported by the app's own code (_import_recording_folder),
+    which mixes it with its echo cancellation, decodes it in the sandboxed
+    decoder and stores the meeting. protector: tests only. Raises
+    RuntimeError if the import did not make one meeting from both tracks with
+    the echo cancelled."""
+    import numpy as np
+
+    from workspace import recorder
+    from workspace.app import Workspace
+    root = Path(root)
+    ws = Workspace(root / "workspace", root / "models", start=False, battery=False,
+                   protector=protector)
+    try:
+        folder = recorder.new_folder(ws.recordings)
+        folder.mkdir(parents=True)
+        key = ws.store.create_recording_key(folder.name)
+        mic, comp = synthetic_call(seconds, rate)          # one minute, repeated
+        step, total = recorder.CHUNK_S * rate, int(seconds * rate)
+        tracks = {}
+        for track, pattern in ((recorder.MICROPHONE, mic), (recorder.COMPUTER, comp)):
+            chunks = []
+            for i, a in enumerate(range(0, total, step)):
+                at = a % len(pattern)
+                part = np.resize(pattern[at:], min(step, total - a))
+                name = recorder.chunk_name(track, i)
+                recorder._write_chunk(folder / name, part.tobytes(), key,
+                                      recorder.chunk_context(folder.name, track, i), rate)
+                chunks.append({"file": name, "frames": len(part)})
+            marks = [[f, 1000.0 + f / rate, 1 if f == 0 else 0]
+                     for f in range(0, total, 30 * rate)]
+            tracks[track] = {"rate": rate, "chunks": chunks, "frames": total,
+                             "marks": marks, "state": "stopped"}
+        journal = dict(tracks[recorder.MICROPHONE], id=folder.name, device=0,
+                       device_name="Synthetic input (performance check)", started_at=1000.0,
+                       last_seen=1000.0 + seconds, events=[], format=recorder.JOURNAL_FORMAT,
+                       tracks={recorder.COMPUTER: dict(tracks[recorder.COMPUTER],
+                                                       source={"kind": "all"},
+                                                       device_name="Synthetic output")})
+        (folder / "journal.json").write_text(json.dumps(journal), encoding="utf-8")
+        start = time.perf_counter()
+        ws._import_recording_folder(folder)
+        took = time.perf_counter() - start
+        report = ws.recording_status()["reports"][-1]
+        kinds = [e.get("kind") for e in report.get("events") or []]
+        if not report.get("meeting") or not report.get("computer") or "pending" in report \
+                or "mix_echo_skipped" in kinds or len(ws.meetings()) != 1:
+            raise RuntimeError("the import step did not import one two-track meeting with its "
+                               f"echo cancelled (events: {', '.join(map(str, kinds)) or 'none'})")
+    finally:
+        ws.close()
+    return {"import_two_track_1h_s": round(took, 2), "seconds": seconds, "rate": rate}
 
 
 # -- the child: the real window on synthetic meetings ----------------------------------
@@ -2226,6 +2380,7 @@ def main():
     parser.add_argument("--store-child", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--speech-child", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--speech-pcm", help=argparse.SUPPRESS)
+    parser.add_argument("--import-child", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--workdir", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.child:
@@ -2234,6 +2389,8 @@ def main():
         return store_child(args)
     if args.speech_child:
         return speech_child(args)
+    if args.import_child:
+        return import_child(args)
     if not args.report:
         parser.error("give a report path")
     if args.compare:                    # a bad file stops now, not after the run

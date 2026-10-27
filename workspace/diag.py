@@ -74,7 +74,9 @@ KINDS = {"start", "stop", "timing", "incident", "crash", "worker_exit", "native_
          "launch_check", "gpu_removed", "gpu_kept",
          # #111 B6b (no fields): current.json claims machine mode, and the
          # install failed the machine trust test (update.machine_trusted)
-         "machine_claim_refused"}
+         "machine_claim_refused",
+         # #376: a two-track recording mixed without echo cancellation (cause)
+         "echo_skipped"}
 INTEGRITY_FILE = "integrity.json"   # the last database check (R11): see integrity_state()
 KEYS_FILE = "keys.json"             # the key's state at the last start (#111 C4a): keys_state()
 KEY_REASONS = ("windows", "key", "protector", "missing")   # store.KeyUnavailable.reason
@@ -181,6 +183,8 @@ FIELDS = {
     # (appcontainer.STEPS); its Windows error goes in winerror
     "step": _set("profile", "start", "contain", "check", "ready"),
     "frames": _frames,
+    # #376: why echo cancellation was not used (mixdown.Mix.echo_skipped)
+    "cause": _set("check", "error"),
 }
 
 

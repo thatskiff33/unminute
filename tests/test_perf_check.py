@@ -83,15 +83,16 @@ class BudgetTests(unittest.TestCase):
     def test_budget_file_is_valid_and_uses_known_states_and_metrics(self):
         path = ROOT / "docs" / "perf-budgets.json"
         data = json.loads(path.read_text(encoding="utf-8"))
-        states = set(perf_check.STATES) | {"startup", "worker", "leak", "store"}
+        states = set(perf_check.STATES) | {"startup", "worker", "leak", "store", "import"}
         # The store's figures are budgeted under "store" only, and only they are
-        # (#430 review): a store figure under another state would never be compared.
-        store = set(perf_check.STORE_FIGURES)
-        metrics = ((set(perf_check.BUDGETED) - store)
+        # (#430 review): a store figure under another state would never be
+        # compared. The same for the import step's under "import" (#376).
+        store, imports = set(perf_check.STORE_FIGURES), set(perf_check.IMPORT_FIGURES)
+        metrics = ((set(perf_check.BUDGETED) - store - imports)
                    | {"exit_after_last_use_s", "private_growth_mb"})
         for state, limits in data["budgets"].items():
             self.assertIn(state, states, f"unknown state in {path.name}")
-            allowed = store if state == "store" else metrics
+            allowed = {"store": store, "import": imports}.get(state, metrics)
             self.assertTrue(set(limits) <= allowed, f"{state}: unknown metric in {path.name}")
             for metric, limit in limits.items():
                 self.assertTrue(limit is None or limit > 0, f"{state} {metric}")
@@ -1375,6 +1376,8 @@ class DrawnRunTests(unittest.TestCase):
                                       return_value=dict(STORE)), \
                     mock.patch.object(perf_check, "speech_step",     # #104, no window
                                       return_value=Path(tmp) / "speech.pcm"), \
+                    mock.patch.object(perf_check, "import_step",     # #376, no window
+                                      return_value=dict(IMPORT)), \
                     mock.patch.object(perf_check.subprocess, "Popen", return_value=child), \
                     mock.patch.object(perf_check, "Job"), \
                     mock.patch.object(perf_check, "measure",
@@ -1616,6 +1619,7 @@ class DraftsReportTests(unittest.TestCase):
                     mock.patch.object(perf_check, "display_watch", return_value=FakeDisplay()), \
                     mock.patch.object(perf_check, "refresh_now", return_value=None), \
                     mock.patch.object(perf_check, "store_step", return_value=dict(STORE)), \
+                    mock.patch.object(perf_check, "import_step", return_value=dict(IMPORT)), \
                     mock.patch.object(perf_check, "speech_step", side_effect=decoded), \
                     mock.patch.object(perf_check, "one_run", side_effect=run), \
                     mock.patch.object(perf_check, "BUDGETS", budget_file), \
@@ -1960,6 +1964,7 @@ class MachineReportTests(unittest.TestCase):
 
 
 STORE = {name: 0.01 for name in perf_check.STORE_FIGURES}
+IMPORT = {"import_two_track_1h_s": 60.0, "seconds": 3600, "rate": 48000}
 
 
 # v0.5.0-preview.4's release run (evidence-perf.json attached to that release;
@@ -1976,16 +1981,23 @@ class StoreStepTests(unittest.TestCase):
     before the windowed runs (the C2b-2 design's section 4.8). Its figures and
     startup's workspace_s have budgets from the first Phase C release run (#430)."""
 
-    def run_parent(self, store, quick=False, budgets=None, workspace_s=0.2):
+    def run_parent(self, store, quick=False, budgets=None, workspace_s=0.2, imported=None):
         import tempfile
         from types import SimpleNamespace
         calls = []
+        imported = IMPORT if imported is None else imported
 
         def step(args):
             calls.append("store")
             if isinstance(store, Exception):
                 raise store
             return dict(store)
+
+        def import_step(args):
+            calls.append("import")
+            if isinstance(imported, Exception):
+                raise imported
+            return dict(imported)
 
         def run(*a, **k):
             calls.append("run")
@@ -2000,6 +2012,7 @@ class StoreStepTests(unittest.TestCase):
                     mock.patch.object(perf_check, "display_watch", return_value=FakeDisplay()), \
                     mock.patch.object(perf_check, "refresh_now", return_value=None), \
                     mock.patch.object(perf_check, "store_step", side_effect=step), \
+                    mock.patch.object(perf_check, "import_step", side_effect=import_step), \
                     mock.patch.object(perf_check, "one_run", side_effect=run), \
                     mock.patch.object(perf_check, "BUDGETS", budget_file), \
                     mock.patch("builtins.print"):
@@ -2008,7 +2021,7 @@ class StoreStepTests(unittest.TestCase):
 
     def test_a_release_run_measures_the_store_once_before_the_windows(self):
         rc, calls, report = self.run_parent(STORE)
-        self.assertEqual((0, ["store", "run", "run"]), (rc, calls))
+        self.assertEqual((0, ["store", "import", "run", "run"]), (rc, calls))
         self.assertEqual(STORE, report["store"])
         # workspace_s is a startup median; it and the store figures are
         # proposed like the others (plus 20%, never closer than 0.05; #430).
@@ -2072,6 +2085,65 @@ class StoreStepTests(unittest.TestCase):
                 rc, calls, report = self.run_parent(store)
                 self.assertEqual((2, ["store"]), (rc, calls))
                 self.assertTrue(report["error"])
+
+    # -- the import step (#376) ------------------------------------------------------
+
+    def test_a_release_run_measures_the_import_once_after_the_store(self):
+        rc, calls, report = self.run_parent(STORE)
+        self.assertEqual(0, rc)
+        self.assertEqual(IMPORT, report["import"])
+        # Its budget is not set yet (null): nothing is compared or missing, and
+        # the figure is proposed for the owner's release-run budget.
+        self.assertEqual(([], []), (report["over_budget"], report["not_measured"]))
+        self.assertEqual({"import_two_track_1h_s": 72.0},
+                         report["proposed_budgets_plus_20_percent"]["import"])
+
+    def test_an_import_figure_over_a_set_budget_fails_the_run(self):
+        budgets = {"import": {"import_two_track_1h_s": 72.0}}
+        rc, _, report = self.run_parent(STORE, budgets=budgets)
+        self.assertEqual((0, []), (rc, report["over_budget"]))
+        rc, _, report = self.run_parent(STORE, budgets=budgets,
+                                        imported=dict(IMPORT, import_two_track_1h_s=80.0))
+        self.assertEqual(1, rc)
+        self.assertEqual([{"state": "import", "metric": "import_two_track_1h_s",
+                           "value": 80.0, "budget": 72.0}], report["over_budget"])
+
+    def test_an_import_step_that_fails_or_misses_its_figure_stops_the_run(self):
+        for imported in ({"seconds": 3600}, dict(IMPORT, import_two_track_1h_s=None),
+                         RuntimeError("the import step failed (exit 1)")):
+            with self.subTest(imported=imported):
+                rc, calls, report = self.run_parent(STORE, imported=imported)
+                self.assertEqual((2, ["store", "import"]), (rc, calls))
+                self.assertTrue(report["error"])
+
+    def test_quick_leaves_the_import_out(self):
+        budgets = {"import": {"import_two_track_1h_s": 72.0}}
+        rc, calls, report = self.run_parent(STORE, quick=True, budgets=budgets)
+        self.assertEqual((0, []), (rc, report["not_measured"]))
+        self.assertNotIn("import", calls)
+        self.assertNotIn("import", report)
+        self.assertIn("import", report["not_asked_for"])
+
+    def test_the_import_budget_waits_for_a_release_run(self):
+        # The owner's decision of 28 Oct 2026 (#376): set from a release run's
+        # figure, so it is null (not set, compared with nothing) until then.
+        path = ROOT / "docs" / "perf-budgets.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual({"import_two_track_1h_s": None}, data["budgets"]["import"])
+        self.assertIn("import", data["_budget_notes"])
+
+    def test_the_import_child_is_this_tool_without_a_window(self):
+        from types import SimpleNamespace
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen["command"] = cmd
+            figures = perf_check.PREFIX + json.dumps(IMPORT) + "\n"
+            return subprocess.CompletedProcess(cmd, 0, stdout=figures, stderr="")
+        with mock.patch.object(perf_check.subprocess, "run", side_effect=fake_run):
+            self.assertEqual(IMPORT, perf_check.import_step(SimpleNamespace(app=None, zip=None)))
+        self.assertIn("--import-child", seen["command"])
+        self.assertNotIn("--child", seen["command"])
 
     def test_store_problems_names_what_is_missing(self):
         self.assertEqual([], perf_check.store_problems(STORE))
@@ -2157,6 +2229,47 @@ class MeasureStoreTests(unittest.TestCase):
             perf_check.measure_store(tmp, protector=keyprotect.TestProtector(),
                                      meetings=2, passages=30, opens=1, reads=1)
         self.assertIn("lists 1 meetings, not 2", str(caught.exception))
+
+
+@unittest.skipUnless(all(__import__("importlib").util.find_spec(m) for m in ("numpy", "av")),
+                     "numpy/av not installed")
+class MeasureImportTests(unittest.TestCase):
+    """#376: the import step's synthetic two-track recording, shortened."""
+
+    def test_a_two_track_recording_is_imported_with_its_echo_cancelled(self):
+        import tempfile
+
+        import keyprotect
+        with tempfile.TemporaryDirectory() as tmp:
+            out = perf_check.measure_import(tmp, protector=keyprotect.TestProtector(),
+                                            seconds=20)
+            self.assertEqual([], list(Path(tmp, "workspace", "recordings").iterdir()))
+        self.assertEqual([], perf_check.import_problems(out))
+        self.assertEqual((20, 48000), (out["seconds"], out["rate"]))
+
+    def test_an_import_with_the_plain_mix_stops_the_step(self):
+        # A step whose canceller fell back would time the wrong thing.
+        import tempfile
+
+        import keyprotect
+        from workspace import echo
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(echo.Canceller, "run", side_effect=RuntimeError("test")), \
+                self.assertRaises(RuntimeError) as caught:
+            perf_check.measure_import(tmp, protector=keyprotect.TestProtector(), seconds=20)
+        self.assertIn("mix_echo_skipped", str(caught.exception))
+
+    def test_the_synthetic_call_has_an_echo_and_is_the_same_every_run(self):
+        import numpy as np
+        mic, comp = perf_check.synthetic_call(20, 16000)
+        again = perf_check.synthetic_call(20, 16000)
+        self.assertTrue(np.array_equal(mic, again[0]) and np.array_equal(comp, again[1]))
+        self.assertEqual((np.int16, np.int16), (mic.dtype, comp.dtype))
+        # The first half of the minute is the computer audio's echo alone.
+        lag = int(0.04 * 16000)
+        head = mic[lag:8 * 16000].astype(np.float64)
+        source = comp[:8 * 16000 - lag].astype(np.float64)
+        self.assertGreater(abs(np.corrcoef(head, source)[0, 1]), 0.3)
 
 
 class CompareTests(unittest.TestCase):
