@@ -70,3 +70,17 @@ small files were checked against Hugging Face's git blob IDs.
 | `plda/plda.npz` | 133852 | `9b77bcd840692710dd3496f62ecfeed8d8e5f002fd991b785079b244eab7d255` |
 | `plda/xvec_transform.npz` | 134376 | `325f1ce8e48f7e55e9c8aa47e05d2766b7c48c4b25b8de8dd751e7a4cc5fbe8f` |
 | `segmentation/pytorch_model.bin` | 5906507 | `7ad24338d844fb95985486eb1a464e32d229f6d7a03c9abe60f978bacf3f816e` |
+
+## Copies installed by IT (#111 B7a)
+
+On a machine install, a model's copy installed by IT is in
+`<install folder>\models\<family>\<folder>\<revision>` (for example
+`%ProgramFiles%\Unminute\models\parakeet\silero-vad\b3e3ee3cce4c11ceb63b1a0b229d916069c1ddf6`).
+The app uses it before any copy in the user's own cache, and never writes there.
+Each such folder holds `models.verified.json`, written by IT's install script after it
+hashed every file: a JSON object with `repo`, `revision` and `folder` (the
+model's, as above), `ok` (`true`), and `files`, which maps each file's name (with
+`/` between folders) to `[size in bytes, modification time]`, the time in
+nanoseconds since 1 January 1970 UTC, as Python's `st_mtime_ns` gives it. The app
+trusts the record only when every value matches; otherwise it hashes every file
+in full, at every load. A link anywhere in the copy refuses it.

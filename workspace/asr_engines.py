@@ -22,6 +22,9 @@
 # separate download process (workspace/setup.py), with its host checks and the
 # token it was given. There is no other downloader and no environment token.
 #
+# On a machine install, models IT pre-staged in Program Files come first and are
+# never written by the app (machine_root, #111 B7a).
+#
 # CLI: python -m workspace.asr_engines manifest --out docs/MODEL_MANIFEST.md
 
 import hashlib
@@ -280,6 +283,153 @@ def model_dir(spec, cache_dir):
     return Path(cache_dir) / spec.family / spec.folder
 
 
+# --- Machine models (#111 B7a) ------------------------------------------------
+#
+# On a machine install (install.ps1 -Machine) IT may pre-stage models, read only,
+# in <install root>\models\<family>\<folder>\<revision> (Program Files, which
+# only administrators can change). They come first. IT's own install script
+# (packaging/models/Install-Models.ps1) hashes every file and writes
+# MACHINE_RECORD in each folder; the app trusts that record by the same rule as
+# its own (this revision, and every file's size and modification time
+# unchanged), never writes anything there, and never reads a record from the
+# user's cache for those folders. Without a record that matches, every file is
+# hashed in full at each load. The machine root comes only from this copy's own
+# install folder, and only when update.deployment() says "machine" (the machine
+# trust test, #111 B6b): never from an environment variable or current.json alone.
+#
+# AllowUserModels (managed policy, K3) applies only there: 0, or a policy key
+# that cannot be read, means only machine copies are used, so models a user
+# downloaded (including older Hugging Face cache copies) are not. Per-user and
+# source installs have no machine copies and never read it.
+
+MACHINE_RECORD = "models.verified.json"
+MACHINE_LINK = "the copy installed by your IT team is a link to somewhere else, so it was not used"
+_machine_root = []          # machine_root(), worked out once per process
+
+
+def machine_root():
+    """This copy's machine install folder, or None when it is not a trusted
+    machine install (per-user, source, or a claim that fails the trust test)."""
+    if not _machine_root:
+        _machine_root.append(find_machine_root())
+    return _machine_root[0]
+
+
+def find_machine_root(app_file=None, trusted=None):
+    """machine_root() worked out afresh. app_file and trusted: tests only (as
+    update.deployment takes them)."""
+    try:
+        from workspace import update
+        if update.deployment(app_file, trusted).get("mode") != "machine":
+            return None
+        return Path(app_file or update.__file__).resolve().parents[4]
+    except Exception:           # any doubt: no machine models
+        return None
+
+
+def machine_model_dir(spec, root):
+    """Where IT puts one pinned revision: the revision is in the path, so the
+    revisions of the current and the kept versions sit side by side."""
+    return Path(root) / "models" / spec.family / spec.folder / spec.revision
+
+
+def machine_copy(spec):
+    """The machine copy's folder when it exists (it may still fail its
+    checks), or None."""
+    root = machine_root()
+    if root is None:
+        return None
+    folder = machine_model_dir(spec, root)
+    return folder if folder.is_dir() or is_link(folder) else None
+
+
+def _is_machine(spec, folder):
+    root = machine_root()
+    return root is not None and Path(folder) == machine_model_dir(spec, root)
+
+
+def user_models_allowed(reader=None):
+    """Whether models in the user's own cache may be used: always on a
+    per-user or source install; on a machine install, as AllowUserModels says
+    (not set: allowed; invalid or unreadable: not allowed). Read each time,
+    so a change by IT applies at the next load. reader: tests only."""
+    if machine_root() is None:
+        return True
+    from workspace import policy
+    return bool(policy.Policy(*(reader or policy.read_registry)()).get("AllowUserModels"))
+
+
+def _machine_linked(spec, folder):
+    """A link anywhere from the models folder down to each pinned file."""
+    root = Path(folder).parents[3]
+    paths = [root / "models", Path(folder).parents[1], Path(folder).parent, Path(folder)]
+    for f in spec.files:
+        parts = Path(f.name).parts
+        paths += [Path(folder).joinpath(*parts[:i + 1]) for i in range(len(parts))]
+    paths.append(Path(folder) / MACHINE_RECORD)
+    return any(is_link(p) for p in paths)
+
+
+def in_machine_root(path):
+    """True when path is, or is inside, the machine install folder."""
+    root = machine_root()
+    if root is None:
+        return False
+    try:
+        return Path(os.path.realpath(path)).is_relative_to(Path(os.path.realpath(root)))
+    except (OSError, ValueError):
+        return True             # cannot tell: treat it as the machine's
+
+
+def _refuse_machine_root(cache_dir):
+    """The app never downloads, repairs or removes anything in the machine
+    install folder: only IT's script writes there."""
+    if in_machine_root(cache_dir):
+        raise ModelLoadError("Models installed by your IT team cannot be changed in the app. "
+                             "Ask your IT team.")
+
+
+def _machine_record_ok(spec, folder):
+    """IT's record names this model and revision, says ok, and every file's
+    size and modification time are as recorded."""
+    record = _read_marker(Path(folder) / MACHINE_RECORD)
+    try:
+        return (isinstance(record, dict) and record.get("ok") is True
+                and record.get("repo") == spec.repo and record.get("revision") == spec.revision
+                and record.get("folder") == spec.folder
+                and record.get("files") == _fingerprint(Path(folder), spec))
+    except OSError:
+        return False
+
+
+def check_machine(spec, folder, full=False, keep=None):
+    """check_files for a machine copy: IT's record or a full hash, and never a
+    write. A link anywhere in it refuses the copy."""
+    folder = Path(folder)
+    if _machine_linked(spec, folder):
+        return [MACHINE_LINK]
+    if not folder.is_dir():
+        return ["not installed"]
+    problems = _quick_problems(spec, folder)
+    if problems:
+        return problems
+    if not full and keep is None and _machine_record_ok(spec, folder):
+        return []
+    return _hash_problems(spec, folder, keep)
+
+
+def machine_ready(name):
+    """True when a machine copy of this model (with its speech detector, for
+    Parakeet) is there and passes the quick checks: Setup shows it as
+    installed by IT, with nothing to download, repair or remove."""
+    specs = [MANAGED_MODELS[name]] + ([SILERO_VAD] if is_parakeet(name) else [])
+    for spec in specs:
+        folder = machine_copy(spec)
+        if folder is None or _machine_linked(spec, folder) or _quick_problems(spec, folder):
+            return False
+    return True
+
+
 def staging_dir(spec, cache_dir):
     """Short, fixed download folder for one model. huggingface_hub writes
     temporary files under <dir>\\.cache\\huggingface\\download\\ with names of
@@ -364,15 +514,7 @@ def check_files(spec, folder, full=False, marker=None, keep=None):
     if trusted:
         return []
 
-    for f in spec.files:
-        if keep is None:
-            digest = _sha256(folder / f.name)
-        else:
-            data = _read_pinned(folder / f.name, f.size)
-            digest = hashlib.sha256(data).hexdigest()
-            keep[f.name] = data
-        if digest != f.sha256:
-            problems.append(f"{f.name} does not match the expected checksum")
+    problems = _hash_problems(spec, folder, keep)
     if linked:
         return problems
     try:
@@ -385,6 +527,22 @@ def check_files(spec, folder, full=False, marker=None, keep=None):
         }), encoding="utf-8")
     except OSError:
         pass  # read-only cache: still usable, it just re-hashes next time
+    return problems
+
+
+def _hash_problems(spec, folder, keep=None):
+    """Hash every pinned file in full (with keep, from bytes read once and
+    kept there) and list the files that do not match."""
+    problems = []
+    for f in spec.files:
+        if keep is None:
+            digest = _sha256(folder / f.name)
+        else:
+            data = _read_pinned(folder / f.name, f.size)
+            digest = hashlib.sha256(data).hexdigest()
+            keep[f.name] = data
+        if digest != f.sha256:
+            problems.append(f"{f.name} does not match the expected checksum")
     return problems
 
 
@@ -404,18 +562,32 @@ def _recorded_failure(spec, folder, marker=None):
 def parakeet_status(name, cache_dir):
     """('ready' | 'missing' | 'invalid', detail) without hashing large files."""
     spec = PARAKEET_MODELS[name]
-    folder = model_dir(spec, cache_dir)
-    vad_folder = model_dir(SILERO_VAD, cache_dir)
-    if not folder.exists():
+    problems = _quick_status(spec, cache_dir)
+    if problems is None:
         return "missing", "not installed"
-    problems = _quick_problems(spec, folder) or _recorded_failure(spec, folder)
-    if vad_folder.exists():
-        problems += [f"speech detector: {p}" for p in
-                     _quick_problems(SILERO_VAD, vad_folder)
-                     or _recorded_failure(SILERO_VAD, vad_folder)]
-    else:
-        problems.append("speech detector: not installed")
+    vad = _quick_status(SILERO_VAD, cache_dir)
+    problems += [f"speech detector: {p}" for p in (["not installed"] if vad is None else vad)]
     return ("invalid", "; ".join(problems)) if problems else ("ready", "")
+
+
+def _quick_status(spec, cache_dir):
+    """[] when a candidate folder passes the quick checks (no hashing), its
+    problems when none does, or None when there is no candidate at all. A
+    machine copy has no failure records; a user's copy honours its own."""
+    reports = []
+    for folder in hub_candidates(spec, cache_dir):
+        if _is_machine(spec, folder):
+            problems = ([MACHINE_LINK] if _machine_linked(spec, folder)
+                        else _quick_problems(spec, folder))
+        else:
+            problems = (_quick_problems(spec, folder)
+                        or _recorded_failure(spec, folder, _marker_for(spec, cache_dir, folder)))
+        if not problems:
+            return []
+        reports.append(problems)
+    if len(reports) < 2:
+        return list(reports[0]) if reports else None
+    return [" | ".join(dict.fromkeys("; ".join(r) for r in reports))]
 
 
 def _quick_problems(spec, folder):
@@ -464,9 +636,15 @@ def _hub_snapshots(spec, cache_dir):
 
 
 def hub_candidates(spec, cache_dir):
-    """Existing folders that may hold this model: our managed copy first."""
-    managed = model_dir(spec, cache_dir)
-    return ([managed] if managed.is_dir() else []) + _hub_snapshots(spec, cache_dir)
+    """Existing folders that may hold this model: the machine copy first
+    (#111 B7a), then, unless AllowUserModels withholds them, our managed copy
+    and older Hugging Face cache copies."""
+    machine = machine_copy(spec)
+    out = [machine] if machine is not None else []
+    if user_models_allowed():
+        managed = model_dir(spec, cache_dir)
+        out += ([managed] if managed.is_dir() else []) + _hub_snapshots(spec, cache_dir)
+    return out
 
 
 def _marker_for(spec, cache_dir, folder):
@@ -480,23 +658,37 @@ def _marker_for(spec, cache_dir, folder):
 def hub_model_status(name, cache_dir):
     """('ready' | 'missing' | 'invalid', detail) without hashing large files.
     Works for any Hugging Face-cached model (Whisper, speaker identification)."""
-    spec = MANAGED_MODELS[name]
-    candidates = hub_candidates(spec, cache_dir)
-    if not candidates:
+    problems = _quick_status(MANAGED_MODELS[name], cache_dir)
+    if problems is None:
         return "missing", "not installed"
-    reports = []
+    return ("invalid", "; ".join(problems)) if problems else ("ready", "")
+
+
+def locate(spec, cache_dir):
+    """(folder, []) for the first candidate whose files verify (quick checks,
+    with records trusted), or (None, the first candidate's problems)."""
+    first = None
+    candidates = hub_candidates(spec, cache_dir)
+    managed = model_dir(spec, cache_dir)
+    if managed not in candidates and user_models_allowed():
+        candidates.append(managed)       # checked even when missing: "not installed"
     for folder in candidates:
-        problems = (_quick_problems(spec, folder)
-                    or _recorded_failure(spec, folder, _marker_for(spec, cache_dir, folder)))
+        problems = (check_machine(spec, folder) if _is_machine(spec, folder)
+                    else check_files(spec, folder, marker=_marker_for(spec, cache_dir, folder)))
         if not problems:
-            return "ready", ""
-        reports.append("; ".join(problems))
-    return "invalid", " | ".join(dict.fromkeys(reports))
+            return folder, []
+        first = first or problems
+    return None, first or ["not installed"]
 
 
 def find_verified(spec, cache_dir, full=False):
     """First candidate folder whose files all verify, or None."""
     for folder in hub_candidates(spec, cache_dir):
+        if _is_machine(spec, folder):
+            # Only IT's record, never one in the user's cache (#111 B7a).
+            if not check_machine(spec, folder, full=full):
+                return folder
+            continue
         marker = _marker_for(spec, cache_dir, folder)
         # A copy already found bad (and unchanged since) is skipped rather than
         # re-hashed on every load; a full check (repair) re-examines it.
@@ -515,8 +707,11 @@ def read_verified(spec, cache_dir):
     find_verified(full=True)."""
     for folder in hub_candidates(spec, cache_dir):
         blobs = {}
-        if not check_files(spec, folder, full=True,
-                           marker=_marker_for(spec, cache_dir, folder), keep=blobs):
+        if _is_machine(spec, folder):
+            if not check_machine(spec, folder, keep=blobs):
+                return blobs
+        elif not check_files(spec, folder, full=True,
+                             marker=_marker_for(spec, cache_dir, folder), keep=blobs):
             return blobs
     return None
 
@@ -549,6 +744,7 @@ def install_model(spec, cache_dir, log=print, download=None, has_token=False):
     fresh download that is verified BEFORE it is moved into place. Re-running
     on a good installation only re-checks it."""
     target = model_dir(spec, cache_dir)
+    _refuse_machine_root(cache_dir)
     # A link or junction at the family, model, download or check-record folder
     # is refused before anything is read, deleted or downloaded: following one
     # would write outside the cache, and the clean-up of the download's
@@ -728,6 +924,21 @@ def manifest_markdown():
     for s in specs:
         lines += ["", f"## {s.name}", "", "| File | Bytes | SHA-256 |", "| --- | --- | --- |"]
         lines += [f"| `{f.name}` | {f.size} | `{f.sha256}` |" for f in s.files]
+    lines += [
+        "", "## Copies installed by IT (#111 B7a)", "",
+        "On a machine install, a model's copy installed by IT is in",
+        "`<install folder>\\models\\<family>\\<folder>\\<revision>` (for example",
+        f"`%ProgramFiles%\\Unminute\\models\\{SILERO_VAD.family}\\{SILERO_VAD.folder}\\"
+        f"{SILERO_VAD.revision}`).",
+        "The app uses it before any copy in the user's own cache, and never writes there.",
+        f"Each such folder holds `{MACHINE_RECORD}`, written by IT's install script after it",
+        "hashed every file: a JSON object with `repo`, `revision` and `folder` (the",
+        "model's, as above), `ok` (`true`), and `files`, which maps each file's name (with",
+        "`/` between folders) to `[size in bytes, modification time]`, the time in",
+        "nanoseconds since 1 January 1970 UTC, as Python's `st_mtime_ns` gives it. The app",
+        "trusts the record only when every value matches; otherwise it hashes every file",
+        "in full, at every load. A link anywhere in the copy refuses it.",
+    ]
     return "\n".join(lines) + "\n"
 
 
@@ -842,12 +1053,14 @@ class ParakeetEngine:
 
     def load(self):
         """Verify then load, entirely from local files. Raises ModelLoadError."""
+        folders = []
         for spec in (self.spec, SILERO_VAD):
-            problems = check_files(spec, model_dir(spec, self.cache_dir))
+            folder, problems = locate(spec, self.cache_dir)     # IT's copy first (#111 B7a)
             if problems:
                 raise ModelLoadError(
                     f"{label(spec.name)} cannot be used. {PARAKEET_FIX} "
                     f"({'; '.join(problems)})")
+            folders.append(folder)
         try:
             import onnx_asr
             import onnxruntime as rt
@@ -863,10 +1076,9 @@ class ParakeetEngine:
             cpu = ["CPUExecutionProvider"]
             # An existing local folder makes onnx-asr load offline, with no downloads.
             asr = onnx_asr.load_model(
-                self.spec.onnx_asr_name, model_dir(self.spec, self.cache_dir),
+                self.spec.onnx_asr_name, folders[0],
                 quantization=self.spec.quantization, sess_options=opts, providers=cpu)
-            vad = onnx_asr.load_vad(SILERO_VAD.onnx_asr_name,
-                                    model_dir(SILERO_VAD, self.cache_dir),
+            vad = onnx_asr.load_vad(SILERO_VAD.onnx_asr_name, folders[1],
                                     sess_options=opts, providers=cpu)
             self._asr = asr.with_vad(vad, batch_size=1,
                                      max_speech_duration_s=MAX_SEGMENT_SECONDS,
@@ -925,13 +1137,15 @@ class DraftEngine:
 
     def load(self):
         """Verify then load, entirely from local files. Raises ModelLoadError."""
+        folders = []
         for spec in (self.spec, SILERO_VAD):
-            problems = check_files(spec, model_dir(spec, self.cache_dir))
+            folder, problems = locate(spec, self.cache_dir)     # IT's copy first (#111 B7a)
             if problems:
                 # Not shown as a meeting's error: drafts only say they are
                 # not available (the full pass reports the model's problem).
                 raise ModelLoadError(f"{label(spec.name)} cannot be used for drafts "
                                      f"({'; '.join(problems)})")
+            folders.append(folder)
         try:
             import onnx_asr
             import onnxruntime as rt
@@ -946,14 +1160,13 @@ class DraftEngine:
                 return opts
             cpu = ["CPUExecutionProvider"]
             self._asr = onnx_asr.load_model(
-                self.spec.onnx_asr_name, model_dir(self.spec, self.cache_dir),
+                self.spec.onnx_asr_name, folders[0],
                 quantization=self.spec.quantization, sess_options=options(self.threads),
                 providers=cpu)
             # The verified Silero file, scored one step at a time (onnx-asr's
             # own VAD object takes whole recordings only).
-            self._vad = rt.InferenceSession(
-                str(model_dir(SILERO_VAD, self.cache_dir) / "silero_vad.onnx"),
-                sess_options=options(1), providers=cpu)
+            self._vad = rt.InferenceSession(str(Path(folders[1]) / "silero_vad.onnx"),
+                                            sess_options=options(1), providers=cpu)
         except Exception as exc:
             raise ModelLoadError(f"{label(self.spec.name)} failed to load for drafts "
                                  f"({type(exc).__name__}: {exc})") from exc

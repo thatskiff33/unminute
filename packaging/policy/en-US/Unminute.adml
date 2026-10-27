@@ -16,6 +16,15 @@
 
 Disabled: the app refuses downloads and shows "Ask your IT team". Use this when IT installs the models, so the app never needs the network (a models package for Intune is planned).</string>
 
+      <string id="AllowUserModels">Allow models downloaded by users (machine installs)</string>
+      <string id="AllowUserModels_Help">Applies only where Unminute is installed for everyone on the computer (install.ps1 -Machine). A per-user install ignores it.
+
+Enabled or not configured: the app uses the models your IT team installed in Program Files first, and otherwise models each user downloaded into their profile.
+
+Disabled: the app uses only the models your IT team installed, and refuses model downloads, which would not be used. A model IT has not installed shows "Ask your IT team". Use this once your IT team installs the models for everyone, so that nothing a user can change is loaded as a model. If the policy key cannot be read, the app behaves as if this were disabled.
+
+Older versions of Unminute kept for an earlier storage format ignore this setting until IT removes them.</string>
+
       <string id="AllowGpuComponent">Allow the graphics card components</string>
       <string id="AllowGpuComponent_Help">Enabled or not configured: on computers with a supported NVIDIA card, users can download the graphics card components into their profile and use them: "Graphics card acceleration" (about 2 GB of PyTorch and CUDA libraries, from download-r2.pytorch.org) for speaker identification, and "Graphics card for Whisper" (about 0.6 GB of NVIDIA's cuBLAS library, from files.pythonhosted.org) for Whisper transcription.
 

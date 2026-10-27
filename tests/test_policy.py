@@ -383,6 +383,36 @@ class WorkspacePolicyTests(unittest.TestCase):
                                                               "parakeet-tdt-0.6b-v2"))
         self.assertFalse(ws.setup_state()["managed"]["allow"]["AllowModelDownloads"])
 
+    def test_user_models_off_on_a_machine_install(self):
+        # #111 B7a: only IT's models are used, so a download would never be
+        # used: refused with the IT wording; the graphics card components are
+        # not models and are unaffected.
+        from workspace import app, asr_engines, gpu
+        ws = self.open(AllowUserModels=False)
+        with mock.patch.object(asr_engines, "_machine_root", [Path("C:/Program Files/Unminute")]):
+            self.assertEqual(self.refused(ws.download_model, "parakeet-tdt-0.6b-v2"),
+                             app.USER_MODELS_OFF)
+            self.assertFalse(ws._model_downloads_allowed())
+            with mock.patch.object(ws.downloads, "start", return_value="started") as start:
+                ws.download_model(gpu.COMPONENT)
+            start.assert_called_once()
+            note = app._model_note("parakeet-tdt-0.6b-v2", "missing",
+                                   ws._model_downloads_allowed())
+            self.assertIn("ask your IT team", note)
+        # A per-user install never reads it.
+        with mock.patch.object(asr_engines, "_machine_root", [None]):
+            self.assertTrue(ws._user_models_allowed())
+            self.assertTrue(ws._model_downloads_allowed())
+
+    def test_an_unreadable_policy_uses_only_it_models_on_a_machine_install(self):
+        from workspace import asr_engines
+        ws = self.open()
+        ws.policy = policy.PolicySource(reader=lambda: ({}, policy.UNREADABLE))
+        with mock.patch.object(asr_engines, "_machine_root", [Path("C:/Program Files/Unminute")]):
+            self.assertFalse(ws._user_models_allowed())
+        with mock.patch.object(asr_engines, "_machine_root", [None]):
+            self.assertTrue(ws._user_models_allowed())
+
     def test_gpu_component_off(self):
         from workspace import gpu
         ws = self.open(AllowGpuComponent=False)

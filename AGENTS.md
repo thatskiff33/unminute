@@ -65,8 +65,10 @@ Network, secrets and integrity
 - **I1** Model files are pinned by revision and SHA-256 and checked when downloaded. At load, the
   speaker model is read once, re-hashed in full and built from those bytes in memory with
   weights-only unpickling and fixed classes (`workspace/speaker_load.py`); the others are checked
-  against their verified marker (size and modification time). Guard:
-  `tests/test_model_integrity.py`, `tests/test_asr_engines.py`.
+  against their verified marker (size and modification time). A machine install's copies from IT
+  are checked only against the record IT's install script wrote, or hashed in full, and the app
+  never writes there (#111 B7a). Guard: `tests/test_model_integrity.py`,
+  `tests/test_asr_engines.py`, `tests/test_machine_models.py`.
 - **I2** Untrusted media is decoded only in the sandboxed decode process, within its format,
   protocol and size limits, by PyAV (users never install FFmpeg). Network drives and symbolic
   links are refused unless managed policy allows network sources. Guard:

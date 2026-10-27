@@ -30,6 +30,14 @@
       <enabledValue><decimal value="1" /></enabledValue>
       <disabledValue><decimal value="0" /></disabledValue>
     </policy>
+    <policy name="AllowUserModels" class="Machine" displayName="$(string.AllowUserModels)"
+            explainText="$(string.AllowUserModels_Help)" key="SOFTWARE\Policies\Unminute"
+            valueName="AllowUserModels">
+      <parentCategory ref="Unminute" />
+      <supportedOn ref="SUPPORTED_Unminute" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
     <policy name="AllowGpuComponent" class="Machine" displayName="$(string.AllowGpuComponent)"
             explainText="$(string.AllowGpuComponent_Help)" key="SOFTWARE\Policies\Unminute"
             valueName="AllowGpuComponent">
