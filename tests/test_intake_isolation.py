@@ -31,6 +31,8 @@ WINDOWS = sys.platform == "win32"
 # interpreter as a second process; tests that contain a process use the
 # interpreter itself, as workspace.media does.
 PYTHON = getattr(sys, "_base_executable", sys.executable)
+ALL_APPLICATION_PACKAGES = "S-1-15-2-1"
+ALL_RESTRICTED_APPLICATION_PACKAGES = "S-1-15-2-2"
 
 
 def setUpModule():
@@ -1101,6 +1103,11 @@ def loopback():
         s.sendall(b"sent by the decoder")
     return "connected and sent"
 attempt("loopback", loopback)
+def registry():
+    import winreg
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Software") as k:
+        return "listed %d" % winreg.QueryInfoKey(k)[0]
+attempt("read HKCU", registry)
 body = json.dumps(res).encode()
 send(b"A", body + b" " * (-len(body) % 4))
 send(b"D")
@@ -1125,6 +1132,10 @@ SCRATCH_FOLDERS = {"Unminute": "", "workspace": "workspace", "media": "workspace
 # The user's other files: a recording outside Unminute, relative to the folder
 # that holds the scratch LocalAppData (as Documents sits beside AppData).
 OTHER_FILES = {"another recording": "Documents/other-recording.wav"}
+# A file outside Unminute that ALL APPLICATION PACKAGES (S-1-15-2-1) may read,
+# as some of Windows's and other programs' files are (#439): an AppContainer
+# reads it, a less privileged one does not.
+PACKAGES_FILES = {"a file all application packages may read": "Shared/packages-readable.bin"}
 
 
 def make_scratch_workspace(base):
@@ -1181,7 +1192,8 @@ def probe_scratch_workspace(base, folder):
     thread = threading.Thread(target=accept, daemon=True)
     thread.start()
     cfg = {"files": {**{n: str(base / r) for n, r in SCRATCH_FILES.items()},
-                     **{n: str(Path(folder) / r) for n, r in OTHER_FILES.items()}},
+                     **{n: str(Path(folder) / r)
+                        for n, r in {**OTHER_FILES, **PACKAGES_FILES}.items()}},
            "folders": {n: str(base / r) for n, r in SCRATCH_FOLDERS.items()},
            "db": str(base / SCRATCH_FILES["workspace.db"]),
            "port": listener.getsockname()[1]}
@@ -1207,13 +1219,16 @@ class ReadUpTests(unittest.TestCase):
     """#299 acceptance criterion 1: a process started and contained exactly as
     the decoder is (in its AppContainer, since #299) cannot read the workspace
     or the user's other files, cannot unprotect the workspace key, and cannot
-    open a loopback connection.
+    open a loopback connection. Since #439 the container is a less privileged
+    one, so it also cannot read what ALL APPLICATION PACKAGES may read, nor the
+    user's registry (HKCU).
 
-    These three failed on main (the T2 residual before #299): run there, the
-    probe read every file, unprotected the key and reached the listener. The
-    first test checks the probe really ran contained like the decoder and
-    still read its own recording, so the others cannot pass because the probe
-    never ran."""
+    The first three gap tests failed on main before #299: run there, the probe
+    read every file, unprotected the key and reached the listener. The two
+    #439 tests failed with the #299 container (not less privileged): the probe
+    read the ALL APPLICATION PACKAGES file and listed HKCU\\Software. The first
+    test checks the probe really ran contained like the decoder and still read
+    its own recording, so the others cannot pass because the probe never ran."""
 
     @classmethod
     def setUpClass(cls):
@@ -1221,9 +1236,13 @@ class ReadUpTests(unittest.TestCase):
         root = Path(cls.tmp.name)
         cls.base = root / "LocalAppData" / "Unminute"
         cls.key_hash = make_scratch_workspace(cls.base)
-        for name, rel in OTHER_FILES.items():
+        for name, rel in {**OTHER_FILES, **PACKAGES_FILES}.items():
             (root / rel).parent.mkdir(parents=True, exist_ok=True)
             (root / rel).write_bytes(b"synthetic " + name.encode())
+        for rel in PACKAGES_FILES.values():
+            done = decoder_runtime.icacls(root / rel, "/grant",
+                                          f"*{ALL_APPLICATION_PACKAGES}:(R)", "/Q")
+            assert done.returncode == 0, "the scratch file could not be granted"
         cls.results, cls.level, cls.received = probe_scratch_workspace(cls.base, root)
 
     @classmethod
@@ -1232,8 +1251,9 @@ class ReadUpTests(unittest.TestCase):
 
     def test_the_probe_runs_contained_like_the_decoder(self):
         self.assertEqual(0x1000, self.level)                   # Low, checked from outside
-        expected = ({"recording", "unprotect workspace key", "write workspace", "loopback"}
-                    | {"read " + n for n in [*SCRATCH_FILES, *OTHER_FILES]}
+        expected = ({"recording", "unprotect workspace key", "write workspace", "loopback",
+                     "read HKCU"}
+                    | {"read " + n for n in [*SCRATCH_FILES, *OTHER_FILES, *PACKAGES_FILES]}
                     | {"list " + n for n in SCRATCH_FOLDERS})
         self.assertEqual(expected, set(self.results))
         self.assertEqual("allowed: read", self.results["recording"])   # it can still decode
@@ -1255,6 +1275,15 @@ class ReadUpTests(unittest.TestCase):
     def test_a_contained_decoder_cannot_open_a_loopback_connection(self):
         self.assertEqual(([], True), (self.received,
                                       self.results["loopback"].startswith("denied")))
+
+    def test_a_contained_decoder_cannot_read_what_all_application_packages_may(self):
+        # #439: a T2 residual of the #299 container.
+        for name in PACKAGES_FILES:
+            self.assertTrue(self.results["read " + name].startswith("denied"), self.results)
+
+    def test_a_contained_decoder_cannot_read_the_users_registry(self):
+        # #439: the other T2 residual of the #299 container (HKCU).
+        self.assertTrue(self.results["read HKCU"].startswith("denied"), self.results)
 
 
 @unittest.skipUnless(WINDOWS and HAVE_DEPS, "Windows decoder process")

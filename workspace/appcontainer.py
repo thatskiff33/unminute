@@ -116,6 +116,21 @@ if sys.platform == "win32":
         ctypes.c_void_p, ctypes.c_void_p]
     _k32.DeleteProcThreadAttributeList.argtypes = [ctypes.c_void_p]
 
+    class _UNICODE_STRING(ctypes.Structure):
+        _fields_ = [("Length", wintypes.USHORT), ("MaximumLength", wintypes.USHORT),
+                    ("Buffer", ctypes.c_void_p)]
+
+    # TokenSecurityAttributes' TOKEN_SECURITY_ATTRIBUTES_INFORMATION and its
+    # TOKEN_SECURITY_ATTRIBUTE_V1 entries (the name is a counted string).
+    class _TOKEN_SECURITY_ATTRIBUTE_V1(ctypes.Structure):
+        _fields_ = [("Name", _UNICODE_STRING), ("ValueType", wintypes.WORD),
+                    ("Reserved", wintypes.WORD), ("Flags", wintypes.DWORD),
+                    ("ValueCount", wintypes.DWORD), ("Values", ctypes.c_void_p)]
+
+    class _TOKEN_SECURITY_ATTRIBUTES_INFORMATION(ctypes.Structure):
+        _fields_ = [("Version", wintypes.WORD), ("Reserved", wintypes.WORD),
+                    ("AttributeCount", wintypes.DWORD), ("Attributes", ctypes.c_void_p)]
+
     class _SECURITY_CAPABILITIES(ctypes.Structure):
         _fields_ = [("AppContainerSid", ctypes.c_void_p), ("Capabilities", ctypes.c_void_p),
                     ("CapabilityCount", wintypes.DWORD), ("Reserved", wintypes.DWORD)]
@@ -145,6 +160,8 @@ if sys.platform == "win32":
 
 PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002
 PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES = 0x00020009
+PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY = 0x0002000F
+PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT = 0x01
 EXTENDED_STARTUPINFO_PRESENT = 0x00080000
 CREATE_SUSPENDED = 0x00000004
 CREATE_NO_WINDOW = 0x08000000
@@ -152,6 +169,10 @@ CREATE_UNICODE_ENVIRONMENT = 0x00000400
 STARTF_USESTDHANDLES = 0x00000100
 TOKEN_QUERY = 0x0008
 TokenIsAppContainer, TokenCapabilities, TokenAppContainerSid = 29, 30, 31
+TokenSecurityAttributes = 39
+# The token attribute Windows sets on a less privileged AppContainer (#439).
+LPAC_ATTRIBUTE = "WIN://NOALLAPPPKG"
+_CLAIM_INT64, _CLAIM_UINT64 = 1, 2
 WAIT_TIMEOUT = 0x102
 
 
@@ -255,10 +276,38 @@ def _query(token, info_class):
     return buf
 
 
+def _less_privileged(token):
+    """Does the token carry LPAC_ATTRIBUTE with a non-zero whole-number value
+    (a less privileged AppContainer, which ALL APPLICATION PACKAGES does not
+    match)? Every pointer read here lies inside the buffer Windows filled."""
+    buf = _query(token, TokenSecurityAttributes)
+    start, end = ctypes.addressof(buf), ctypes.addressof(buf) + len(buf)
+
+    def inside(address, size):
+        return address and start <= address and address + size <= end
+    info = _TOKEN_SECURITY_ATTRIBUTES_INFORMATION.from_buffer(buf)
+    entry = ctypes.sizeof(_TOKEN_SECURITY_ATTRIBUTE_V1)
+    if not info.AttributeCount or not inside(info.Attributes, info.AttributeCount * entry):
+        return False
+    attrs = (_TOKEN_SECURITY_ATTRIBUTE_V1 * info.AttributeCount).from_address(info.Attributes)
+    for attr in attrs:
+        name = attr.Name
+        if not inside(name.Buffer, name.Length):
+            continue
+        if ctypes.wstring_at(name.Buffer, name.Length // 2) != LPAC_ATTRIBUTE:
+            continue
+        if (attr.ValueType not in (_CLAIM_INT64, _CLAIM_UINT64) or not attr.ValueCount
+                or not inside(attr.Values, 8 * attr.ValueCount)):
+            return False
+        return any((ctypes.c_uint64 * attr.ValueCount).from_address(attr.Values))
+    return False
+
+
 def token_facts(process):
     """What the token of `process` (a handle with query access) says, read
     from outside: (in an AppContainer, its AppContainer SID as text or None,
-    how many capabilities it holds, its integrity level)."""
+    how many capabilities it holds, its integrity level, whether it is a less
+    privileged AppContainer)."""
     from workspace.decode_child import _integrity_level
     token = wintypes.HANDLE()
     if not _adv.OpenProcessToken(process, TOKEN_QUERY, ctypes.byref(token)):
@@ -276,16 +325,18 @@ def token_facts(process):
             level = _integrity_level(token)
         except OSError as exc:
             raise SandboxError("check", exc.errno or 0) from exc
-        return inside, sid_text, capabilities, level
+        return inside, sid_text, capabilities, level, _less_privileged(token)
     finally:
         _k32.CloseHandle(token)
 
 
 def check_token(process, expected_sid):
     """Refuse (SandboxError "check") unless `process` runs in the expected
-    AppContainer with no capabilities, at Low integrity or below."""
-    inside, sid_text, capabilities, level = token_facts(process)
-    if not inside or sid_text != expected_sid or capabilities != 0 or level > LOW_INTEGRITY:
+    AppContainer as a less privileged one, with no capabilities, at Low
+    integrity or below."""
+    inside, sid_text, capabilities, level, lpac = token_facts(process)
+    if (not inside or sid_text != expected_sid or capabilities != 0 or level > LOW_INTEGRITY
+            or not lpac):
         raise SandboxError("check")
 
 
@@ -405,17 +456,20 @@ def _create(argv, env, inherit, std, sid_pointer, pi):
     """CreateProcessW in the container, suspended, with exactly `inherit`."""
     import subprocess
     caps = _SECURITY_CAPABILITIES(sid_pointer, None, 0, 0)
+    opt_out = wintypes.DWORD(PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT)
     size = ctypes.c_size_t()
-    _k32.InitializeProcThreadAttributeList(None, 2, 0, ctypes.byref(size))
+    _k32.InitializeProcThreadAttributeList(None, 3, 0, ctypes.byref(size))
     attrs = ctypes.create_string_buffer(size.value)
-    if not _k32.InitializeProcThreadAttributeList(attrs, 2, 0, ctypes.byref(size)):
+    if not _k32.InitializeProcThreadAttributeList(attrs, 3, 0, ctypes.byref(size)):
         raise SandboxError("start", ctypes.get_last_error())
     try:
         handles = (wintypes.HANDLE * len(inherit))(*inherit)
         for attr, value, n in ((PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles,
                                 ctypes.sizeof(handles)),
                                (PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, ctypes.byref(caps),
-                                ctypes.sizeof(caps))):
+                                ctypes.sizeof(caps)),
+                               (PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
+                                ctypes.byref(opt_out), ctypes.sizeof(opt_out))):
             if not _k32.UpdateProcThreadAttribute(attrs, 0, attr, value, n, None, None):
                 raise SandboxError("start", ctypes.get_last_error())
         si = _STARTUPINFOEXW()

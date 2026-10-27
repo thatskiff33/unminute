@@ -2,17 +2,18 @@
 # A scratch runtime the decoder's AppContainer can read, for tests and for
 # developer tools run from a checkout (#299).
 #
-# The app decodes every recording in a Windows AppContainer with no
-# capabilities (workspace/appcontainer.py), which reads only what ALL
-# APPLICATION PACKAGES may read. An installed app's runtime and app folders
-# are (the installer grants it on its versions folder; Program Files has it by
-# default), so its decoder starts there. A development or CI Python is not,
-# and the app never falls back to decoding outside the container. Tests and
+# The app decodes every recording in a less privileged Windows AppContainer
+# with no capabilities (workspace/appcontainer.py, #439), which reads only what
+# ALL RESTRICTED APPLICATION PACKAGES may read. An installed app's runtime and
+# app folders are (the installer grants it on its versions folder, and in a
+# machine install folder's own permissions), so its decoder starts there. A
+# development or CI Python is not, and the app never falls back to decoding
+# outside the container. Tests and
 # tools never change permissions outside their own temporary folders, so, once
 # per process, use() copies what the decoder needs into a temporary folder: the
 # interpreter and its DLLs, the standard library (less its tests and GUI kits),
 # numpy, PyAV and their bundled DLLs, and the imported workspace package;
-# grants ALL APPLICATION PACKAGES read on that folder only; points
+# grants ALL RESTRICTED APPLICATION PACKAGES read on that folder only; points
 # media._runtime at it; and points the decoder at a throwaway AppContainer
 # profile, so the app's own profile is never registered for the person running
 # them. The folder and the profile are removed when the process ends; a
@@ -40,7 +41,7 @@ import tempfile
 from pathlib import Path
 from unittest import mock
 
-ALL_APPLICATION_PACKAGES = "S-1-15-2-1"
+ALL_RESTRICTED_APPLICATION_PACKAGES = "S-1-15-2-2"
 # Parts of the standard library the decoder never imports.
 STDLIB_LEFT_OUT = {"test", "idlelib", "tkinter", "turtledemo", "ensurepip", "site-packages",
                    "lib2to3", "venv", "__phello__"}
@@ -70,10 +71,11 @@ def _copy_tree(src, dest, skip=()):
     shutil.copytree(src, dest, ignore=lambda folder, names: [n for n in names if n in skip])
 
 
-def build(base=None):
+def build(base=None, grant=ALL_RESTRICTED_APPLICATION_PACKAGES):
     """(interpreter, import path) of a scratch runtime the container can
     read, made once per process (base: where to make it; a new temporary
-    folder, removed at exit, by default)."""
+    folder, removed at exit, by default). grant: the SID given read on it
+    (another only for a measurement, with base)."""
     global _built
     if _built is not None and base is None:
         return _built
@@ -101,7 +103,7 @@ def build(base=None):
     workspace = Path(importlib.import_module("workspace").__file__).parent   # the one in use
     _copy_tree(workspace, app / "workspace", skip={"__pycache__", "ui"})
     if sys.platform == "win32":
-        done = icacls(folder, "/grant", f"*{ALL_APPLICATION_PACKAGES}:(OI)(CI)(RX)", "/Q")
+        done = icacls(folder, "/grant", f"*{grant}:(OI)(CI)(RX)", "/Q")
         if done.returncode:
             raise OSError("the scratch runtime could not be made readable to the container")
     result = (str(py / "python.exe"),

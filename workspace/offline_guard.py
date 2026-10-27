@@ -273,12 +273,15 @@ def _guarded_iocp_sendto(self, conn, buf, flags=0, addr=None):
 
 
 def _iocp_proactor():
-    """asyncio's Windows proactor class, or None elsewhere."""
+    """asyncio's Windows proactor class, or None elsewhere, or where it cannot
+    load: its module makes a socket when imported, which Windows refuses in a
+    less privileged AppContainer with no network (the decoder's, #439), so no
+    code in that process can use it either."""
     if os.name != "nt":
         return None
     try:
         from asyncio import windows_events
-    except ImportError:
+    except (ImportError, OSError):
         return None
     return windows_events.IocpProactor
 
