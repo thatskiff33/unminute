@@ -1,4 +1,4 @@
-# OpenSSF Scorecard (#415 item 3; the owner's decision of 27 Oct 2026): a weekly,
+# OpenSSF Scorecard (#415 item 3; the owner's decision DEC-068, 27 Oct 2026): a weekly,
 # report-only check of the repository's supply-chain posture. Results go to the
 # Security tab as code scanning alerts from the tool "Scorecard". It never blocks
 # a merge: it does not run on pull requests, it is not a required status check,
@@ -14,13 +14,16 @@
 # - repo_token is the job's own token. Branch-Protection may need an admin token
 #   to read every rule, so that check scores what it can see; no extra token
 #   (and so no secret) is added.
-# - The action is pinned to a commit. Its action.yml names its container image
-#   by tag (ghcr.io/ossf/scorecard-action:v2.5.0), not by digest. The job holds
-#   no secret, and its token, limited as above, lets that image read this
-#   public repository and write code scanning results, nothing more.
-# - Expected to score low because of the owner's decisions, accepted (#415):
-#   Code-Review (agents review, with no human approval; 17 Oct 2026) and
-#   Signed-Releases (no code signing, #303).
+# - The action is pinned to a commit. Its action.yaml names its container
+#   image by tag (ghcr.io/ossf/scorecard-action:v2.5.0), not by digest. The
+#   image receives the job's token and the job holds no secret. With
+#   security-events: write that token can upload results, but also dismiss or
+#   reopen any code scanning alert (CodeQL's included) and delete analyses; it
+#   cannot push code or reach a secret. Accepted for a report-only run, as in
+#   Scorecard's own one-job sample (docs/RELEASING.md, "Report only").
+# - Expected to score low because of earlier decisions, accepted (#415):
+#   Code-Review (agents review, with no human approval; DEC-001) and
+#   Signed-Releases (no code signing; DEC-031, #303).
 name: Scorecard
 
 on:

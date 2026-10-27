@@ -645,8 +645,8 @@ class DocsTests(unittest.TestCase):
 
 
 class ScorecardTests(unittest.TestCase):
-    """The OpenSSF Scorecard workflow (#415 item 3; the owner's decision of 27 Oct
-    2026): report only, weekly, pinned and read-only. zizmor ("Workflow lint")
+    """The OpenSSF Scorecard workflow (#415 item 3; the owner's decision DEC-069,
+    27 Oct 2026): report only, weekly, pinned and read-only. zizmor ("Workflow lint")
     audits it too; these pin what it does not: the triggers, the exact
     permissions, that nothing is published, and that it never runs on a pull
     request, so it can never block a merge."""
