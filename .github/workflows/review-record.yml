@@ -1,0 +1,58 @@
+# The "Review record" check (#410): it passes only when a pull request comment
+# records an independent review of the pull request's head commit, or carries one
+# to it with an identical range-diff, as tools/dev_status.py reads it (one
+# definition, shared with --pr; the finish-pr skill gives the format). A push
+# starts a new run on the new head, which fails until a record names that head.
+#
+# Not a required status check yet (the owner's decision, 27 Oct 2026, #410): it
+# runs on every pull request for about a week, then the owner adds it to the
+# ruleset, and docs/RELEASING.md and tests/test_consistency.py list it.
+#
+# A comment does not start this workflow itself: a run for an issue_comment event
+# reports on main's latest commit, not the pull request's head. Instead
+# review-record-rerun.yml (from main) re-runs this pull request run when a
+# collaborator comments, so posting the record turns this check green. Editing
+# the description (its "Writer:" line) starts a run here directly.
+#
+# The same supply-chain rules as ci.yml apply (see its header). This job reads
+# the pull request's comments with a read-only token; it holds no secret and
+# writes nothing, so running the pull request's own code here is the same
+# exposure as every other pull_request job.
+name: Review record
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited]
+
+permissions: {}
+
+# A newer push or edit cancels the pull request's older run (see ci.yml, #395).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  record:
+    name: Review record
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read          # the checkout
+      pull-requests: read     # the pull request's description, comments and reviews
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.14"
+      # The commit checked is the one this run was started for (the event's head),
+      # so a re-run after a later push still reports on its own commit.
+      - name: Check for a review record naming the head commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python tools/dev_status.py --review-record "$PR_NUMBER" --head "$HEAD_SHA"

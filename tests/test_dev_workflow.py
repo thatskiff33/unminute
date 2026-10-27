@@ -4,10 +4,11 @@
 #   python -m unittest discover -s tests -v
 
 import io
+import json
 import re
 import sys
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -266,14 +267,245 @@ class AssessTests(unittest.TestCase):
         self.assertEqual(["the PR is merged"], blockers)
 
     def test_notes_come_from_comments_and_reviews(self):
-        view = {"comments": [{"body": "a"}, {"body": None}], "reviews": [{"body": "b"}]}
+        view = {"comments": [{"body": "a", "authorAssociation": "COLLABORATOR"},
+                             {"body": None, "authorAssociation": "OWNER"}],
+                "reviews": [{"body": "b", "authorAssociation": "MEMBER"}]}
         self.assertEqual(["a", "", "b"], dev_status.notes_of(view))
+
+    def test_only_accounts_with_write_access_leave_notes(self):
+        # #410: the repository is public, so anyone can comment "Commit reviewed:".
+        view = {"comments": [{"body": "ok", "authorAssociation": "COLLABORATOR"},
+                             {"body": "rest", "author_association": "owner"},
+                             {"body": "stranger", "authorAssociation": "CONTRIBUTOR"},
+                             {"body": "first", "authorAssociation": "FIRST_TIME_CONTRIBUTOR"},
+                             {"body": "none", "authorAssociation": "NONE"},
+                             {"body": "unknown"}],
+                "reviews": [{"body": "outsider", "authorAssociation": "NONE"}]}
+        self.assertEqual(["ok", "rest"], dev_status.notes_of(view))
+
+    def test_text_in_an_html_comment_is_not_read(self):
+        # GitHub hides it, so a template placeholder or a commented-out line is no record.
+        view = {"comments": [{"body": "<!-- Commit reviewed: abcdef1 -->x<!-- open",
+                              "authorAssociation": "OWNER"}]}
+        self.assertEqual(["x"], dev_status.notes_of(view))
 
     def test_the_output_says_what_it_does_not_check(self):
         for text in ("verdict", "unresolved review threads", "code-scanning",
                      "owner decisions", "range-diff"):
             with self.subTest(text=text):
                 self.assertIn(text, dev_status.NOT_CHECKED)
+
+
+class ReviewRecordTests(unittest.TestCase):
+    """The "Review record" check (#410): dev_status.review_record and its command."""
+    HEAD = "abcdef1234567890abcdef1234567890abcdef12"
+    BODY = "Part of #410.\n\nWriter: unminute-410\n"
+    RECORD = f"**Review of abcdef1:** approve.\n\nCommit reviewed: {HEAD}\nReviewer: fresh agent a1"
+    GREEN = [check(n, "SUCCESS") for n in REQUIRED]
+
+    def record(self, notes, body=BODY, head=HEAD):
+        return dev_status.review_record(head, body, notes)
+
+    def test_an_independent_review_of_the_head_passes(self):
+        for notes in ([self.RECORD],
+                      # the labels in bold, as list items, the plural, several names
+                      [f"- **Commit reviewed:** `{self.HEAD[:7]}`\n- **Reviewers:** a1, b2"],
+                      # a writer named in a comment instead of the description
+                      [self.RECORD, "Handoff\n\nWriter: unminute-cc"]):
+            with self.subTest(notes=notes):
+                body = self.BODY if len(notes) == 1 else "No writer line here."
+                self.assertEqual((True, []), self.record(notes, body))
+
+    def test_a_push_after_the_review_fails_until_the_new_head_is_named(self):
+        # Acceptance criterion 1: the record names the old head, not the new one.
+        new = "1234567890abcdef1234567890abcdef12345678"
+        passed, problems = self.record([self.RECORD], head=new)
+        self.assertFalse(passed)
+        self.assertIn("no 'Commit reviewed:' line names the head commit 1234567", problems[0])
+        delta = f"Range reviewed: {self.HEAD}..{new}\nReviewer: fresh agent b2"
+        self.assertEqual((True, []), self.record([self.RECORD, delta], head=new))
+        rebase = f"Range-diff: {self.HEAD[:7]}..{new} identical"      # the writer's record
+        self.assertEqual((True, []), self.record([self.RECORD, rebase], head=new))
+
+    def test_a_review_that_does_not_show_independence_fails(self):
+        cases = {
+            "no reviewer line": ([f"Commit reviewed: {self.HEAD}"], self.BODY,
+                                 "has no 'Reviewer:' line"),
+            "no writer named": ([self.RECORD], "Part of #410.", "names no writer"),
+            "an empty writer line": ([self.RECORD], "Writer: <!-- the session -->\n",
+                                     "names no writer"),
+            "the writer reviewed it": ([f"Commit reviewed: {self.HEAD}\nReviewer: Unminute-410"],
+                                       self.BODY, "names a writer of the PR"),
+            "the directing session reviewed it": (
+                [f"Commit reviewed: {self.HEAD}\nReviewer: `unminute-cc`."],
+                "Writer: unminute-410; unminute-cc (directing)", "names a writer of the PR"),
+            "one of several reviewers wrote it": (
+                [f"Commit reviewed: {self.HEAD}\nReviewer: a1, unminute-410"], self.BODY,
+                "names a writer of the PR"),
+            # the reviewer line must be in the comment that records the review
+            "the reviewer in another comment": (
+                [f"Commit reviewed: {self.HEAD}", "Reviewer: fresh agent a1"], self.BODY,
+                "has no 'Reviewer:' line"),
+        }
+        for case, (notes, body, text) in cases.items():
+            with self.subTest(case=case):
+                passed, problems = self.record(notes, body)
+                self.assertFalse(passed)
+                self.assertIn("is recorded, but no record shows it is independent", problems[0])
+                self.assertIn(text, " ".join(problems))
+
+    def test_the_template_names_no_writer_until_it_is_filled_in(self):
+        template = (ROOT / ".github" / "pull_request_template.md").read_text(encoding="utf-8")
+        self.assertIn("\nWriter: <!--", template)
+        self.assertEqual([], dev_status.writers_of(template, []))
+        filled = template.replace("Writer: ", "Writer: unminute-410 ", 1)
+        self.assertEqual(["unminute-410"], dev_status.writers_of(filled, []))
+
+    def test_a_delta_or_rebase_counts_only_from_an_independent_review(self):
+        new = "1234567890abcdef1234567890abcdef12345678"
+        self_review = f"Commit reviewed: {self.HEAD}\nReviewer: unminute-410"
+        for notes in ([self_review, f"Range-diff: {self.HEAD}..{new} identical"],
+                      [self.RECORD, f"Range reviewed: {self.HEAD}..{new}"],
+                      [self.RECORD, f"Range reviewed: {self.HEAD}..{new}\nReviewer: unminute-410"]):
+            with self.subTest(notes=notes):
+                self.assertFalse(self.record(notes, head=new)[0])
+
+    def test_the_problems_never_repeat_a_comments_words(self):
+        # P3 in spirit and log hygiene: only commit names and fixed text are printed,
+        # so a comment cannot write a workflow command (a line starting "::") either.
+        notes = [f"Commit reviewed: {self.HEAD}\nReviewer: ::error::secret-name"]
+        _, problems = self.record(notes, "Writer: ::error::secret-name")
+        self.assertTrue(problems)
+        self.assertNotIn("secret-name", " ".join(problems))
+
+    def test_pr_reports_a_review_without_independence_as_a_note(self):
+        # Report only for now (#410): a note in --pr, not a blocker.
+        view = pr(9, headRefOid=self.HEAD, statusCheckRollup=self.GREEN, body=self.BODY)
+        blockers, info = dev_status.assess(view, REQUIRED, [f"Commit reviewed: {self.HEAD}"])
+        self.assertEqual([], blockers)
+        self.assertIn("does not show an independent reviewer", " ".join(info))
+        blockers, info = dev_status.assess(view, REQUIRED, [self.RECORD])
+        self.assertEqual([], blockers)
+        self.assertNotIn("does not show an independent reviewer", " ".join(info))
+
+    def run_check(self, view, *args):
+        """main(--review-record 9 ...) with gh stubbed: (exit code, output, gh calls)."""
+        calls = []
+
+        def fake_gh(args):
+            calls.append(args)
+            return view
+
+        def no_run(*_args, **_kwargs):
+            raise AssertionError("git was run")
+        out = io.StringIO()
+        with mock.patch.object(dev_status, "gh_json", fake_gh), \
+                mock.patch.object(dev_status, "run", no_run), redirect_stdout(out):
+            code = dev_status.main(["--review-record", "9", *args])
+        return code, out.getvalue(), calls
+
+    def test_the_command_exits_by_the_record_and_fetches_nothing(self):
+        record = {"body": self.RECORD, "authorAssociation": "COLLABORATOR"}
+        view = {"number": 9, "headRefOid": self.HEAD, "body": self.BODY, "comments": [record],
+                "reviews": []}
+        code, out, calls = self.run_check(view)
+        self.assertEqual(0, code)
+        self.assertIn("Review record for PR #9 at abcdef1: an independent review is recorded",
+                      out)
+        self.assertEqual([["pr", "view", "9", "--json", dev_status.RECORD_FIELDS]], calls)
+        # The same record from an account without write access does not count.
+        outsider = {**view, "comments": [{**record, "authorAssociation": "NONE"}]}
+        code, out, _ = self.run_check(outsider)
+        self.assertEqual(1, code)
+        self.assertIn("not found", out)
+        self.assertIn("Reviewer: <the reviewing session or agent>", out)
+        self.assertNotIn("fresh agent", out)
+
+    def test_the_command_checks_the_commit_its_run_was_started_for(self):
+        new = "1234567890abcdef1234567890abcdef12345678"
+        view = {"number": 9, "headRefOid": new, "body": self.BODY, "reviews": [],
+                "comments": [{"body": self.RECORD, "authorAssociation": "OWNER"}]}
+        code, out, _ = self.run_check(view, "--head", self.HEAD.upper())
+        self.assertEqual(0, code)
+        self.assertIn("the PR's head is now 1234567; this run checks abcdef1", out)
+        self.assertEqual(1, self.run_check(view)[0])
+
+    def test_bad_arguments_are_refused_before_any_gh_call(self):
+        for argv in (["--review-record", "9", "--head", "abc"],
+                     ["--review-record", "9", "--head", "abcdefg"],
+                     ["--review-record", "0"], ["--review-record", "x"],
+                     ["--head", self.HEAD], ["--pr", "9", "--review-record", "9"]):
+            with self.subTest(argv=argv), mock.patch.object(dev_status, "gh_json") as gh, \
+                    redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as stop:
+                dev_status.main(["--no-fetch", *argv])
+            self.assertEqual(2, stop.exception.code)
+            gh.assert_not_called()
+
+
+class ReviewRecordWorkflowTests(unittest.TestCase):
+    """The workflows behind the check (#410). zizmor ("Workflow lint") audits them
+    too; these pin what it does not: the triggers, the exact permissions, and that
+    the comment-triggered workflow runs no pull request code and reads no comment."""
+    WORKFLOWS = ROOT / ".github" / "workflows"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.check = (cls.WORKFLOWS / "review-record.yml").read_text(encoding="utf-8")
+        cls.rerun = (cls.WORKFLOWS / "review-record-rerun.yml").read_text(encoding="utf-8")
+
+    @staticmethod
+    def section(text, key, indent):
+        """The lines of a YAML mapping under `key:` at the given indent."""
+        match = re.search(rf"^{' ' * indent}{key}:\n((?:{' ' * (indent + 2)}.*\n|\s*\n)+)",
+                          text, re.MULTILINE)
+        assert match, f"no {key}: block"
+        return match.group(1)
+
+    @staticmethod
+    def permissions(block):
+        return dict(re.findall(r"^\s+([\w-]+): (read|write)\b", block, re.MULTILINE))
+
+    def test_only_the_expected_triggers(self):
+        for text, trigger in ((self.check, "pull_request"), (self.rerun, "issue_comment")):
+            with self.subTest(trigger=trigger):
+                triggers = re.findall(r"^  (\w+):", self.section(text, "on", 0), re.MULTILINE)
+                self.assertEqual([trigger], triggers)
+                for risky in ("pull_request_target", "workflow_run", "workflow_dispatch"):
+                    self.assertNotRegex(text, rf"\b{risky}\b")
+                self.assertIn("\npermissions: {}\n", text)
+
+    def test_the_check_reads_only(self):
+        job = self.section(self.check, "  record", 0)
+        self.assertIn("    name: Review record\n", job)
+        self.assertEqual({"contents": "read", "pull-requests": "read"},
+                         self.permissions(self.section(job, "permissions", 4)))
+        self.assertIn("persist-credentials: false", job)
+        self.assertIn('run: python tools/dev_status.py --review-record "$PR_NUMBER" '
+                      '--head "$HEAD_SHA"\n', job)
+
+    def test_the_rerun_runs_no_pull_request_code_and_reads_no_comment(self):
+        job = self.section(self.rerun, "  rerun", 0)
+        self.assertEqual({"actions": "write", "pull-requests": "read"},
+                         self.permissions(self.section(job, "permissions", 4)))
+        self.assertNotRegex(self.rerun, r"(?m)^\s*-?\s*uses:")      # no checkout, no action
+        for field in ("comment.body", "issue.title", "issue.body", "head_ref", "head.ref"):
+            self.assertNotIn(field, self.rerun)
+        script = job[job.index("        run: |"):]
+        self.assertNotIn("${{", script)
+        self.assertIn("review-record.yml/runs?event=pull_request", script)
+        self.assertTrue((self.WORKFLOWS / "review-record.yml").exists())
+
+    def test_the_rerun_runs_only_for_trusted_comments_on_pull_requests(self):
+        condition = one_line(self.section(self.rerun, "  rerun", 0).split("    runs-on:")[0])
+        self.assertIn("github.event.issue.pull_request &&", condition)
+        listed = re.search(r"fromJSON\('(\[[^\]]*\])'\), github\.event\.comment\."
+                           r"author_association\)", condition)
+        self.assertIsNotNone(listed, condition)
+        self.assertEqual(dev_status.TRUSTED, set(json.loads(listed.group(1))))
+
+
+def one_line(text):
+    return " ".join(text.split())
 
 
 class LimitTests(unittest.TestCase):

@@ -2,6 +2,8 @@
 
 <!-- One or two sentences. Link the issue: "Closes #N" only when every acceptance criterion is met; otherwise "Part of #N". -->
 
+Writer: <!-- the session or agent that wrote this change; a line for each writer after a handoff. The "Review record" check needs a reviewer other than these (finish-pr skill, step 5). -->
+
 ## Definition of done
 
 Tick each item, or replace it with "n/a" and the reason. See docs/RELEASE_STANDARD.md.
