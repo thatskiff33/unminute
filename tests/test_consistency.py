@@ -461,16 +461,18 @@ class DocsTests(unittest.TestCase):
     # Every job in these workflows is a required status check (docs/RELEASING.md,
     # "Protecting main"). ci.yml holds most; the changelog job re-runs when labels
     # change, the audit also runs daily and CodeQL runs weekly, so they keep their
-    # own workflows. quality.yml holds report-only jobs; release.yml runs only
-    # from a release tag. One exception: a job run in parts by a matrix (the
-    # Windows unit tests, #386) is not required itself; the job that needs it
-    # and always runs is, and test_matrix_parts_stand_behind_a_required_job
-    # holds that. review-record.yml's "Review record" runs on every pull request
-    # but is not required yet: the owner adds it to the ruleset after about a week
-    # (#410), and it then moves to REQUIRED_WORKFLOWS and docs/RELEASING.md's list.
+    # own workflows. quality.yml holds report-only jobs, and scorecard.yml a
+    # report-only job that never runs on a pull request (#415; ScorecardTests);
+    # release.yml runs only from a release tag. One exception: a job run in parts
+    # by a matrix (the Windows unit tests, #386) is not required itself; the job
+    # that needs it and always runs is, and
+    # test_matrix_parts_stand_behind_a_required_job holds that. review-record.yml's
+    # "Review record" runs on every pull request but is not required yet: the
+    # owner adds it to the ruleset after about a week (#410), and it then moves to
+    # REQUIRED_WORKFLOWS and docs/RELEASING.md's list.
     # review-record-rerun.yml only re-runs it when a collaborator comments.
     REQUIRED_WORKFLOWS = ("ci.yml", "changelog.yml", "audit.yml", "codeql.yml")
-    REPORT_ONLY_WORKFLOWS = ("quality.yml",)
+    REPORT_ONLY_WORKFLOWS = ("quality.yml", "scorecard.yml")
     PENDING_REQUIRED_WORKFLOWS = ("review-record.yml",)
     OTHER_WORKFLOWS = ("release.yml", "review-record-rerun.yml")
 
@@ -640,6 +642,47 @@ class DocsTests(unittest.TestCase):
             match = count.search(text)
             self.assertIsNone(match, f"{doc} states a test count that will go stale: "
                                      f"{match and match.group(0)!r}")
+
+
+class ScorecardTests(unittest.TestCase):
+    """The OpenSSF Scorecard workflow (#415 item 3; the owner's decision DEC-069,
+    27 Oct 2026): report only, weekly, pinned and read-only. zizmor ("Workflow lint")
+    audits it too; these pin what it does not: the triggers, the exact
+    permissions, that nothing is published, and that it never runs on a pull
+    request, so it can never block a merge."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = read(".github/workflows/scorecard.yml")
+        cls.head, cls.jobs = cls.text.split("\njobs:", 1)
+
+    def test_only_the_expected_triggers(self):
+        on = re.search(r"(?ms)^on:\n(.*?)^\S", self.head).group(1)
+        self.assertEqual(["push", "schedule", "workflow_dispatch"],
+                         re.findall(r"^  (\w+):", on, re.MULTILINE))
+        self.assertIn("  push:\n    branches: [main]\n", on)
+        for risky in ("pull_request", "pull_request_target", "workflow_run", "issue_comment"):
+            self.assertNotRegex(self.text, rf"\b{risky}\b")
+
+    def test_no_default_permissions_and_only_what_the_job_needs(self):
+        self.assertIn("\npermissions: {}\n", self.head)
+        blocks = re.findall(r"(?m)^    permissions:\n((?:      .*\n)+)", self.jobs)
+        self.assertEqual(1, len(blocks), "one job, with its own permissions")
+        self.assertEqual({"contents": "read", "security-events": "write"},
+                         dict(re.findall(r"^\s+([\w-]+): (\w+)$", blocks[0], re.MULTILINE)))
+        self.assertNotIn("id-token", self.jobs)                 # publish_results needs it
+
+    def test_nothing_is_published_and_actions_are_pinned(self):
+        self.assertIn("          publish_results: false\n", self.jobs)
+        self.assertNotIn("repo_token", self.jobs)              # the job's own token only
+        uses = re.findall(r"uses: (\S+)", self.jobs)
+        self.assertEqual(["actions/checkout", "ossf/scorecard-action",
+                          "github/codeql-action/upload-sarif"],
+                         [u.split("@")[0] for u in uses])
+        for use in uses:
+            self.assertRegex(use, r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
+        self.assertEqual(1, self.jobs.count("persist-credentials: false"))
+        self.assertNotIn("run:", self.jobs)                     # no scripts of its own
 
 
 # CSS named colours (CSS Color Module Level 4), so "white" counts like #FFFFFF.
