@@ -27,10 +27,24 @@
 #      that changes nothing below LIMIT_KNEE of full scale and bends louder
 #      sums smoothly under full scale instead of clipping them. Only the mix
 #      is matched and limited: the saved tracks are read, never changed
-#      (D1). Echo cancellation is not done (a later idea, #376).
-#   4. While mixing, workspace/activity.Tracker keeps both tracks' levels in
+#      (D1).
+#   4. Echo cancellation (#376, the owner's decisions of 28 Oct 2026): before
+#      it is measured and mixed, the microphone has the computer audio's echo
+#      taken off (workspace/echo.py, with the computer track lined up by steps
+#      1 and 2 as its reference), automatically whenever there is a computer
+#      track. That takes two passes over the tracks, both in memory: the
+#      first cancels to check the result and measure the cleaned microphone's
+#      level for step 3, the second cancels again, the same way to the sample,
+#      as it mixes. If the canceller fails or its result fails a check (a
+#      sample that is not a number, or a microphone made louder overall than
+#      it was by more than ECHO_MAX_GAIN_DB), the mix is the plain mix of
+#      steps 1 to 3, with a mix_echo_skipped event of fixed wording: never a
+#      silent change. The one mix is what plays back and what is transcribed.
+#   5. While mixing, workspace/activity.Tracker keeps both tracks' levels in
 #      10 ms steps (before matching), for the track-activity file and the
-#      "You" suggestion (#108 slice 5). A failure there never stops the mix.
+#      "You" suggestion (#108 slice 5). It is fed the microphone as recorded,
+#      before echo cancellation, because it measures the echo itself
+#      (activity.flags). A failure there never stops the mix.
 #
 # Lines that cannot be trusted (damaged marks, a drift beyond MAX_DRIFT) fall
 # back to lining the tracks up by their start times, with an event: never a
@@ -50,6 +64,10 @@ LEVEL_GATE_DB = -50.0        # level windows quieter than this are not counted a
 LEVEL_MIN_ACTIVE_S = 5.0     # a track with less sound than this is not measured (left as it is)
 LEVEL_WINDOW_S = 0.256       # level windows
 LEVEL_BLOCK_S = 10.0         # the level is measured over the whole track, this much at a time
+ECHO_MAX_GAIN_DB = 0.5       # cancelling may not make the microphone louder than this
+ECHO_SKIPPED = {"kind": "mix_echo_skipped", "at_s": 0.0, "seconds": None,
+                "note": "Echo from the computer audio could not be taken off the "
+                        "microphone, so the recording is the plain mix and may have an echo."}
 _RELATIVE_GATE_DB = -10.0    # then windows this far below the mean of the rest are left out
 
 
@@ -225,12 +243,41 @@ def computer_at(times, lines, reader):
     return out
 
 
+class _Stream:
+    """Consecutive blocks from a generator, read as a track: each read(a, b)
+    must follow on from the last (track_level_db reads that way)."""
+
+    def __init__(self, blocks, frames):
+        self._blocks, self.frames = blocks, int(frames)
+        self._held, self.pos = np.zeros(0), 0
+
+    def read(self, a, b):
+        if a != self.pos:
+            raise ValueError("out of order")
+        while len(self._held) < b - a:
+            try:
+                self._held = np.concatenate([self._held, next(self._blocks)])
+            except StopIteration:
+                break
+        out, self._held = self._held[:b - a], self._held[b - a:]
+        self.pos = b
+        return out
+
+    def drain(self):
+        """Read what is left (the part shorter than a level window)."""
+        for _ in self._blocks:
+            pass
+
+
 class Mix:
     """The one mix of a two-track recording, at the microphone's rate. The
     tracks are lined up when it is made (events about that go to notes at
-    once, so they are known before the import); blocks() then mixes and
-    yields little-endian int16 bytes, BLOCK_S at a time. mic and comp: the
-    tracks (recorder.TrackAudio: .frames, .read(a, b))."""
+    once, so they are known before the import), and the echo canceller's
+    first pass runs (its fallback event, if any, goes to notes too); blocks()
+    then mixes and yields little-endian int16 bytes, a block at a time. mic
+    and comp: the tracks (recorder.TrackAudio: .frames, .read(a, b)).
+    echo_skipped: None, or why the plain mix was used ("check": the result
+    failed a check; "error": the canceller failed)."""
 
     def __init__(self, journal, mic, comp, notes):
         from workspace import recorder
@@ -254,10 +301,27 @@ class Mix:
             notes.append({"kind": "mix_by_start", "at_s": 0.0, "seconds": None,
                           "note": "The microphone and computer audio were lined up by when "
                                   "they started only; they may be slightly out of step."})
+        # Echo cancellation's first pass (see the header), which measures the
+        # cleaned microphone's level. A chunk that cannot be read is not a
+        # canceller failure: it stops the import as it would at the mix.
+        self.echo, self.echo_skipped = bool(comp.frames and mic.frames), None
+        mic_db = None
+        if self.echo:
+            from workspace import echo, media
+            try:
+                mic_db = self._first_pass()
+            except Exception as exc:
+                if isinstance(exc, OSError) or media.damaged_audio(exc):
+                    raise
+                self.echo = False
+                self.echo_skipped = "check" if isinstance(exc, echo.EchoError) else "error"
+                notes.append(dict(ECHO_SKIPPED))
         # Loudness matching (see the header). A track that cannot be read
         # here is not matched; reading it for the mix reports the problem.
         try:
-            self.gains = match_gains(track_level_db(mic, rate),
+            if not self.echo:
+                mic_db = track_level_db(mic, rate)
+            self.gains = match_gains(mic_db,
                                      track_level_db(comp, crate) if comp.frames else None)
         except Exception:
             self.gains = (1.0, 1.0)
@@ -280,16 +344,74 @@ class Mix:
         except Exception:
             self.tracker = None                  # no suggestion; the mix carries on
 
-    def blocks(self):
-        step = max(1, int(BLOCK_S * self.rate))
+    def _voice(self, a, b):
+        """The microphone at frames [a, b) (float32), zeros outside the track."""
+        out = np.zeros(max(0, b - a), dtype=np.float32)
+        lo, hi = max(0, a), min(self.frames, b)
+        if lo < hi:
+            out[lo - a:hi - a] = self.mic.read(lo, hi)
+        return out
+
+    def _other(self, a, b):
+        """The computer track at microphone frames [a, b) (float32), lined up
+        by the microphone's segments; zeros outside the microphone track and
+        where the computer track has nothing."""
+        out = np.zeros(max(0, b - a), dtype=np.float32)
         for seg in self.mic_lines:
-            for a in range(seg.start, seg.end, step):
-                b = min(seg.end, a + step)
-                voice = self.mic.read(a, b)
-                times = seg.time(np.arange(a, b, dtype=np.float64))
-                other = computer_at(times, self.comp_lines, self.comp)
-                self._track(a, voice, other)
-                g_mic, g_comp = self.gains
-                both = voice.astype(np.float64) * g_mic + other.astype(np.float64) * g_comp
-                mix = np.clip(np.round(soft_limit(both)), -32768, 32767)
-                yield mix.astype("<i2").tobytes()
+            lo, hi = max(a, seg.start), min(b, seg.end)
+            if lo < hi:
+                times = seg.time(np.arange(lo, hi, dtype=np.float64))
+                out[lo - a:hi - a] = computer_at(times, self.comp_lines, self.comp)
+        return out
+
+    def _cancelled(self):
+        """(raw, voice, other) blocks over the whole track: the microphone
+        as recorded and with the echo taken off (workspace/echo.py), and the
+        computer track lined up; a new canceller each time, so both
+        passes give the same samples."""
+        from workspace import echo
+        return echo.Canceller(self.rate).run(self._voice, self._other, self.frames)
+
+    def _first_pass(self):
+        """Cancel once over the whole track: check the result and return the
+        cleaned microphone's level (track_level_db). Raises echo.EchoError
+        when the result fails the check."""
+        from workspace import echo
+        energy = {"before": 0.0, "after": 0.0}
+
+        def voices():
+            for raw, voice, _ in self._cancelled():
+                energy["before"] += float(np.dot(raw, raw))
+                energy["after"] += float(np.dot(voice, voice))
+                yield voice
+
+        stream = _Stream(voices(), self.frames)
+        level = track_level_db(stream, self.rate)
+        stream.drain()
+        before, after = energy["before"], energy["after"]
+        if not (math.isfinite(before) and math.isfinite(after)) \
+                or after > before * 10 ** (ECHO_MAX_GAIN_DB / 10):
+            raise echo.EchoError("check")
+        return level
+
+    def blocks(self):
+        g_mic, g_comp = self.gains
+        if self.echo:
+            parts = self._cancelled()
+        else:
+            step = max(1, int(BLOCK_S * self.rate))
+
+            def plain():
+                for a in range(0, self.frames, step):
+                    b = min(self.frames, a + step)
+                    voice = self._voice(a, b)
+                    yield voice, voice, self._other(a, b)
+            parts = plain()
+        a = 0
+        for raw, voice, other in parts:
+            # The tracker takes the microphone as recorded (header, step 5).
+            self._track(a, raw, other)
+            a += len(raw)
+            both = voice.astype(np.float64) * g_mic + other.astype(np.float64) * g_comp
+            mix = np.clip(np.round(soft_limit(both)), -32768, 32767)
+            yield mix.astype("<i2").tobytes()

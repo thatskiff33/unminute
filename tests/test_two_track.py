@@ -71,6 +71,14 @@ def tone(n, rate, hz, start=0, amp=8000):
     return (np.sin(2 * np.pi * hz * t) * amp).astype(np.int16)
 
 
+def noise(n, seed, amp=1000):
+    """Steady random sound: two of these (different seeds) are unrelated,
+    so neither is an echo of the other (#376: a microphone that is a copy of
+    the computer audio, such as the same constant or the same tone in phase,
+    is echo by definition and is taken off)."""
+    return (np.random.default_rng(seed).standard_normal(n) * amp).astype(np.int16)
+
+
 class FakeMic:
     """Stands in for a sounddevice InputStream; the test pushes audio."""
 
@@ -234,10 +242,11 @@ class LoopbackHelperTests(unittest.TestCase):
 
     def test_loopback_is_not_loaded_by_the_window_process_at_start(self):
         # Imported only when a recording with computer audio starts (and its
-        # mix only at import): never by the window modules at start-up.
+        # mix and its echo cancellation only at import, #376): never by the
+        # window modules at start-up.
         probe = ("import sys, workspace.app, workspace.api, workspace.shell\n"
-                 "print(sorted(m for m in ('workspace.loopback', 'workspace.mixdown') "
-                 "if m in sys.modules))")
+                 "print(sorted(m for m in ('workspace.loopback', 'workspace.mixdown', "
+                 "'workspace.echo') if m in sys.modules))")
         result = subprocess.run([sys.executable, "-B", "-c", probe], cwd=ROOT,
                                 capture_output=True, text=True, timeout=120)
         if result.returncode != 0:
@@ -1046,14 +1055,16 @@ class MixdownTests(unittest.TestCase):
 
     def test_the_mix_is_the_sum_of_the_tracks_and_silence_where_one_has_none(self):
         # The owner's decision 2 (25 Oct 2026): each track at full level, not
-        # the mean (which put each about 6 dB lower).
-        mic = np.full(4 * RATE, 1000, np.int16)
-        comp = np.full(2 * CRATE, 3000, np.int16)                 # the computer stops at 2 s
+        # the mean (which put each about 6 dB lower). Unrelated sound on the
+        # two tracks (noise()): no echo, so nothing is taken off.
+        mic = noise(4 * RATE, 1, 1000)
+        comp = noise(2 * CRATE, 2, 3000)                           # the computer stops at 2 s
         journal = self.journal(mic, comp, [[0, 50.0, 1]], [[0, 50.0, 1]])
         mixed, seconds = mix(self.folder, journal, [])
         self.assertEqual(seconds, 4.0)
-        self.assertTrue(np.all(mixed[100:2 * RATE - 100] == 4000))  # 1000 + 3000
-        self.assertTrue(np.all(mixed[2 * RATE + 100:] == 1000))     # the microphone, as it was
+        both = mic[:2 * RATE].astype(np.int32) + comp[::3]          # same times: every 3rd frame
+        self.assertTrue(np.array_equal(mixed[100:2 * RATE - 100], both[100:-100]))
+        self.assertTrue(np.array_equal(mixed[2 * RATE + 100:], mic[2 * RATE + 100:]))  # as it was
 
     def test_the_limiter_acts_only_as_the_sum_nears_full_scale(self):
         x = np.arange(-70000, 70001, 7, dtype=np.float64)
@@ -1068,8 +1079,10 @@ class MixdownTests(unittest.TestCase):
         self.assertTrue(np.array_equal(mixdown.soft_limit(-x), -y))  # the same both ways
 
     def test_two_loud_tracks_are_limited_not_clipped(self):
+        # Different tones (the same tone in phase would be an echo, #376):
+        # where their peaks meet the sum nears 45700, well over the knee.
         mic = tone(4 * RATE, RATE, 220, amp=24000)
-        comp = tone(4 * CRATE, CRATE, 220, amp=24000)                # in phase: sums to 48000
+        comp = tone(4 * CRATE, CRATE, 330, amp=24000)
         journal = self.journal(mic, comp, [[0, 50.0, 1]], [[0, 50.0, 1]])
         saved = {p.name: p.read_bytes() for p in self.folder.iterdir()}
         mixed, _ = mix(self.folder, journal, [])
@@ -1211,8 +1224,9 @@ class MixdownTests(unittest.TestCase):
         self.assertEqual({p.name: p.read_bytes() for p in self.folder.iterdir()}, saved)
 
     def test_marks_that_cannot_be_used_fall_back_to_start_times_and_say_so(self):
-        mic = np.full(2 * RATE, 1000, np.int16)
-        comp = np.full(2 * CRATE, 3000, np.int16)
+        mic = noise(2 * RATE, 1, 1000)
+        comp = noise(2 * CRATE, 2, 3000)
+        both = mic.astype(np.int32) + comp[::3]                     # lined up by their starts
         for mic_marks, comp_marks in (([[0, 5.0, 1], [100, 4.0, 0]], [[0, 5.0, 1]]),  # time back
                                       ([[0, "x", 1]], [[0, 5.0, 1]]),
                                       ([], [[0, 5.0, 1]]),
@@ -1222,7 +1236,7 @@ class MixdownTests(unittest.TestCase):
             mixed, seconds = mix(self.folder, journal, notes)
             self.assertEqual(seconds, 2.0)
             self.assertEqual([n["kind"] for n in notes], ["mix_by_start"])
-            self.assertTrue(np.all(mixed[100:-100] == 4000))
+            self.assertTrue(np.array_equal(mixed[100:-100], both[100:-100]))
 
     def test_an_implausible_clock_keeps_the_nominal_rate_and_says_so(self):
         mic = np.zeros(60 * RATE, np.int16)
@@ -1249,6 +1263,234 @@ class MixdownTests(unittest.TestCase):
         self.assertEqual(seconds, 2.0)
         self.assertEqual([n["kind"] for n in notes], ["damaged"])
         self.assertTrue(np.all(mixed[100:-100] == 3000))   # silence for the microphone
+
+
+# -- echo cancellation (#376) -------------------------------------------------------------
+#
+# Synthetic sound only: speech-like syllables (a gliding pitch with its
+# harmonics shaped by two formant-like peaks, with gaps), and an echo made by
+# a simulated room (a delay, a direct path and a decaying random tail). Green
+# here says nothing about real rooms or laptop speakers: that is the #189
+# sitting (E1).
+
+def speech(seconds, rate, seed, amp=2000.0):
+    """Speech-like synthetic sound, about amp RMS while it sounds."""
+    rng = np.random.default_rng(seed)
+    n = int(seconds * rate)
+    out = np.zeros(n)
+    pos = int(rng.uniform(0, 0.3) * rate)
+    while pos < n:
+        dur = min(int(rng.uniform(0.08, 0.3) * rate), n - pos)
+        t = np.arange(dur) / rate
+        f0 = rng.uniform(90, 230) * (1 + rng.uniform(-0.15, 0.15) * t / max(t[-1], 1e-3))
+        phase = 2 * np.pi * np.cumsum(f0) / rate
+        f1, f2 = rng.uniform(300, 900), rng.uniform(900, 2800)
+        s = np.zeros(dur)
+        for h in range(1, int(4000 / f0.max())):
+            fh = h * f0.mean()
+            s += (np.exp(-((fh - f1) / 200) ** 2) + 0.6 * np.exp(-((fh - f2) / 300) ** 2)
+                  + 0.05) / h * np.sin(h * phase + rng.uniform(0, 2 * np.pi))
+        out[pos:pos + dur] = (s + 0.02 * rng.standard_normal(dur)) * np.hanning(dur)
+        pos += dur + int(rng.uniform(0.02, 0.25) * rate)
+        if rng.uniform() < 0.1:
+            pos += int(rng.uniform(0.5, 1.5) * rate)
+    return out / np.sqrt(np.mean(out ** 2)) * amp
+
+
+def room_echo(x, rate, delay_s=0.04, gain=0.5, seed=3):
+    """x as a microphone would hear it from a speaker: after delay_s, a
+    direct path and a decaying 0.2 s tail, about gain of its level."""
+    rng = np.random.default_rng(seed)
+    n = int(0.2 * rate)
+    h = rng.standard_normal(n) * np.exp(-6.9 * np.arange(n) / (0.15 * rate))
+    h[0] += 3.0
+    h = np.concatenate([np.zeros(int(delay_s * rate)), h / np.sqrt(np.sum(h ** 2)) * gain])
+    size = 1 << int(np.ceil(np.log2(len(x) + len(h))))
+    return np.fft.irfft(np.fft.rfft(x, size) * np.fft.rfft(h, size), size)[:len(x)]
+
+
+def band_db(x, rate, hz=8000.0):
+    """x's level in dB, counting only what the stored 16 kHz audio keeps."""
+    spectrum = np.fft.rfft(np.asarray(x, dtype=np.float64))
+    spectrum[np.fft.rfftfreq(len(x), 1 / rate) > hz] = 0
+    kept = np.fft.irfft(spectrum, len(x))
+    return 10 * np.log10(np.mean(kept ** 2) + 1e-12)
+
+
+def reader(x):
+    """Frames [a, b) of x, zeros outside it (the canceller's reader)."""
+    def read(a, b):
+        out = np.zeros(b - a)
+        lo, hi = max(a, 0), min(b, len(x))
+        if lo < hi:
+            out[lo - a:hi - a] = x[lo:hi]
+        return out
+    return read
+
+
+def cancel(mic, ref, rate):
+    """The microphone with the echo taken off, and the raw it was given."""
+    from workspace import echo
+    parts = list(echo.Canceller(rate).run(reader(mic), reader(ref), len(mic)))
+    return np.concatenate([p[1] for p in parts]), np.concatenate([p[0] for p in parts])
+
+
+@unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
+class EchoCancellationTests(unittest.TestCase):
+    SECONDS = 40
+    TALKS_AT = 20                    # the far side alone before this, both after it
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.folder = Path(self.tmp.name)
+
+    def call(self, rate, echo_gain=0.5):
+        """(microphone, far side, person in the room): the far side plays
+        through the speakers throughout; the person talks from TALKS_AT."""
+        far = speech(self.SECONDS, rate, 1)
+        near = speech(self.SECONDS, rate, 2, amp=1500.0)
+        near[:self.TALKS_AT * rate] = 0
+        hiss = np.random.default_rng(4).standard_normal(len(far)) * 5
+        return near + room_echo(far, rate, gain=echo_gain) + hiss, far, near
+
+    def test_the_echo_of_the_computer_audio_is_taken_off_the_microphone(self):
+        for rate in (16000, 48000):
+            with self.subTest(rate=rate):
+                mic, far, near = self.call(rate)
+                out, raw = cancel(mic, far, rate)
+                self.assertTrue(np.array_equal(raw, mic))
+                # The far side alone: the echo, once the fit has a few seconds.
+                alone = slice(5 * rate, self.TALKS_AT * rate)
+                self.assertGreater(band_db(mic[alone], rate) - band_db(out[alone], rate), 15.0)
+                # Both talking: the person kept, with the echo taken from under them.
+                both = slice((self.TALKS_AT + 2) * rate, self.SECONDS * rate)
+                plain = band_db(mic[both] - near[both], rate) - band_db(near[both], rate)
+                left = band_db(out[both] - near[both], rate) - band_db(near[both], rate)
+                self.assertGreater(plain, -8.0)                  # the echo, as recorded
+                self.assertLess(left, -12.0)                     # echo and harm to the voice
+
+    def test_a_microphone_that_hears_no_echo_is_left_exactly_as_it_was(self):
+        # A headset: the computer plays the far side, the microphone hears
+        # only the person (talking throughout) and the room's hiss.
+        for rate in (16000, 48000):
+            with self.subTest(rate=rate):
+                _, far, _ = self.call(rate)
+                mic = speech(self.SECONDS, rate, 2, amp=1500.0)
+                mic += np.random.default_rng(4).standard_normal(len(mic)) * 5
+                out, _ = cancel(mic, far, rate)
+                self.assertTrue(np.array_equal(out, mic))
+
+    def test_the_same_tracks_always_give_the_same_samples(self):
+        mic, far, _ = self.call(16000)
+        first, _ = cancel(mic, far, 16000)
+        again, _ = cancel(mic, far, 16000)
+        self.assertTrue(np.array_equal(first, again))
+        self.assertFalse(np.array_equal(first, mic))             # it did take something off
+
+    # -- in the mix, from the encrypted chunks --------------------------------------
+
+    def tracks(self):
+        """A 16 kHz microphone hearing a 48 kHz computer track's echo, saved
+        as the recorder saves them, both from t=50: (journal, microphone,
+        computer track at the microphone's times)."""
+        far = np.clip(np.round(speech(self.SECONDS, CRATE, 1)), -32768, 32767).astype(np.int16)
+        lined_up = far[::3].astype(np.float64)                   # the same moments at 16 kHz
+        near = speech(self.SECONDS, RATE, 2, amp=1500.0)
+        near[:self.TALKS_AT * RATE] = 0
+        mic = np.clip(np.round(near + room_echo(lined_up, RATE)), -32768, 32767).astype(np.int16)
+        journal = {"rate": RATE, "format": 2, "marks": [[0, 50.0, 1]],
+                   "chunks": write_track(self.folder, recorder.MICROPHONE, mic, 5, RATE),
+                   "tracks": {"computer": {"rate": CRATE, "marks": [[0, 50.0, 1]],
+                                           "chunks": write_track(self.folder, recorder.COMPUTER,
+                                                                 far, 5, CRATE)}}}
+        return journal, mic, lined_up
+
+    def saved(self):
+        return {p.name: p.read_bytes() for p in self.folder.iterdir()}
+
+    def test_the_one_mix_has_the_echo_taken_off_and_the_tracks_are_only_read(self):
+        from workspace import echo
+        journal, mic, lined_up = self.tracks()
+        before = self.saved()
+        notes = []
+        mixed, seconds = mix(self.folder, journal, notes)
+        self.assertEqual(notes, [])
+        self.assertEqual(seconds, self.SECONDS)
+        again, _ = mix(self.folder, journal, [])                 # an import tried again
+        self.assertTrue(np.array_equal(mixed, again))
+        self.assertEqual(self.saved(), before)                   # read only; nothing new written
+        with mock.patch.object(echo.Canceller, "run", side_effect=RuntimeError("test")):
+            plain, _ = mix(self.folder, journal, [])
+        # The far side alone: what is left of the microphone in the mix.
+        alone = slice(5 * RATE, self.TALKS_AT * RATE)
+        echo_plain = plain[alone].astype(np.float64) - lined_up[alone]
+        echo_left = mixed[alone].astype(np.float64) - lined_up[alone]
+        self.assertGreater(band_db(echo_plain, RATE) - band_db(echo_left, RATE), 10.0)
+
+    def test_if_the_canceller_fails_the_plain_mix_is_used_and_said(self):
+        from workspace import echo
+        journal, mic, lined_up = self.tracks()
+        far = recorder.open_recording(self.folder, journal, KEY, []).computer
+        gains = mixdown.match_gains(mixdown.track_level_db(ArrayTrack(mic), RATE),
+                                    mixdown.track_level_db(far, CRATE))
+        far.close()
+        expected = np.clip(np.round(mixdown.soft_limit(mic * gains[0] + lined_up * gains[1])),
+                           -32768, 32767)
+
+        def louder(self, mic, ref, total):
+            for raw, voice, other in run(self, mic, ref, total):
+                yield raw, voice * 2.0, other
+
+        run = echo.Canceller.run
+        for fault, cause in ((mock.patch.object(echo.Canceller, "run",
+                                                side_effect=RuntimeError("test")), "error"),
+                             (mock.patch.object(echo.Canceller, "run", louder), "check")):
+            with self.subTest(cause=cause), fault:
+                notes = []
+                audio = recorder.open_recording(self.folder, journal, KEY, notes)
+                self.assertEqual(audio.echo_skipped, cause)
+                mixed = np.frombuffer(b"".join(audio.blocks()), dtype="<i2")
+                self.assertEqual(notes, [mixdown.ECHO_SKIPPED])  # fixed wording, no content (P3)
+                self.assertTrue(np.array_equal(mixed, expected))
+
+    def test_audio_that_cannot_be_read_stops_the_import_rather_than_the_echo(self):
+        # A chunk that changed after it was checked is not a canceller fault:
+        # it fails the import as it would at the mix, with no echo event.
+        from workspace import audiocrypt, echo
+        journal, _, _ = self.tracks()
+        notes = []
+        with mock.patch.object(echo.Canceller, "run",
+                               side_effect=audiocrypt.AudioCryptError("changed")):
+            with self.assertRaises(audiocrypt.AudioCryptError):
+                recorder.open_recording(self.folder, journal, KEY, notes)
+        self.assertEqual(notes, [])
+
+    def test_a_read_error_in_the_first_pass_closes_both_tracks(self):
+        # The first pass can now raise a read error out of Mix(), before
+        # open_recording returns anything for the import to close: both
+        # tracks' open chunk readers are closed here instead.
+        from workspace import audiocrypt, echo
+        journal, _, _ = self.tracks()
+        opened = []
+        real_open = recorder.open_track
+
+        def open_track(*args, **kwargs):
+            opened.append(real_open(*args, **kwargs))
+            return opened[-1]
+
+        def read_then_fail(mic, ref, total):
+            mic(0, 100)
+            ref(0, 100)
+            raise audiocrypt.AudioCryptError("changed")
+
+        with mock.patch.object(recorder, "open_track", side_effect=open_track), \
+                mock.patch.object(echo.Canceller, "run", side_effect=read_then_fail):
+            with self.assertRaises(audiocrypt.AudioCryptError):
+                recorder.open_recording(self.folder, journal, KEY, [])
+        self.assertEqual([t.track for t in opened], list(BOTH))
+        for track in opened:
+            self.assertIsNone(track._open[1], track.track)
 
 
 # -- the recorder's two tracks ------------------------------------------------------------
@@ -1802,6 +2044,26 @@ class WorkspaceTwoTrackTests(unittest.TestCase):
         self.assertGreater(waiting["computer_seconds"], 0)
         self.assertNotEqual(waiting["seconds"], waiting["computer_seconds"])
         self.assertNotIn("Test speakers", json.dumps(waiting))   # no device name (P3)
+
+    def test_a_canceller_failure_imports_the_plain_mix_and_says_so_without_content(self):
+        # #376: the fallback is never silent: the report's event has fixed
+        # wording, and the log records only that it happened and why (P3).
+        from workspace import echo
+        ws, mic, comp = self.start_two()
+        mic.feed(6)
+        comp.feed(6)
+        with mock.patch.object(echo.Canceller, "run", side_effect=RuntimeError("Secret title")):
+            ws.stop_recording()
+            self.assertTrue(ws.wait_idle(120))
+        self.assertEqual(len(ws.meetings()), 1)                  # imported all the same
+        report = ws.recording_status()["reports"][-1]
+        self.assertIn(mixdown.ECHO_SKIPPED, report["events"])
+        records = [json.loads(line) for line in
+                   ws.log.path.read_text(encoding="ascii").splitlines()]
+        skipped = [r for r in records if r["kind"] == "echo_skipped"]
+        self.assertEqual([{k: v for k, v in r.items() if k != "t"} for r in skipped],
+                         [{"kind": "echo_skipped", "cause": "error"}])
+        self.assertNotIn("Secret", ws.log.path.read_text(encoding="ascii"))
 
     def test_policy_turned_off_mid_recording_stops_only_the_computer_track(self):
         from workspace import policy
