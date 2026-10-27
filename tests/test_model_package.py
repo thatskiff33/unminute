@@ -128,9 +128,9 @@ class NamesTests(unittest.TestCase):
 class SpeakerAttributionTests(unittest.TestCase):
     """The speaker model's CC BY 4.0 attribution ships in the package's LICENCES.txt
     and is in both IT guides (the owner's decision DEC-074, 28 October 2026, #111): a
-    pyannoteAI credit, the licence's link, that the files are unmodified, and the three
-    citations on the model card. The script, PACKAGING.md and IT_DEPLOYMENT.md stay
-    equal to these."""
+    credit to pyannote (pyannoteAI), the licence's link, that the files are unmodified,
+    and the three citations on the model card. The script, PACKAGING.md and
+    IT_DEPLOYMENT.md stay equal to these."""
 
     CITATIONS = (
         "Alexis Plaquet and Herv\u00e9 Bredin. Powerset multi-class cross entropy loss for neural "
@@ -143,7 +143,7 @@ class SpeakerAttributionTests(unittest.TestCase):
         "clustering of x-vector sequences (VBx) in speaker diarization: theory, implementation "
         "and analysis on standard tasks. Computer Speech & Language, 2022.",
     )
-    CREDIT = "pyannote speaker-diarization-community-1, by pyannoteAI"
+    CREDIT = "pyannote speaker-diarization-community-1, pyannote (pyannoteAI)"
     LICENCE = "https://creativecommons.org/licenses/by/4.0/"
 
     @staticmethod

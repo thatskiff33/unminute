@@ -231,7 +231,7 @@ $SpeakerRepository = "pyannote/speaker-diarization-community-1"
 function Get-SpeakerCredit {
     $e = [string][char]0x00E9; $a = [string][char]0x00E1; $s = [string][char]0x0161
     return @(
-        "  Credit: pyannote speaker-diarization-community-1, by pyannoteAI.",
+        "  Credit: pyannote speaker-diarization-community-1, pyannote (pyannoteAI).",
         "  Changes: none. The files are unmodified, byte for byte the files at the revision above,",
         "  each checked by its SHA-256.",
         "  Access: the files are gated on Hugging Face. Whoever downloads them accepts the",

@@ -436,7 +436,7 @@ It reads counts and the logs only, never content. It writes nothing of its own, 
 
 **The speaker model's attribution.** speaker-diarization-community-1 is licensed CC BY 4.0, which allows copying and redistributing it on condition of attribution (the owner's decision DEC-074 of 28 October 2026). With the speaker model, `LICENCES.txt` carries:
 
-- the credit: pyannote speaker-diarization-community-1, by pyannoteAI;
+- the credit: pyannote speaker-diarization-community-1, pyannote (pyannoteAI);
 - the licence: Creative Commons Attribution 4.0 International, https://creativecommons.org/licenses/by/4.0/;
 - the changes: none. The files are unmodified, byte for byte the files at the pinned revision, each checked by its SHA-256;
 - the access step: whoever downloads the files accepts the gate's conditions with their own Hugging Face account (IT, step 1);
