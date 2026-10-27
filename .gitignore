@@ -22,6 +22,10 @@ extracted/
 __pycache__/
 *.pyc
 .venv/
+# coverage data (.coveragerc writes one file per measured process when
+# COVERAGE_FILE is not set outside the checkout)
+.coverage
+.coverage.*
 
 # Local tooling / editor state. The shared Claude Code settings and hook are
 # committed (AGENTS.md, invariant P2), and so are the skill pointers to

@@ -23,6 +23,7 @@
 
 import argparse
 import collections
+import importlib.util
 import os
 import re
 import subprocess
@@ -78,16 +79,32 @@ def compare(current, baseline):
     return new, fixed
 
 
+def cannot_run(message, result=None):
+    """Exit 2: mypy did not run, so there is no result to report or to write."""
+    if result is not None:
+        sys.stdout.write(result.stdout)
+        sys.stderr.write(result.stderr)
+    print(f"mypy could not run: {message}", file=sys.stderr)
+    sys.exit(2)
+
+
 def run_mypy():
+    if importlib.util.find_spec("mypy") is None:
+        cannot_run("it is not installed (pip install --require-hashes --no-deps "
+                   "--only-binary=:all: -r requirements/ci-mypy.txt)")
     cmd = [sys.executable, "-m", "mypy", "--config-file", str(CONFIG),
            "--cache-dir", os.devnull, "--no-color-output", "--no-error-summary", *TARGETS]
     result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
                             errors="replace")
-    # mypy exits 1 when it finds errors and 2 when it cannot run.
+    # mypy exits 0 when clean, 1 when it finds errors and 2 when it cannot run.
+    # Python also exits 1 when it cannot start mypy ("No module named mypy"), so
+    # exit 1 counts as a run only when mypy printed at least one error (review
+    # B1 on 2b8836f: otherwise every baseline error looked fixed, and --update
+    # emptied the baseline).
     if result.returncode not in (0, 1):
-        sys.stdout.write(result.stdout)
-        sys.stderr.write(result.stderr)
-        sys.exit(2)
+        cannot_run(f"exit code {result.returncode}", result)
+    if result.returncode == 1 and not errors(result.stdout):
+        cannot_run("exit code 1 with no error reported", result)
     return result.stdout
 
 
@@ -109,7 +126,10 @@ def report(current, new, fixed, baseline_count):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description="Report-only mypy check of workspace/ against the committed baseline "
+                    "(tools/mypy_baseline.txt). Exit 0 when mypy ran, whatever it found; "
+                    "2 when it could not run.")
     parser.add_argument("--update", action="store_true",
                         help="rewrite tools/mypy_baseline.txt from this run")
     args = parser.parse_args(argv)
@@ -117,7 +137,7 @@ def main(argv=None):
     if args.update:
         BASELINE.write_text(HEADER + "".join(f"{k}\n" for k in sorted(c[2] for c in current)),
                             encoding="utf-8", newline="\n")
-        print(f"Wrote {len(current)} error(s) to {BASELINE.relative_to(ROOT).as_posix()}.")
+        print(f"Wrote {len(current)} error(s) to {BASELINE.name}.")
         return 0
     baseline = read_baseline()
     new, fixed = compare(current, baseline)

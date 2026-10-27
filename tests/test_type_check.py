@@ -73,22 +73,29 @@ class CompareTests(unittest.TestCase):
 class ReportOnlyTests(unittest.TestCase):
     """New errors are reported, never failed; only a mypy that cannot run fails."""
 
-    def run_main(self, stdout, returncode, env):
-        result = mock.Mock(returncode=returncode, stdout=stdout, stderr="")
+    BASELINE_TEXT = tc.HEADER + "workspace/a.py: error: kept  [misc]\n"
+
+    def run_main(self, stdout, returncode, env, stderr="", argv=(), installed=True):
+        result = mock.Mock(returncode=returncode, stdout=stdout, stderr=stderr)
+        # Whether mypy is installed is decided here, not by the test's own venv.
+        spec = mock.Mock() if installed else None
         with tempfile.TemporaryDirectory() as tmp:
             baseline = Path(tmp) / "baseline.txt"
-            baseline.write_text(tc.HEADER, encoding="utf-8")
+            baseline.write_text(self.BASELINE_TEXT, encoding="utf-8")
             summary = Path(tmp) / "summary.md"
             env = {k: v.replace("{summary}", str(summary)) for k, v in env.items()}
             out = io.StringIO()
             with mock.patch.object(tc, "BASELINE", baseline), \
-                    mock.patch.object(tc.subprocess, "run", return_value=result), \
+                    mock.patch.object(tc.subprocess, "run", return_value=result) as run, \
+                    mock.patch("importlib.util.find_spec", return_value=spec), \
                     mock.patch.dict(os.environ, env, clear=False), \
                     mock.patch("sys.stdout", out), mock.patch("sys.stderr", io.StringIO()):
                 try:
-                    code = tc.main([])
+                    code = tc.main(list(argv))
                 except SystemExit as exc:
                     code = exc.code
+            self.baseline_after = baseline.read_text(encoding="utf-8")
+            self.ran = run.called
             return code, out.getvalue(), summary.read_text(encoding="utf-8") \
                 if summary.exists() else ""
 
@@ -103,6 +110,35 @@ class ReportOnlyTests(unittest.TestCase):
     def test_a_mypy_that_cannot_run_fails(self):
         code, _, _ = self.run_main("mypy: error: bad config\n", 2, {"GITHUB_ACTIONS": "false"})
         self.assertEqual(code, 2)
+
+    def test_a_missing_mypy_fails_and_keeps_the_baseline(self):
+        # Review B1 on 2b8836f: Python exits 1 when it cannot import mypy, the
+        # code mypy uses for "errors found". With no error line that is not a
+        # clean run, and --update must not empty the baseline.
+        missing = "No module named mypy\n"
+        for argv in ((), ("--update",)):
+            for installed in (True, False):
+                with self.subTest(argv=argv, installed=installed):
+                    code, out, _ = self.run_main("", 1, {"GITHUB_ACTIONS": "false"},
+                                                 stderr=missing, argv=argv,
+                                                 installed=installed)
+                    self.assertEqual(code, 2)
+                    self.assertNotIn("fixed since the baseline", out)
+                    self.assertEqual(self.baseline_after, self.BASELINE_TEXT)
+                    if not installed:
+                        self.assertFalse(self.ran)
+
+    def test_update_rewrites_the_baseline_when_mypy_ran(self):
+        code, out, _ = self.run_main(OUTPUT, 1, {"GITHUB_ACTIONS": "false"}, argv=("--update",))
+        self.assertEqual(code, 0)
+        self.assertIn("Wrote 4 error(s)", out)
+        self.assertNotIn("workspace/a.py: error: kept", self.baseline_after)
+
+    def test_help_has_a_description(self):
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out), self.assertRaises(SystemExit):
+            tc.main(["--help"])
+        self.assertIn("baseline", out.getvalue().split("options:")[0])
 
 
 class BaselineAndWorkflowTests(unittest.TestCase):
