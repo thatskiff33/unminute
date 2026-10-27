@@ -69,7 +69,7 @@ ACCESSIBILITY_VIEWS = (
 # window measured in one counts only if it was drawn (its "drawing" block; #292).
 PERF_VISIBLE_STATES = ("meetings", "settings", "recording")
 # The sealed store's figures (tools/perf_check.py, "store"; #111 C7): a release's
-# performance evidence measures each one. Measured, no budget yet.
+# performance evidence measures each one; each has a budget (#430).
 PERF_STORE_FIGURES = ("open_0_meetings_s", "open_500_meetings_s", "listing_500_meetings_s",
                       "page_5000_passages_s", "search_5000_passages_s",
                       "database_5000_passages_mb")

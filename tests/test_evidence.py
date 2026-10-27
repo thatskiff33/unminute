@@ -621,7 +621,7 @@ def perf_with(machine=None, drop=()):
 
 class StoreEvidenceTests(TempDir):
     """#111 C7: a release's performance evidence measures the sealed store
-    (the C2b-2 design's section 4.8 figures), with no budget yet."""
+    (the C2b-2 design's section 4.8 figures), each with a budget (#430)."""
 
     write, complete = CheckTests.write, CheckTests.complete
 
@@ -642,12 +642,13 @@ class StoreEvidenceTests(TempDir):
                     self.assertEqual(1, len(problems), problems)
                     self.assertIn(name, problems[0])
 
-    def test_the_figures_have_no_budget_yet(self):
-        # Measured, not gated, until the first Phase C release run's medians
-        # set them (docs/RELEASE_STANDARD.md; owner decision, 21 Oct 2026).
+    def test_every_figure_has_a_budget(self):
+        # Set from the first Phase C release run's medians plus 20%
+        # (v0.5.0-preview.4; owner decision, 21 Oct 2026; #430), so a release
+        # run fails when one is over (tests/test_perf_check.py).
         budgets = json.loads((ROOT / "docs" / "perf-budgets.json").read_text(encoding="utf-8"))
-        self.assertNotIn("store", budgets["budgets"])
-        self.assertNotIn("workspace_s", budgets["budgets"].get("startup", {}))
+        self.assertEqual(set(evidence.PERF_STORE_FIGURES), set(budgets["budgets"]["store"]))
+        self.assertIn("workspace_s", budgets["budgets"]["startup"])
         self.assertIn("store", budgets["_budget_notes"])
 
 

@@ -83,7 +83,7 @@ class BudgetTests(unittest.TestCase):
     def test_budget_file_is_valid_and_uses_known_states_and_metrics(self):
         path = ROOT / "docs" / "perf-budgets.json"
         data = json.loads(path.read_text(encoding="utf-8"))
-        states = set(perf_check.STATES) | {"startup", "worker", "leak"}
+        states = set(perf_check.STATES) | {"startup", "worker", "leak", "store"}
         metrics = set(perf_check.BUDGETED) | {"exit_after_last_use_s", "private_growth_mb"}
         for state, limits in data["budgets"].items():
             self.assertIn(state, states, f"unknown state in {path.name}")
@@ -1531,12 +1531,21 @@ class MachineReportTests(unittest.TestCase):
 STORE = {name: 0.01 for name in perf_check.STORE_FIGURES}
 
 
+# v0.5.0-preview.4's release run (evidence-perf.json attached to that release;
+# package commit 16b4e90): the first Phase C release run, whose medians set the
+# store and workspace_s budgets (owner decision, 21 Oct 2026, #111; #430).
+P4_WORKSPACE_S = 0.058
+P4_STORE = {"open_0_meetings_s": 0.0058, "open_500_meetings_s": 0.0102,
+            "listing_500_meetings_s": 0.0194, "page_5000_passages_s": 0.0061,
+            "search_5000_passages_s": 0.0216, "database_5000_passages_mb": 0.99}
+
+
 class StoreStepTests(unittest.TestCase):
     """#111 C7: the sealed store measured once per release run, with no window,
-    before the windowed runs (the C2b-2 design's section 4.8). Measured, no
-    budget yet."""
+    before the windowed runs (the C2b-2 design's section 4.8). Its figures and
+    startup's workspace_s have budgets from the first Phase C release run (#430)."""
 
-    def run_parent(self, store, quick=False):
+    def run_parent(self, store, quick=False, budgets=None, workspace_s=0.2):
         import tempfile
         from types import SimpleNamespace
         calls = []
@@ -1549,9 +1558,11 @@ class StoreStepTests(unittest.TestCase):
 
         def run(*a, **k):
             calls.append("run")
-            return {"startup": {"startup_s": 1.0, "workspace_s": 0.2}}
+            return {"startup": {"startup_s": 1.0, "workspace_s": workspace_s}}
         with tempfile.TemporaryDirectory() as tmp:
-            report = Path(tmp) / "perf.json"
+            report, budget_file = Path(tmp) / "perf.json", Path(tmp) / "budgets.json"
+            if budgets is not None:
+                budget_file.write_text(json.dumps({"budgets": budgets}), encoding="utf-8")
             args = SimpleNamespace(quick=quick, settle=0, window=0, runs=2, leak_minutes=0,
                                    report=str(report), app=None, zip=None, compare=None)
             with mock.patch.object(perf_check, "environment", return_value={}), \
@@ -1559,7 +1570,7 @@ class StoreStepTests(unittest.TestCase):
                     mock.patch.object(perf_check, "refresh_now", return_value=None), \
                     mock.patch.object(perf_check, "store_step", side_effect=step), \
                     mock.patch.object(perf_check, "one_run", side_effect=run), \
-                    mock.patch.object(perf_check, "BUDGETS", Path(tmp) / "none.json"), \
+                    mock.patch.object(perf_check, "BUDGETS", budget_file), \
                     mock.patch("builtins.print"):
                 rc = perf_check.parent(args)
             return rc, calls, json.loads(report.read_text(encoding="utf-8"))
@@ -1568,9 +1579,53 @@ class StoreStepTests(unittest.TestCase):
         rc, calls, report = self.run_parent(STORE)
         self.assertEqual((0, ["store", "run", "run"]), (rc, calls))
         self.assertEqual(STORE, report["store"])
-        # workspace_s is a startup median, with no budget and none proposed.
+        # workspace_s is a startup median; it and the store figures are
+        # proposed like the others (plus 20%, never closer than 0.05; #430).
         self.assertEqual(0.2, report["median"]["startup"]["workspace_s"])
-        self.assertNotIn("workspace_s", report["proposed_budgets_plus_20_percent"]["startup"])
+        proposed = report["proposed_budgets_plus_20_percent"]
+        self.assertEqual(0.25, proposed["startup"]["workspace_s"])
+        self.assertEqual({name: 0.06 for name in perf_check.STORE_FIGURES}, proposed["store"])
+
+    def test_a_store_figure_over_its_budget_fails_the_run(self):
+        # #430: the store figures are measured once per release run, not per
+        # run, so they are compared as measured, beside the medians.
+        budgets = {"store": {name: 0.06 for name in perf_check.STORE_FIGURES}}
+        rc, _, report = self.run_parent(STORE, budgets=budgets)
+        self.assertEqual((0, [], []), (rc, report["over_budget"], report["not_measured"]))
+        rc, _, report = self.run_parent(dict(STORE, search_5000_passages_s=0.09),
+                                        budgets=budgets)
+        self.assertEqual(1, rc)
+        self.assertEqual([{"state": "store", "metric": "search_5000_passages_s",
+                           "value": 0.09, "budget": 0.06}], report["over_budget"])
+
+    def test_a_workspace_s_over_its_budget_fails_the_run(self):
+        budgets = {"startup": {"workspace_s": 0.11}}
+        rc, _, report = self.run_parent(STORE, budgets=budgets, workspace_s=0.1)
+        self.assertEqual((0, []), (rc, report["over_budget"]))
+        rc, _, report = self.run_parent(STORE, budgets=budgets, workspace_s=0.12)
+        self.assertEqual(1, rc)
+        self.assertEqual([{"state": "startup", "metric": "workspace_s", "value": 0.12,
+                           "budget": 0.11}], report["over_budget"])
+
+    def test_quick_does_not_compare_the_store(self):
+        # --quick has no store step: its budgets are not asked for, not missing.
+        budgets = {"store": {name: 0.06 for name in perf_check.STORE_FIGURES}}
+        rc, _, report = self.run_parent(STORE, quick=True, budgets=budgets)
+        self.assertEqual((0, []), (rc, report["not_measured"]))
+        self.assertIn("store", report["not_asked_for"])
+        self.assertNotIn("store", report["proposed_budgets_plus_20_percent"])
+
+    def test_the_budgets_are_the_first_phase_c_release_run_plus_20_percent(self):
+        # #430: set from v0.5.0-preview.4's release medians plus 20% by
+        # propose(), never from a development-laptop run (owner decision,
+        # 21 Oct 2026, #111). A later ratchet changes the figures here too.
+        path = ROOT / "docs" / "perf-budgets.json"
+        budgets = json.loads(path.read_text(encoding="utf-8"))["budgets"]
+        proposed = perf_check.propose({"startup": {"workspace_s": P4_WORKSPACE_S},
+                                       "store": P4_STORE})
+        self.assertEqual(proposed["store"], budgets["store"])
+        self.assertEqual(proposed["startup"]["workspace_s"], budgets["startup"]["workspace_s"])
+        self.assertEqual(set(perf_check.STORE_FIGURES), set(budgets["store"]))
 
     def test_quick_leaves_it_out(self):
         rc, calls, report = self.run_parent(STORE, quick=True)
