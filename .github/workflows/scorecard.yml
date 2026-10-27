@@ -1,0 +1,56 @@
+# OpenSSF Scorecard (#415 item 3; the owner's decision of 27 Oct 2026): a weekly,
+# report-only check of the repository's supply-chain posture. Results go to the
+# Security tab as code scanning alerts from the tool "Scorecard". It never blocks
+# a merge: it does not run on pull requests, it is not a required status check,
+# and the branch ruleset's code scanning rule names CodeQL only
+# (docs/RELEASING.md, "Report only").
+#
+# Least privilege, with the same supply-chain rules as ci.yml (see its header):
+# - No permissions by default. The one job reads the code and uploads SARIF
+#   (security-events: write); nothing else.
+# - publish_results stays false, so nothing is sent to the OpenSSF results API
+#   and the job needs no id-token: write. That API is only for the public
+#   Scorecard badge and viewer, which are not wanted.
+# - repo_token is the job's own token. Branch-Protection may need an admin token
+#   to read every rule, so that check scores what it can see; no extra token
+#   (and so no secret) is added.
+# - The action is pinned to a commit. Its action.yml names its container image
+#   by tag (ghcr.io/ossf/scorecard-action:v2.5.0), not by digest. The job holds
+#   no secret, and its token, limited as above, lets that image read this
+#   public repository and write code scanning results, nothing more.
+# - Expected to score low because of the owner's decisions, accepted (#415):
+#   Code-Review (agents review, with no human approval; 17 Oct 2026) and
+#   Signed-Releases (no code signing, #303).
+name: Scorecard
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "41 4 * * 2"   # weekly, Tuesday 04:41 UTC (17:41 New Zealand daylight time)
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  analysis:
+    name: Scorecard (report only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run Scorecard
+        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e  # v2.5.0
+        with:
+          results_file: scorecard.sarif
+          results_format: sarif
+          publish_results: false
+      - name: Upload to code scanning
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d  # v4.38.3
+        with:
+          sarif_file: scorecard.sarif
