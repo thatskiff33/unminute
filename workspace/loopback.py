@@ -45,6 +45,7 @@
 # Imported only when a recording with computer audio starts, or by the probe
 # (tools/capture_probe.py): never at window start-up. Stdlib (ctypes) and numpy.
 
+import math
 import sys
 import threading
 import time
@@ -67,7 +68,11 @@ ALL_RETRY_S = 2.0                # all outputs: an output that would not open is
 ALL_GRACE_S = 10.0               # all outputs: listed but not recording this long is "removed"
 MIX_HOLD_S = BUFFER_S            # the mix waits this long for a slow output (as long as
                                  # Windows keeps its audio), then goes without it
-MIX_RESYNC_S = 0.1               # an output's blocks this far from their stamps are realigned
+MIX_GAP_S = 0.1                  # a block this far from where its output had reached is a
+                                 # gap or a jump, not drift: it is placed at its stamp
+MIX_FIT_S = 5.0                  # each output's lag behind its stamps is averaged over about this
+MIX_SLACK_S = 0.005              # a lag within this is left alone: samples pass unchanged
+MIX_MAX_RATE = 0.001             # drift is corrected by at most 1000 ppm (1.7 cents of pitch)
 MIX_PIECE_S = 0.5                # the mix is handed on in pieces no longer than this
 NAME_LIMIT = 120                 # an output's name (or all the outputs' names) is cut here
 
@@ -109,8 +114,8 @@ class Pacer:
     (lead, stamp): the stamp is the monotonic time of the block's first frame,
     estimated from when it arrived (so the stamps carry the device clock's
     drift: the ENDPOINT and PROCESS sources hand them on, and the mix at Stop
-    corrects the drift smoothly; the ALL source's Mixer corrects it in steps
-    instead, see there); lead is the silence, in frames, to put
+    corrects the drift smoothly; the ALL source's Mixer corrects it smoothly
+    as it sums the outputs, see there); lead is the silence, in frames, to put
     before the block when it is the first audio after an idle spell (or the
     start), or when audio was lost between blocks (a gap past GAP_TOL_S, or
     any gap Windows flagged), so the frames keep pace with the clock. While
@@ -164,6 +169,35 @@ def deliver(pacer, blocks, now, callback, lost=False):
         callback(np.zeros(gap[0], dtype=np.int16), gap[1])
 
 
+class _MixInput:
+    """One output in the Mixer. pos: the output frame (fractional) its next
+    sample goes to; reach: the next output frame it writes; last: (position,
+    value) of its sample before pos, so a block is interpolated on from the
+    one before; behind: how far its samples run behind their stamps, in
+    seconds, averaged over about MIX_FIT_S (negative: ahead)."""
+
+    __slots__ = ("pos", "reach", "last", "behind")
+
+    def __init__(self, frame):
+        self.pos = float(frame)
+        self.reach = int(frame)
+        self.last = None
+        self.behind = 0.0
+
+
+def _spacing(behind):
+    """The output frames each of an output's samples takes: exactly 1 while
+    it is within MIX_SLACK_S of its stamps; else a little more (it runs
+    behind: a slow device clock) or less (ahead: a fast one), by at most
+    MIX_MAX_RATE. In proportion to the averaged lag, with the gain that
+    critically damps it (1 / (4 MIX_FIT_S) per second): a steady drift of d
+    leaves it MIX_SLACK_S + 4 MIX_FIT_S d behind (9 ms at 200 ppm)."""
+    excess = abs(behind) - MIX_SLACK_S
+    if excess <= 0:
+        return 1.0
+    return 1.0 + math.copysign(min(MIX_MAX_RATE, excess / (4 * MIX_FIT_S)), behind)
+
+
 class Mixer:
     """Sums the ALL source's outputs into one track by time. Thread-safe:
     each output's reader calls add(); the stream's thread calls mix().
@@ -171,25 +205,32 @@ class Mixer:
     join(key, start) adds an input whose first frame is due at monotonic
     time start; drop(key) removes it (its audio already added stays in).
     add(key, block, stamp) places a block where that input's last block
-    ended, unless its stamp is more than MIX_RESYNC_S away (drift, or a gap
-    the Pacer did not fill): then at the stamp, never writing a frame of that
+    ended, unless its stamp is more than MIX_GAP_S away (a gap the Pacer did
+    not fill, or a jump): then at the stamp, never writing a frame of that
     input twice. mix(now) returns [(block, stamp)] up to the time every
     input has reached, or to now - MIX_HOLD_S when an input is slow (its late
     audio is then left out); with no inputs, silence up to now. Each output
-    keeps its own level: where one plays alone its samples pass unchanged,
-    and where two or more play at once their sum goes through the same soft
-    limiter as the mix at Stop (mixdown.soft_limit). The blocks are at most
-    MIX_PIECE_S long.
+    keeps its own level: where one plays alone its samples pass unchanged
+    (unless its clock drifts, below), and where two or more play at once
+    their sum goes through the same soft limiter as the mix at Stop
+    (mixdown.soft_limit). The blocks are at most MIX_PIECE_S long.
 
-    Clock drift (an engineering decision, 1c03917 review F2): the track is
-    stamped on the app's own clock (start + frames / rate), so each output's
-    device clock drift is corrected here, in steps, not smoothly at Stop. An
-    output whose blocks drift more than MIX_RESYNC_S from their stamps is
-    realigned at the stamp: a fast clock loses up to that much of its audio,
-    a slow one gets that much silence. A simulation of one output for an hour
-    gave one step at +-30 ppm and three to six at +-100 ppm, each up to 0.1 s.
-    The mix at Stop then lines up a computer track already on the app's clock.
-    Smooth per-output rate correction is a follow-up (#379)."""
+    Clock drift (#379, replacing the stepped resync of #346 review F2): the
+    track is stamped on the app's own clock (start + frames / rate), so each
+    output's device clock drift is corrected here, smoothly, as it is summed.
+    Each block's stamp says where it belongs; how far the output's samples
+    run behind (or ahead of) their stamps is averaged over about MIX_FIT_S,
+    which smooths out the arrival-time jitter of the stamps. While that is
+    within MIX_SLACK_S the samples are placed one per frame (unchanged while
+    they still fall on whole frames); past it they are spaced a little wider
+    (behind) or closer (ahead), at most MIX_MAX_RATE, and read off by linear
+    interpolation from one block into the next, so the output is resampled
+    by a few hundred ppm and drawn back to its stamps without a skip or a
+    frame of silence. A steady drift of d then leaves it about MIX_SLACK_S +
+    4 MIX_FIT_S d behind (9 ms at 200 ppm). Only a block more than MIX_GAP_S
+    from where its output had reached is placed at its stamp, as a gap or a
+    jump; drift up to MIX_MAX_RATE never gets that far. The mix at Stop then
+    lines up a computer track already on the app's clock."""
 
     def __init__(self, rate, start):
         self.rate = int(rate)
@@ -197,7 +238,7 @@ class Mixer:
         self.done = 0                            # output frames handed on
         self.acc = np.zeros(0, dtype=np.int32)   # summed frames from self.done on
         self.count = np.zeros(0, dtype=np.uint8)  # how many inputs wrote each of them
-        self.inputs = {}                         # key -> the next frame it writes
+        self.inputs = {}                         # key -> its _MixInput
         self._lock = threading.Lock()
 
     def _frame(self, t):
@@ -205,7 +246,7 @@ class Mixer:
 
     def join(self, key, start):
         with self._lock:
-            self.inputs[key] = max(self.done, self._frame(start))
+            self.inputs[key] = _MixInput(max(self.done, self._frame(start)))
 
     def drop(self, key):
         with self._lock:
@@ -213,20 +254,50 @@ class Mixer:
 
     def add(self, key, block, stamp):
         block = np.asarray(block, dtype=np.int16).reshape(-1)
+        n = len(block)
+        if not n:
+            return
+        tail = float(block[-1])
         with self._lock:
-            cursor = self.inputs.get(key)
-            if cursor is None:
+            inp = self.inputs.get(key)
+            if inp is None:
                 return                           # dropped: its late audio is not wanted
-            at = self._frame(stamp)
-            if abs(at - cursor) <= MIX_RESYNC_S * self.rate:
-                at = cursor
-            skip = max(0, self.done - at, cursor - at)
-            self.inputs[key] = max(cursor, at + len(block))
-            at += skip
-            block = block[skip:]
+            at = (stamp - self.start) * self.rate
+            off = at - inp.pos
+            if abs(off) > MIX_GAP_S * self.rate:
+                # A gap or a jump: at the stamp, and its lag measured afresh
+                # from there (the lag before was the old position's).
+                inp.pos, inp.last, inp.behind = float(round(at)), None, 0.0
+            else:
+                weight = 1.0 - math.exp(-n / (self.rate * MIX_FIT_S))
+                inp.behind += weight * (off / self.rate - inp.behind)
+            spacing = _spacing(inp.behind)
+            first = max(self.done, inp.reach)    # never a frame of this input twice
+            if (spacing == 1.0 and inp.pos.is_integer()
+                    and (inp.last is None or inp.last[0] == inp.pos - 1)):
+                # On time: each sample is one frame, unchanged.
+                at = int(inp.pos)
+                end = at + n
+                lo = max(first, at)
+                block = block[lo - at:]
+                inp.pos = float(end)
+            else:
+                # Drifting: the samples spaced by `spacing`, and each frame
+                # read off them (and the last sample before) by interpolation.
+                where = inp.pos + spacing * np.arange(n)
+                xs, ys = where, block.astype(np.float64)
+                if inp.last is not None:
+                    xs = np.concatenate(([inp.last[0]], xs))
+                    ys = np.concatenate(([inp.last[1]], ys))
+                lo = max(first, math.ceil(xs[0]))
+                end = math.floor(where[-1]) + 1
+                block = np.round(np.interp(np.arange(lo, max(lo, end)), xs, ys)).astype(np.int32)
+                inp.pos = float(where[-1] + spacing)
+            inp.last = (inp.pos - spacing, tail)
+            inp.reach = max(inp.reach, end)
             if not len(block):
                 return
-            off = at - self.done
+            off = lo - self.done
             if off + len(block) > len(self.acc):
                 grown = np.zeros(off + len(block), dtype=np.int32)
                 grown[:len(self.acc)] = self.acc
@@ -241,7 +312,8 @@ class Mixer:
     def mix(self, now):
         with self._lock:
             floor = self._frame(now - MIX_HOLD_S)
-            reach = min(self.inputs.values()) if self.inputs else self._frame(now)
+            reach = (min(i.reach for i in self.inputs.values()) if self.inputs
+                     else self._frame(now))
             end = max(reach, floor)
             n = end - self.done
             if n <= 0:
