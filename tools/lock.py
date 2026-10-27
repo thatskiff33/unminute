@@ -62,6 +62,8 @@ LOCKS = [
      "coverage for the report-only job (.github/workflows/quality.yml)"),
     ("requirements/ci-vulture.in", "requirements/ci-vulture.txt", ANY_PLATFORM,
      "vulture for the report-only dead-code job (.github/workflows/quality.yml)"),
+    ("requirements/ci-mypy.in", "requirements/ci-mypy.txt", ANY_PLATFORM,
+     "mypy for the report-only type-check job (.github/workflows/quality.yml)"),
     ("requirements/ci-lock.in", "requirements/ci-lock.txt", ANY_PLATFORM,
      "uv for tools/lock.py (CI and local)"),
     ("requirements/ci-audit.in", "requirements/ci-audit.txt", ANY_PLATFORM,

@@ -54,9 +54,40 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           cat vulture.txt
 
+  type-check:
+    # Report only (#413; the owner's decision of 27 Oct 2026): mypy over the
+    # shipped code with the settings in mypy.ini, compared by tools/type_check.py
+    # with the committed baseline, tools/mypy_baseline.txt. An error new since
+    # the baseline is a warning on the pull request, never a failure; the job
+    # fails only if mypy cannot run. Making it a gate needs the owner. The page
+    # (workspace/ui) has no type check for now (the same decision).
+    name: Type check (report only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.14"
+      - name: Install mypy from its hash-locked file
+        run: >-
+          python -m pip install --disable-pip-version-check --only-binary=:all:
+          --require-hashes --no-deps -r requirements/ci-mypy.txt
+      - name: Report type errors against the baseline
+        run: python tools/type_check.py
+
   coverage:
-    # Report only: no floor yet (docs/RELEASE_STANDARD.md, section 7). Worker
-    # and decoder child processes are not measured.
+    # Report only: no floor (docs/RELEASE_STANDARD.md, section 7; a floor would
+    # be a gate, which needs the owner, #413). Lines and branches, with the
+    # settings in .coveragerc, which since #413 also measures the Python
+    # processes the tests start (a child with an environment of its own, or the
+    # decoder once it lowers itself to Low integrity, cannot write its data).
+    # The data files are kept in the runner's temporary folder, never in the
+    # checkout or in a folder a test looks at, and joined before the report.
     # Bounded at 45 minutes (#406, the #386 CI-time budget). It took 17 to 26 minutes in
     # 34 of the 40 latest runs as at 27 October 2026 (4 were cancelled), but 1 h 41 min
     # and 1 h 44 min in two (65774f2 and 9d246f7): only the installer tests (tests/test_hardening.py,
@@ -92,14 +123,24 @@ jobs:
             --require-hashes --no-deps -r requirements/ci-coverage.txt
           if ($LASTEXITCODE -ne 0) { exit 1 }
       - name: Unit tests under coverage
-        run: python -m coverage run --source=workspace tools/run_tests.py
-      - name: Coverage report
         shell: pwsh
+        env:
+          COVERAGE_FILE: ${{ runner.temp }}\coverage\.coverage
         run: |
-          python -m coverage report --skip-empty --sort=cover
-          "``````" >> $env:GITHUB_STEP_SUMMARY
-          python -m coverage report --skip-empty --sort=cover >> $env:GITHUB_STEP_SUMMARY
-          "``````" >> $env:GITHUB_STEP_SUMMARY
+          New-Item -ItemType Directory -Force -Path (Split-Path $env:COVERAGE_FILE) | Out-Null
+          python -m coverage run tools/run_tests.py
+          exit $LASTEXITCODE
+      # Reported even when a test failed, so the figures are not lost.
+      - name: Coverage report
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        env:
+          COVERAGE_FILE: ${{ runner.temp }}\coverage\.coverage
+        run: |
+          python -m coverage combine
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          python -m coverage report
+          python -m coverage report --format=markdown >> $env:GITHUB_STEP_SUMMARY
 
   pester:
     # Report only until it has passed on 5 consecutive pull requests (#111 B6a; the

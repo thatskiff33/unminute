@@ -1,0 +1,6 @@
+# mypy (MIT) for the report-only type-check job in .github/workflows/quality.yml
+# (#413). A development tool only, never in the package. Its dependencies'
+# licences: mypy_extensions, librt and ast-serialize MIT, typing_extensions
+# PSF-2.0, pathspec MPL-2.0 (as certifi, already in the runtime lock).
+# Adopt a new version only after it has been public for at least 7 days.
+mypy==2.4.0
