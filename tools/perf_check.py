@@ -140,8 +140,8 @@ left out) and waits for the worker to unload. It also reports "workspace_s" in
 "startup": the time to create the run's new workspace, which includes making
 its database schema and its root key, protected by Windows Data Protection
 (CryptProtectData). It does not time unlocking an existing workspace's key;
-the store step's open_0_meetings_s does. Both are measured, with no budget
-yet. With
+the store step's open_0_meetings_s does. Both have budgets (#430): workspace_s
+bounds creating a new workspace, not unlocking one. With
 --leak-minutes it holds the Meetings view that long, once, in the last run,
 after the idle states and before any recording, and reports the growth. The
 leak budget is for 30 minutes, so a shorter hold is reported but not compared:
@@ -205,8 +205,10 @@ is measured ("store"): opening a workspace with 0 and with 500 meetings
 (median of 10 opens each), listing the 500 meetings, and, for one meeting of
 5,000 passages, a page of 1,000 passages and a search (median of 5 each) and
 the database's size. Seeded with synthetic text and audio through the app's
-own import. Measured, no budget yet (docs/perf-budgets.json). --quick leaves
-it out; release evidence needs it (tools/evidence.py).
+own import. Its figures are compared with the "store" budgets in
+docs/perf-budgets.json, set from v0.5.0-preview.4's release run (#430), and
+proposed again from each run. --quick leaves it out and does not compare it;
+release evidence needs it (tools/evidence.py).
 
 --compare <report>: a local copy of an earlier release's evidence-perf.json
 (nothing is fetched). Figures present in both reports are listed side by
@@ -260,7 +262,9 @@ def compare(figures, budgets, skip=()):
     return over, missing
 
 
-BUDGETED = ("cpu_percent_of_one_core", "private_mb", "startup_s")
+# The figures a budget can bound, and propose() proposes: the per-state
+# figures, startup's workspace_s and the store step's figures (#111 C7, #430).
+BUDGETED = ("cpu_percent_of_one_core", "private_mb", "startup_s", "workspace_s") + STORE_FIGURES
 
 
 def worst_worker(runs):
@@ -1504,12 +1508,17 @@ def parent(args):
     report["median"] = figures
     budgets = json.loads(BUDGETS.read_text(encoding="utf-8")) if BUDGETS.exists() else {}
     skip = () if args.leak_minutes >= LEAK_BUDGET_MINUTES else ("leak",)
-    over, missing = compare(figures, budgets.get("budgets", {}), skip)
+    if args.quick:                    # --quick has no store step to compare
+        skip += ("store",)
+    # The store step's figures are measured once, not per run, so they are
+    # compared and proposed as they are, beside the medians (#430).
+    gated = dict(figures, store=report["store"]) if report.get("store") else figures
+    over, missing = compare(gated, budgets.get("budgets", {}), skip)
     report["over_budget"] = [{"state": s, "metric": m, "value": v, "budget": b}
                              for s, m, v, b in over]
     report["not_measured"] = [{"state": s, "metric": m} for s, m in missing]
     report["not_asked_for"] = list(skip)
-    report["proposed_budgets_plus_20_percent"] = propose(figures)
+    report["proposed_budgets_plus_20_percent"] = propose(gated)
     if getattr(args, "compare", None):
         report["comparison"] = compare_reports(report, earlier_report(args.compare))
     # Last: a report that would carry the Windows user name is written as a
@@ -1529,10 +1538,12 @@ def parent(args):
     if not report["display"]["kept_awake"]:
         print("Windows did not keep the display on for the run; each visible window was "
               "still checked as drawn.")
-    if skip:
+    if "leak" in skip:
         print(f"Not compared: the leak check needs --leak-minutes {LEAK_BUDGET_MINUTES} or more.")
+    if "store" in skip:
+        print("Not compared: the store step does not run with --quick.")
     if report.get("store"):
-        print("store step (measured; no budget yet): " + json.dumps(report["store"]))
+        print("store step: " + json.dumps(report["store"]))
     comparison = report.get("comparison")
     if comparison and comparison["machines_differ_in"]:
         print("Compared with the earlier report: not comparable, the machines differ in "

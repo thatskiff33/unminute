@@ -3,7 +3,7 @@
 This lists what a workspace release needs, what has been verified, and what still needs people or hardware.
 
 - **Publishing** is a separate step. It needs explicit authorisation and follows [RELEASING.md](RELEASING.md).
-- **Phase C (#111) ships as one release.** C7 set `PHASE_C_COMPLETE` in `workspace/keystore.py`, so a release can be prepared again; that is not release approval, and the first Phase C release still needs the owner's explicit decision ("Before cutting a release", step 4, in [RELEASING.md](RELEASING.md)). Its evidence must meet "Phase C release evidence" below.
+- **Phase C (#111) ships as one release.** C7 set `PHASE_C_COMPLETE` in `workspace/keystore.py`, so a release can be prepared again; that was not release approval, and the first Phase C release, v0.5.0-preview.4, needed the owner's explicit decision, which was given and used for it ("Before cutting a release", step 4, in [RELEASING.md](RELEASING.md); #121). Its evidence must meet "Phase C release evidence" below.
 
 ## Every change (automated, in CI)
 
@@ -45,7 +45,7 @@ For the first release with schema 2 and every release after it. Each item is par
 - [ ] **Packaged lifecycle** (`evidence-packaged.json`): the scanner's control found every pattern; nothing readable at rest; the audit log verified; the recording encrypted while it records (at least one finished chunk scanned) and its key erased after import and discard; the audio key erased with the text key kept; nothing blocking an update and the database compacted; only the workspace's own files left, with the logs listed; nothing left in TEMP, APPDATA or the user folder; nothing unexplained new in LocalLow or the model cache; no crash dumps. The window's WebView2 profile is not covered yet (#418, before the full release).
 - [ ] **Crash checks** (`evidence-crash.json`): the import killed part-way was discarded with nothing of it left (no `audio.partial`, only the workspace's own files); each cleanup landing was consistent and then finished; the recording killed part-way was kept after the restart, with no partial chunk or plain audio left; nothing plain in the landing profile; nothing left in any profile's TEMP, APPDATA or user folder; nothing unexplained new in LocalLow or the model cache; no crash dumps. Where each cleanup kill landed is recorded in `landings`.
 - [ ] **Explained files** (both reports): every `residue.EXPLAINED` entry a report relied on is listed (`left_explained`, `outside_explained`, the crash report's `outside.explained`); any entry added for this release had an independent review and is named in the release notes (the owner's decision, 26 Oct 2026, #335; docs/RELEASING.md).
-- [ ] **Performance** (`evidence-perf.json`): the store step's figures and `workspace_s` are present. On the first Phase C release, open a pull request after publishing that sets their budgets from these medians plus 20% (never from a development-laptop run).
+- [ ] **Performance** (`evidence-perf.json`): the store step's figures and `workspace_s` are present and within their budgets. Those budgets were set from the first Phase C release run, v0.5.0-preview.4's medians by `perf_check.propose()` (plus 20%, rounded up to 0.01, at least 0.05 above the median), never from a development-laptop run (#430).
 - [ ] **Comparison:** run the performance check with `--compare` against a local copy of the previous release's `evidence-perf.json`, and say in the release notes whether the machines were comparable.
 
 ## Before a business release (needs people or hardware)
