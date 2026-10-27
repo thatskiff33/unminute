@@ -66,8 +66,9 @@ ACCESSIBILITY_VIEWS = (
     "confirm dialog", "handoff page",
 )
 # The performance states with the window on screen (tools/perf_check.py): each
-# window measured in one counts only if it was drawn (its "drawing" block; #292).
-PERF_VISIBLE_STATES = ("meetings", "settings", "recording")
+# window measured in one counts only if it was drawn (its "drawing" block; #292),
+# recording with live drafts on included (#104).
+PERF_VISIBLE_STATES = ("meetings", "settings", "recording", "recording-drafts")
 # The sealed store's figures (tools/perf_check.py, "store"; #111 C7): a release's
 # performance evidence measures each one; each has a budget (#430).
 PERF_STORE_FIGURES = ("open_0_meetings_s", "open_500_meetings_s", "listing_500_meetings_s",
@@ -377,7 +378,8 @@ def perf_not_drawn(body):
     """The windows of a performance report measured in a visible state that do
     not show they were drawn (empty when every one does; #292): each needs its
     "drawing" block saying "drawn": true. Only a state the report names as not
-    measured by policy (policy turning recording off) may have no window."""
+    measured by policy (policy turning recording, or live drafts, off) may
+    have no window."""
     runs = body.get("each_run") if isinstance(body, dict) else None
     if not isinstance(runs, list) or not runs:
         return ["no runs recorded"]
