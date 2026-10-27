@@ -71,6 +71,16 @@ real time, and remove it when the cause is fixed.
   no installed package (`no_site_packages`: third-party imports are typed `Any`) and checks
   the Windows branches (`platform = win32`), so every machine gets the same result, and it
   writes no cache. Making it a gate needs the owner. The page has no type check yet.
+- **Quality report (report only, #365).** `python tools/quality_report.py` runs what CI's
+  "Quality report (report only)" job runs: the line count of each tracked code file and its
+  growth since the committed baseline `tools/quality_baseline.json`, the largest Python
+  modules, and ruff's C901 complexity (threshold 10, `--exit-zero`; ruff from
+  `requirements/ci.txt`). CI shows a function new over the threshold, or more complex than in
+  the baseline, as a warning on the pull request and never fails on it. Split or simplify
+  rather than accept growth. Run `python tools/quality_report.py --update` and commit the
+  baseline in a pull request that shrinks a module or simplifies a function, or at a release;
+  a refresh that takes in growth or new complexity says why in the pull request. Making it a
+  gate needs the owner.
 - **Coverage (report only, #413).** `.coveragerc` measures lines and branches in `workspace/`,
   and the Python processes the tests start (`patch = subprocess`, so each process writes its
   own data file). Set `COVERAGE_FILE` to a path outside the checkout first, as CI does, then

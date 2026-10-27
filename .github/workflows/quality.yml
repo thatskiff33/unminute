@@ -54,6 +54,34 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           cat vulture.txt
 
+  quality-report:
+    # Report only (#365 part C; the owner approved the piece on 25 Oct 2026):
+    # tools/quality_report.py lists each code file's size and growth against
+    # the committed baseline, tools/quality_baseline.json, the largest modules,
+    # and function complexity from ruff's C901 rule with --exit-zero. A function
+    # new over the threshold, or more complex than in the baseline, is a warning
+    # on the pull request, never a failure; the job fails only if git or ruff
+    # cannot run. ruff is the one already pinned in requirements/ci.txt, so
+    # nothing new is installed. Making it a gate needs the owner (AGENTS.md E2).
+    name: Quality report (report only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.14"
+      - name: Install ruff from its hash-locked file
+        run: >-
+          python -m pip install --disable-pip-version-check --only-binary=:all:
+          --require-hashes -r requirements/ci.txt
+      - name: Report size, growth and complexity against the baseline
+        run: python tools/quality_report.py
+
   type-check:
     # Report only (#413; the owner's decision of 27 Oct 2026): mypy over the
     # shipped code with the settings in mypy.ini, compared by tools/type_check.py
