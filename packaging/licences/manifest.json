@@ -9377,7 +9377,6 @@
     "ref": "rand_core 0.10.1 (crates.io)",
     "commit": "5cd7df496d0bff1d95534ac8b66a2610f5bf7808"
    },
-   "note": "The crate names rust-random/rand as its repository; its commit is in rust-random/rand_core.",
    "files": [
     {
      "path": "hf-xet.rand_core.0.10.1-0.10.1/COPYRIGHT",
