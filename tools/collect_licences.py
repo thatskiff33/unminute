@@ -485,7 +485,8 @@ def crate_parts(blob, name, version):
 
 def git_blob(data):
     """The git blob id of these bytes, as a GitHub tree lists it."""
-    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+    return hashlib.sha1(b"blob %d\0" % len(data) + data,     # git's object id, not a check
+                        usedforsecurity=False).hexdigest()
 
 
 def source_path(tree, where, rel, blob):

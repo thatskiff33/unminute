@@ -1,6 +1,9 @@
 # Lint configuration for CI (ruff). Deliberately modest: catch real mistakes
 # (undefined names, unused imports, bugbear traps, outdated syntax) without
 # forcing a restyle of working code.
+# The security rules (S, flake8-bandit) are report only, not selected here:
+# python tools/security_lint.py runs them against the triaged baseline in
+# tools/security_baseline.json (#415).
 line-length = 100
 target-version = "py314"   # the Python the package ships (tools/build_package.py)
 

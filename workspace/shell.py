@@ -385,8 +385,8 @@ def install_alert_guard():
 
     def on_webview_ready(self, sender, args):
         # pywebview turns the browser's dialogs on and then loads the page in
-        # this one handler; the setting is read when a navigation starts, so
-        # it is turned off just before each load it makes.
+        # this one handler; the settings are read when a navigation starts, so
+        # they are turned off just before each load it makes (_dialogs_off).
         loads = {name: getattr(self, name) for name in ("load_url", "load_html")}
         guard = {"on": False, "failed": False}     # once per window (this handler runs once)
 
@@ -468,12 +468,19 @@ def _refuse_script_dialog(sender, args):
 
 def _dialogs_off(core):
     """Turn off WebView2's own alert, confirm and prompt dialogs, which would
-    show page text in a browser window (the page uses its own dialogs)."""
-    core.Settings.AreDefaultScriptDialogsEnabled = False
+    show page text in a browser window (the page uses its own dialogs), and
+    host objects (chrome.webview.hostObjects). The bridge is pywebview's web
+    messages (IsWebMessageEnabled), which this leaves on; pywebview 6.2.1
+    adds no host object, so nothing the page uses goes (#415 item 4, as
+    Microsoft's "Develop secure WebView2 apps" advises when none is used).
+    pywebview never sets AreHostObjectsAllowed, whose default is true."""
+    settings = core.Settings
+    settings.AreDefaultScriptDialogsEnabled = False
+    settings.AreHostObjectsAllowed = False
 
 
 def quiet_script_dialogs(window):
-    """The same setting checked again once the window's page has loaded (the
+    """The same settings checked again once the window's page has loaded (the
     refusing handler is attached once, when WebView2 starts)."""
     _dialogs_off(window.native.browser.webview.CoreWebView2)
 

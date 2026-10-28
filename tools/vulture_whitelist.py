@@ -12,6 +12,7 @@ _.AcceptButton
 _.AccessibleDescription
 _.Activated
 _.AreDefaultScriptDialogsEnabled
+_.AreHostObjectsAllowed
 _.AutoScroll
 _.AutoSize
 _.BackColor

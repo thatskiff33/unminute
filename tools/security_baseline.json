@@ -1,0 +1,537 @@
+{
+ "_about": "Report-only security lint baseline (#415): ruff's S rules, triaged. Each entry is a file and rule, how many findings are accepted and why. Written by: python tools/security_lint.py --update (reasons are written by hand)",
+ "findings": {
+  ".claude/hooks/private_data_guard.py::S105": {
+   "count": 1,
+   "why": "Compares a command-line token with \"-\"; not a password."
+  },
+  ".claude/hooks/private_data_guard.py::S603": {
+   "count": 1,
+   "why": "Runs the hook's own file again in an isolated child (sys.executable -I) with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere)."
+  },
+  "tests/fake_worker_engines.py::S105": {
+   "count": 1,
+   "why": "A synthetic placeholder token in a test, never a real secret; the tests check that tokens never leak (N3)."
+  },
+  "tests/test_accessibility_check.py::S603": {
+   "count": 3,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_accessors.py::S101": {
+   "count": 2,
+   "why": "Assertions in test helpers and fakes; the tests never run with -O."
+  },
+  "tests/test_accessors.py::S102": {
+   "count": 3,
+   "why": "Runs a function or module compiled from the repository's own tracked source, to test it on its own; no outside input."
+  },
+  "tests/test_accessors.py::S608": {
+   "count": 3,
+   "why": "SQL built in a test from the schema's own fixed table and column names, against a scratch database; values are parameters."
+  },
+  "tests/test_agent_guard.py::S603": {
+   "count": 10,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_app.py::S608": {
+   "count": 1,
+   "why": "SQL built in a test from the schema's own fixed table and column names, against a scratch database; values are parameters."
+  },
+  "tests/test_asr_engines.py::S105": {
+   "count": 1,
+   "why": "A synthetic placeholder token in a test, never a real secret; the tests check that tokens never leak (N3)."
+  },
+  "tests/test_audiocrypt.py::S311": {
+   "count": 2,
+   "why": "Seeded pseudo-random data that varies test inputs reproducibly; no key or secret comes from it."
+  },
+  "tests/test_audit.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_cleanup.py::S608": {
+   "count": 1,
+   "why": "SQL built in a test from the schema's own fixed table and column names, against a scratch database; values are parameters."
+  },
+  "tests/test_compare_engines.py::S603": {
+   "count": 8,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_consistency.py::S101": {
+   "count": 1,
+   "why": "Assertions in test helpers and fakes; the tests never run with -O."
+  },
+  "tests/test_consistency.py::S314": {
+   "count": 2,
+   "why": "Parses the repository's own tracked policy templates (packaging/policy/*.admx, *.adml) in a test."
+  },
+  "tests/test_consistency.py::S607": {
+   "count": 1,
+   "why": "Starts git, PowerShell or another tool by name on the developer's or CI's machine; a test, never shipped."
+  },
+  "tests/test_consistency.py::S608": {
+   "count": 1,
+   "why": "SQL built in a test from the schema's own fixed table and column names, against a scratch database; values are parameters."
+  },
+  "tests/test_content_access.py::S101": {
+   "count": 1,
+   "why": "Assertions in test helpers and fakes; the tests never run with -O."
+  },
+  "tests/test_dev_workflow.py::S101": {
+   "count": 2,
+   "why": "Assertions in test helpers and fakes; the tests never run with -O."
+  },
+  "tests/test_diagnostics.py::S603": {
+   "count": 2,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_discard_unfinished.py::S608": {
+   "count": 1,
+   "why": "SQL built in a test from the schema's own fixed table and column names, against a scratch database; values are parameters."
+  },
+  "tests/test_download_guard.py::S603": {
+   "count": 2,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_download_process.py::S603": {
+   "count": 2,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_download_queue.py::S105": {
+   "count": 1,
+   "why": "A synthetic placeholder token in a test, never a real secret; the tests check that tokens never leak (N3)."
+  },
+  "tests/test_download_queue.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_draft_scenario.py::S603": {
+   "count": 3,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_drafts.py::S105": {
+   "count": 1,
+   "why": "A synthetic placeholder token in a test, never a real secret; the tests check that tokens never leak (N3)."
+  },
+  "tests/test_drafts.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_evidence.py::S102": {
+   "count": 1,
+   "why": "Runs a function or module compiled from the repository's own tracked source, to test it on its own; no outside input."
+  },
+  "tests/test_evidence.py::S603": {
+   "count": 5,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_gpu.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_hardening.py::S106": {
+   "count": 2,
+   "why": "A synthetic placeholder token in a test, never a real secret; the tests check that tokens never leak (N3)."
+  },
+  "tests/test_hardening.py::S603": {
+   "count": 18,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_holds.py::S608": {
+   "count": 1,
+   "why": "SQL built in a test from the schema's own fixed table and column names, against a scratch database; values are parameters."
+  },
+  "tests/test_import_hygiene.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_intake_isolation.py::S603": {
+   "count": 6,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_launch.py::S603": {
+   "count": 4,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_level_meter.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_licence_texts.py::S106": {
+   "count": 3,
+   "why": "A synthetic placeholder token in a test, never a real secret; the tests check that tokens never leak (N3)."
+  },
+  "tests/test_licence_texts.py::S607": {
+   "count": 1,
+   "why": "Starts git, PowerShell or another tool by name on the developer's or CI's machine; a test, never shipped."
+  },
+  "tests/test_live_trial.py::S603": {
+   "count": 2,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_locked.py::S110": {
+   "count": 1,
+   "why": "Best-effort clean-up in a test."
+  },
+  "tests/test_locked.py::S608": {
+   "count": 2,
+   "why": "SQL built in a test from the schema's own fixed table and column names, against a scratch database; values are parameters."
+  },
+  "tests/test_mic_list_refresh.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_model_integrity.py::S106": {
+   "count": 1,
+   "why": "A synthetic placeholder token in a test, never a real secret; the tests check that tokens never leak (N3)."
+  },
+  "tests/test_model_package.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_offboard.py::S603": {
+   "count": 2,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_package.py::S603": {
+   "count": 8,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_package.py::S607": {
+   "count": 7,
+   "why": "Starts git, PowerShell or another tool by name on the developer's or CI's machine; a test, never shipped."
+  },
+  "tests/test_perf_check.py::S104": {
+   "count": 1,
+   "why": "The version string \"0.0.0.0\" (left by a WebView2 uninstall) in a fake registry value, not an address to bind."
+  },
+  "tests/test_perf_check.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_policy.py::S314": {
+   "count": 2,
+   "why": "Parses the repository's own tracked policy templates (packaging/policy/*.admx, *.adml) in a test."
+  },
+  "tests/test_policy.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_power.py::S101": {
+   "count": 3,
+   "why": "Assertions in test helpers and fakes; the tests never run with -O."
+  },
+  "tests/test_queries.py::S101": {
+   "count": 7,
+   "why": "Assertions in test helpers and fakes; the tests never run with -O."
+  },
+  "tests/test_recorder.py::S608": {
+   "count": 1,
+   "why": "SQL built in a test from the schema's own fixed table and column names, against a scratch database; values are parameters."
+  },
+  "tests/test_run_tests.py::S311": {
+   "count": 1,
+   "why": "Seeded pseudo-random data that varies test inputs reproducibly; no key or secret comes from it."
+  },
+  "tests/test_run_tests.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_safe_paths.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_schema2.py::S101": {
+   "count": 1,
+   "why": "Assertions in test helpers and fakes; the tests never run with -O."
+  },
+  "tests/test_schema2.py::S608": {
+   "count": 4,
+   "why": "SQL built in a test from the schema's own fixed table and column names, against a scratch database; values are parameters."
+  },
+  "tests/test_settings_policy_names.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_setup.py::S105": {
+   "count": 1,
+   "why": "A synthetic placeholder token in a test, never a real secret; the tests check that tokens never leak (N3)."
+  },
+  "tests/test_single_source.py::S603": {
+   "count": 2,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_source_text.py::S607": {
+   "count": 1,
+   "why": "Starts git, PowerShell or another tool by name on the developer's or CI's machine; a test, never shipped."
+  },
+  "tests/test_two_track.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_ui_check_clipboard.py::S101": {
+   "count": 1,
+   "why": "Assertions in test helpers and fakes; the tests never run with -O."
+  },
+  "tests/test_ui_check_clipboard.py::S603": {
+   "count": 2,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_ui_check_focus.py::S101": {
+   "count": 1,
+   "why": "Assertions in test helpers and fakes; the tests never run with -O."
+  },
+  "tests/test_ui_check_focus.py::S102": {
+   "count": 1,
+   "why": "Runs a function or module compiled from the repository's own tracked source, to test it on its own; no outside input."
+  },
+  "tests/test_ui_check_focus.py::S603": {
+   "count": 2,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_ui_page_audit.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_uninstall_offboard.py::S101": {
+   "count": 1,
+   "why": "Assertions in test helpers and fakes; the tests never run with -O."
+  },
+  "tests/test_uninstall_offboard.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_update.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_update.py::S608": {
+   "count": 2,
+   "why": "SQL built in a test from the schema's own fixed table and column names, against a scratch database; values are parameters."
+  },
+  "tests/test_vault.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_windows_powershell.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tests/test_workers.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
+  "tools/accessibility_check.py::S101": {
+   "count": 1,
+   "why": "Assertions in a developer check run by hand, never with -O; a failed one stops the check, as intended. Not shipped (packaging/app-allowlist.json)."
+  },
+  "tools/audit.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the tool's own fixed program and arguments. A developer or CI tool, not shipped."
+  },
+  "tools/build_package.py::S102": {
+   "count": 2,
+   "why": "Loads the repository's own tracked tools/windows_powershell.py, and the app's own tracked source, as modules at build time; no outside input. Not shipped."
+  },
+  "tools/build_package.py::S603": {
+   "count": 6,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the tool's own fixed program and arguments. A developer or CI tool, not shipped."
+  },
+  "tools/build_package.py::S607": {
+   "count": 2,
+   "why": "Starts git, gh, PowerShell or nvidia-smi by name from PATH on the developer's or CI's machine. Not shipped: the app starts programs by absolute path only (no S607 in workspace/)."
+  },
+  "tools/collect_licences.py::S310": {
+   "count": 2,
+   "why": "Fetches licence texts over https only from the fixed collector hosts, checked before the request (allowed_url, crate_url_parts), with redirects checked (CheckedRedirects). A developer tool, not shipped."
+  },
+  "tools/decoder_runtime.py::S110": {
+   "count": 1,
+   "why": "Best-effort removal of a scratch AppContainer profile after a check."
+  },
+  "tools/decoder_runtime.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the tool's own fixed program and arguments. A developer or CI tool, not shipped."
+  },
+  "tools/design_check.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the tool's own fixed program and arguments. A developer or CI tool, not shipped."
+  },
+  "tools/dev_status.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the tool's own fixed program and arguments. A developer or CI tool, not shipped."
+  },
+  "tools/evidence.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the tool's own fixed program and arguments. A developer or CI tool, not shipped."
+  },
+  "tools/evidence.py::S607": {
+   "count": 1,
+   "why": "Starts git, gh, PowerShell or nvidia-smi by name from PATH on the developer's or CI's machine. Not shipped: the app starts programs by absolute path only (no S607 in workspace/)."
+  },
+  "tools/gpu_trial.py::S607": {
+   "count": 2,
+   "why": "Starts git, gh, PowerShell or nvidia-smi by name from PATH on the developer's or CI's machine. Not shipped: the app starts programs by absolute path only (no S607 in workspace/)."
+  },
+  "tools/live_trial.py::S314": {
+   "count": 1,
+   "why": "Parses the word files of the public AMI corpus that the developer chose for a live trial. A developer tool, not shipped."
+  },
+  "tools/live_trial.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the tool's own fixed program and arguments. A developer or CI tool, not shipped."
+  },
+  "tools/live_trial.py::S607": {
+   "count": 1,
+   "why": "Starts git, gh, PowerShell or nvidia-smi by name from PATH on the developer's or CI's machine. Not shipped: the app starts programs by absolute path only (no S607 in workspace/)."
+  },
+  "tools/lock.py::S603": {
+   "count": 3,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the tool's own fixed program and arguments. A developer or CI tool, not shipped."
+  },
+  "tools/lock.py::S607": {
+   "count": 1,
+   "why": "Starts git, gh, PowerShell or nvidia-smi by name from PATH on the developer's or CI's machine. Not shipped: the app starts programs by absolute path only (no S607 in workspace/)."
+  },
+  "tools/packaged_check.py::S603": {
+   "count": 7,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the tool's own fixed program and arguments. A developer or CI tool, not shipped."
+  },
+  "tools/packaged_crash_check.py::S603": {
+   "count": 5,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the tool's own fixed program and arguments. A developer or CI tool, not shipped."
+  },
+  "tools/perf_check.py::S104": {
+   "count": 1,
+   "why": "The version string \"0.0.0.0\" (left by a WebView2 uninstall) in a comparison, not an address to bind."
+  },
+  "tools/perf_check.py::S110": {
+   "count": 3,
+   "why": "A timing harness: a synthetic audio callback (as PortAudio, a failing callback ends the stream), a Windows callback that must not raise, and a clean-up before its window closes. Not shipped."
+  },
+  "tools/perf_check.py::S603": {
+   "count": 5,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the tool's own fixed program and arguments. A developer or CI tool, not shipped."
+  },
+  "tools/perf_check.py::S607": {
+   "count": 1,
+   "why": "Starts git, gh, PowerShell or nvidia-smi by name from PATH on the developer's or CI's machine. Not shipped: the app starts programs by absolute path only (no S607 in workspace/)."
+  },
+  "tools/process_listeners.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the tool's own fixed program and arguments. A developer or CI tool, not shipped."
+  },
+  "tools/quality_report.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the tool's own fixed program and arguments. A developer or CI tool, not shipped."
+  },
+  "tools/quality_report.py::S607": {
+   "count": 1,
+   "why": "Starts git, gh, PowerShell or nvidia-smi by name from PATH on the developer's or CI's machine. Not shipped: the app starts programs by absolute path only (no S607 in workspace/)."
+  },
+  "tools/security_lint.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the tool's own fixed program and arguments. A developer or CI tool, not shipped."
+  },
+  "tools/type_check.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the tool's own fixed program and arguments. A developer or CI tool, not shipped."
+  },
+  "tools/windows_powershell.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the tool's own fixed program and arguments. A developer or CI tool, not shipped."
+  },
+  "tools/workspace_ui_check.py::S101": {
+   "count": 10,
+   "why": "Assertions in a developer check run by hand, never with -O; a failed one stops the check, as intended. Not shipped (packaging/app-allowlist.json)."
+  },
+  "tools/workspace_ui_check.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the tool's own fixed program and arguments. A developer or CI tool, not shipped."
+  },
+  "workspace/__main__.py::S110": {
+   "count": 3,
+   "why": "Window niceties at start (bring to front, never block a Windows shutdown, quiet when minimised); the app works without them. Not logged: an exception's text could carry names or paths (P3)."
+  },
+  "workspace/app.py::S110": {
+   "count": 7,
+   "why": "Restoring the lid-close setting (retried while idle), the policy tick and the download-queue policy (tried again at the next tick), and an import clean-up step (the meeting is discarded or kept for next time); none may stop the app. Not logged (P3)."
+  },
+  "workspace/app.py::S606": {
+   "count": 1,
+   "why": "os.startfile on the Hand off assistant's address, an https address checked by policy.valid_url (IT's, or the fixed default), only after the user clicks; Windows opens it in the user's browser and the app sends nothing (N2, #109)."
+  },
+  "workspace/app.py::S608": {
+   "count": 1,
+   "why": "The IN clause is a fixed subquery string (the active versions); no outside value."
+  },
+  "workspace/appcontainer.py::S110": {
+   "count": 1,
+   "why": "Closing handles during clean-up; nothing else to do if that fails."
+  },
+  "workspace/audit.py::S110": {
+   "count": 2,
+   "why": "Closing the mirror file, and reporting an incident while handling another failure; the audit result stands without them. Not logged (P3)."
+  },
+  "workspace/audit.py::S314": {
+   "count": 1,
+   "why": "Parses wevtutil's output for the app's own Event Log entries; a document type or entity declaration is refused before parsing (_entries), so no entity can expand."
+  },
+  "workspace/audit.py::S603": {
+   "count": 1,
+   "why": "wevtutil.exe by absolute path from the Windows system folder (system_program), with an argument list, a minimal environment and a time limit; the query names only the app's own fixed provider."
+  },
+  "workspace/cleanup.py::S608": {
+   "count": 1,
+   "why": "Only ? placeholders are joined into the IN list; the values are parameters."
+  },
+  "workspace/gpu.py::S603": {
+   "count": 1,
+   "why": "nvidia-smi by absolute path only (_nvidia_smi, never from PATH), fixed arguments and a time limit."
+  },
+  "workspace/loopback.py::S110": {
+   "count": 3,
+   "why": "Stopping a capture client, a stream that is opened again, and a notification callback; nothing here may stop a recording. Not logged (P3)."
+  },
+  "workspace/media.py::S110": {
+   "count": 2,
+   "why": "After a failed import: removing the half-made meeting and writing its activity note; its folder is removed regardless. Not logged (P3)."
+  },
+  "workspace/media.py::S603": {
+   "count": 1,
+   "why": "The decoder child on platforms other than Windows: the app's own Python with fixed arguments and no shell. Windows starts it in its sandbox instead (I2)."
+  },
+  "workspace/offline_guard.py::S110": {
+   "count": 1,
+   "why": "Turning off onnxruntime's telemetry events where it is not installed, or is a build without the switch; the offline guard itself still applies (N1)."
+  },
+  "workspace/power.py::S110": {
+   "count": 4,
+   "why": "Releasing power requests and handles, and a Windows callback that must never raise; nothing here may stop a recording ending."
+  },
+  "workspace/recorder.py::S110": {
+   "count": 4,
+   "why": "Stopping and closing an audio stream, and clean-up steps, as a recording ends; each runs whether or not the one before it failed."
+  },
+  "workspace/setup.py::S110": {
+   "count": 1,
+   "why": "A model check that fails ends as \"The check could not be completed.\" (the state set before it); not logged (P3)."
+  },
+  "workspace/setup.py::S310": {
+   "count": 1,
+   "why": "The GPU component download (download process only): https only, the address must start with the pinned prefix (gpu.DOWNLOAD_HOST), redirects only to the same host (_SameHost), size-limited, and the caller checks its SHA-256 (N2, I1)."
+  },
+  "workspace/shell.py::S110": {
+   "count": 4,
+   "why": "Window-quietening steps (#196), the backend preload (check_backend loads it again and fails closed) and the alert guard (checked just below it, failing closed). Not logged (P3)."
+  },
+  "workspace/store.py::S608": {
+   "count": 14,
+   "why": "Every identifier is fixed in the code or checked first: table names through _quoted_table (plain names only, #415 item 5), conditions through plain_condition (no quote, comment, subquery or content column) or fixed strings, and column lists from MEETING_STATE and CONTENT_COLUMNS; every value is a ? parameter."
+  },
+  "workspace/update.py::S608": {
+   "count": 1,
+   "why": "The table name must match _TABLE_NAME (a plain identifier) before it is quoted (#415 item 5); any other name is counted as content instead of read."
+  }
+ }
+}

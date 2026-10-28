@@ -780,7 +780,7 @@ C1, C2 = "1" * 40, "2" * 40
 
 
 def git_blob(data):
-    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+    return hashlib.sha1(b"blob %d\0" % len(data) + data, usedforsecurity=False).hexdigest()
 
 
 def crate_of(name, version, files, repository=None, commit=C1, where="", vcs=True,

@@ -1,0 +1,2 @@
+Security hardening (#415):
+- **The window's page can no longer reach host objects.** Unminute turns off WebView2's host objects before its page loads, as Microsoft advises when an app uses none; the page still reaches the app only through its fixed list of functions. Nothing changes for the user. The page's security policy also drops `frame-ancestors`, which browsers ignore in that kind of policy, so it never had an effect.

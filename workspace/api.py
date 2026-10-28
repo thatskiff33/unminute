@@ -522,9 +522,12 @@ def make_api(ws, get_window=lambda: None, confirm=None, decline_pause_s=DECLINE_
                  close_app=close_app, report_ui_error=report_ui_error,
                  copy_diagnostics=copy_diagnostics,
                  continue_despite_damage=continue_despite_damage)
-    assert set(names) | {"pywebviewEventHandler"} == API_METHODS
-    assert LOCKED_METHODS <= set(names)
-    assert FINISH_ONLY_REFUSED <= set(names) - LOCKED_METHODS
+    # Checked with raise, not assert, so Python's -O (or PYTHONOPTIMIZE) cannot
+    # skip them (ruff S101, #415).
+    if not (set(names) | {"pywebviewEventHandler"} == API_METHODS
+            and LOCKED_METHODS <= set(names)
+            and FINISH_ONLY_REFUSED <= set(names) - LOCKED_METHODS):
+        raise RuntimeError("The bridge's method lists do not match its methods.")
     # The finish-only gate inside the locked one: a locked workspace says so first.
     names = {name: _finish_gated(ws, fn) if name in FINISH_ONLY_REFUSED else fn
              for name, fn in names.items()}
