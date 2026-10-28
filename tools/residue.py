@@ -284,10 +284,16 @@ def lend_models(cache, target):
     so a verification record the app rewrites in place is the throwaway
     copy, never the cache's own; a file a link cannot reach (another drive)
     is copied. A symbolic link is followed to its file, never lent itself.
+    A target that is already there (a folder, a file or a link) is refused
+    with FileExistsError before anything is made: return_models() removes
+    the whole target, so it is only ever one this lent into (fail closed).
     Returns (listing() of target as lent, {"linked": n, "copied": n,
     "unreadable": [name]}); return_models() takes it back."""
     import shutil
     cache, target = Path(cache), Path(target)
+    if os.path.lexists(target):
+        # Its name only, never the path (P3).
+        raise FileExistsError(f"the models folder to lend into is already there: {target.name}")
     counts, unreadable = {"linked": 0, "copied": 0}, []
     for path in _files([cache], unreadable, cache):
         dest = target / path.relative_to(cache)
