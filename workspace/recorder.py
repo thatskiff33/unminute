@@ -27,12 +27,16 @@
 #     2026), when the app gives the recording a `follow` (the real devices;
 #     without one, a lost device stops the recording, as before). A follow
 #     thread asks Windows for its default microphone (workspace/loopback.py,
-#     our own ctypes WASAPI code) every DEFAULT_CHECK_S: when the default
-#     changes and stays changed for a second check, the recording switches to
-#     it. A microphone that is lost moves to whatever Windows now uses, or
-#     the recording stops as before if none can be opened within
-#     SWITCH_WAIT_S. The person may choose another microphone on the card
-#     (choose); the recording then stops following the default. A switch
+#     our own ctypes WASAPI code) every DEFAULT_CHECK_S. A recording that
+#     started on the Windows default follows it: when the default changes
+#     and stays changed for a second check, the recording switches to it. A
+#     recording started on another microphone the person chose stays on it
+#     (the owner's refinement of 28 Oct 2026, DEC-080). A microphone that is
+#     lost moves to whatever Windows now uses, which is then followed (not
+#     after a choice on the card), or the recording stops as before if none
+#     can be opened within SWITCH_WAIT_S. The person may choose another
+#     microphone on the card (choose); the recording then stops following
+#     the default for the rest of the recording. A switch
 #     closes the stream, lists PortAudio's devices afresh (only possible with
 #     no stream open), opens the new one at the recording's rate (MME
 #     converts) and carries on in the same recording: the writer puts silence
@@ -394,7 +398,9 @@ class Recording:
         object with default() ({"id", "name"} of the Windows default
         microphone, or None) and close(); "resolve": find_input's shape;
         "allowed": whether managed policy and the setting allow the
-        microphone now (read before every switch, K3)}."""
+        microphone now (read before every switch, K3); "on_default": whether
+        the microphone it starts on is the Windows default (only then are
+        changes of default followed from the start; missing means not)}."""
         from workspace import audiocrypt
         self.folder = Path(folder)
         self.rate = int(rate)
@@ -443,7 +449,11 @@ class Recording:
         # Following the Windows default microphone (#462).
         self._follow = follow
         self._resolve = (follow or {}).get("resolve") or find_input
-        self.following = follow is not None      # until the person chooses one
+        # Changes of the Windows default are followed only by a recording
+        # that started on it, or (until a choice on the card) once a lost
+        # microphone has moved to it. Both flags change under _lock.
+        self.following = follow is not None and bool(follow.get("on_default"))
+        self._chosen = False                     # the person chose on the card
         self.switched = False                    # the microphone changed in this recording
         self._switch_lock = threading.Lock()     # one switch at a time
         self._gen = 0                            # the open stream's generation
@@ -1005,15 +1015,19 @@ class Recording:
         opened again (not for a lost microphone), with an event; if neither
         opens, the microphone is lost and the follow thread waits for
         another. Returns True if it switched, or if a microphone chosen is
-        the one recording. Never on the audio callback."""
+        the one recording and its stream is open and not lost. Never on the
+        audio callback."""
         with self._switch_lock:
-            if kind == "mic_chosen" and self.is_current(name):
+            if (kind == "mic_chosen" and self.is_current(name)
+                    and self._stream is not None and self._lost_at is None):
                 return True              # checked under the lock, after any switch under way
             if (self._stop.is_set() or self._stopping.is_set()
                     or self.journal["state"] != "recording"):
                 return False
             if kind == "mic_switched" and not self.following:
                 return False             # a choice on the card, made while this was checked, wins
+            if kind == "mic_moved" and self._lost_at is None:
+                return False             # a choice on the card has already opened one
             if not self._may_switch():
                 return False             # the policy check stops the recording itself
             before = (self.journal["device"], self.journal["device_name"])
@@ -1036,11 +1050,15 @@ class Recording:
                     self._lost_at = None
                     self._heard = False
                     self.switched = True
+                    if kind == "mic_moved" and not self._chosen:
+                        self.following = True    # moved to the default: followed from now on
                 self._event(kind, note=SWITCH_NOTES[kind]
                             + (" A fraction of a second may be missing at the moment it "
                                "disconnected." if during else ""))
                 return True
-            if kind != "mic_moved":
+            if kind != "mic_moved" and not self.is_current(name):
+                # (A lost microphone chosen again that does not open has no
+                # other one to go back to: it stays lost, below.)
                 back = self._resolve(before[1])
                 if back is not None and self._try_open(back["index"]):
                     with self._lock:
@@ -1064,8 +1082,12 @@ class Recording:
     def choose(self, name):
         """The person chose this microphone on the card (#462): the recording
         switches to it and no longer follows the Windows default. Raises
-        RecorderError (safe to show, names no device) if it could not."""
-        self.following = False
+        RecorderError (safe to show, names no device) if it could not. The
+        microphone recording, chosen while it is lost, is opened again: a
+        choice is never reported done without a microphone recording."""
+        with self._lock:                 # atomic with a move's "followed from now on"
+            self._chosen = True
+            self.following = False
         if not self._switch(name, "mic_chosen"):
             if (self._stop.is_set() or self._stopping.is_set()
                     or self.journal["state"] != "recording"):
@@ -1145,13 +1167,17 @@ class Recording:
         Windows' default as soon as one opens (the same microphone back
         counts), or stops after SWITCH_WAIT_S. lost is the first loss's time
         until a microphone switched to gives a block, so a device that opens
-        but stays silent is not tried for ever."""
-        if self._stream is not None:
-            with self._switch_lock:
+        but stays silent is not tried for ever. Checked under the switch
+        lock: a choice on the card that opened a microphone meanwhile, or a
+        stop, is never undone here."""
+        with self._switch_lock:
+            if self._lost_at is None or self._stopping.is_set():
+                return
+            if self._stream is not None:
                 self._close_mic()
-        if now - lost > SWITCH_WAIT_S or not self._may_switch():
-            self._lose()
-            return
+            if now - lost > SWITCH_WAIT_S or not self._may_switch():
+                self._lose()
+                return
         if default is not None and self._switch(default["name"], "mic_moved", default=True):
             self._baseline, self._tried, self._seen = default["id"], None, None
 

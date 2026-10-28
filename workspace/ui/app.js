@@ -2451,11 +2451,17 @@ function fmtSeconds(s) {
   return (h ? `${h}:${String(m).padStart(2, "0")}` : `${m}`) + `:${String(t % 60).padStart(2, "0")}`;
 }
 
+// An event as the page says it: its note without the note's own full stop,
+// then when and how long, so a line reads "...switched to it at 8:32 (about
+// 0.4 s)", never "...switched to it. at 8:32" (the owner's look, #462).
+// eventLine is one sentence (the card's list); reports join eventText with "; ".
 function eventText(e) {
+  const note = (e.note || e.kind).replace(/\.\s*$/, "");
   const at = e.at_s != null ? ` at ${fmtSeconds(e.at_s)}` : "";
   const len = e.seconds ? ` (about ${e.seconds < 1 ? e.seconds.toFixed(1) : Math.round(e.seconds)} s)` : "";
-  return `${e.note || e.kind}${at}${len}`;
+  return `${note}${at}${len}`;
 }
+function eventLine(e) { return `${eventText(e)}.`; }
 
 // The recording display: one canvas across the card, drawn about 60 times a
 // second (#216) from the latest block the recorder measured (ten a second),
@@ -3088,7 +3094,7 @@ async function renderRecorder(tick = false) {
   else { stopViz(); $("rec-mic-row").hidden = true; }   // the choice goes with the card (#462)
   renderDraft(rec, r.draft).catch(() => {});
   $("rec-events").replaceChildren(...(rec ? rec.events.filter((e) => !["paused", "resumed"].includes(e.kind))
-    .map((e) => el("li", { textContent: eventText(e) })) : []));
+    .map((e) => el("li", { textContent: eventLine(e) })) : []));
   const reportsSig = JSON.stringify(r.reports);
   if (reportsSig !== state.reportsSig) {             // unchanged: keep buttons and focus
     state.reportsSig = reportsSig;

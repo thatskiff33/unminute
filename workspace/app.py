@@ -1139,17 +1139,21 @@ class Workspace:
         unreadable policy grants nothing."""
         return bool(self.settings["microphone"] and self._allowed("AllowMicrophoneRecording"))
 
-    def _mic_follow(self):
+    def _mic_follow(self, on_default):
         """How a recording follows the Windows default microphone (#462), or
-        None. A test's fake stream has no Windows devices to follow unless
-        the test gives a fake watch too."""
+        None. on_default: the microphone it starts on is the one marked as
+        the Windows default; only then are changes of default followed from
+        the start (DEC-080: a microphone the person chose stays). A test's
+        fake stream has no Windows devices to follow unless the test gives a
+        fake watch too."""
         watch = self.watch_microphones
         if watch is None:
             if self.open_stream is not recorder._sounddevice_stream:
                 return None
             from workspace import loopback       # only when a recording starts
             watch = loopback.CaptureWatch
-        return {"watch": watch, "resolve": recorder.find_input, "allowed": self._mic_allowed}
+        return {"watch": watch, "resolve": recorder.find_input, "allowed": self._mic_allowed,
+                "on_default": bool(on_default)}
 
     def switch_microphone(self, index, name):
         """The person chose a microphone on the recording card (#462): the
@@ -1253,7 +1257,8 @@ class Workspace:
                 rec = recorder.Recording(folder, choice["index"],
                                          choice.get("label") or choice["name"], choice["rate"],
                                          open_stream=self.open_stream,
-                                         computer=computer, key=key, follow=self._mic_follow())
+                                         computer=computer, key=key,
+                                         follow=self._mic_follow(choice.get("default")))
                 if consent is not None:
                     rec.journal["consent"] = dict(consent)     # saved with the journal
                 rec.start()
