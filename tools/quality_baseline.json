@@ -319,12 +319,6 @@
   "workspace/api.py::make_api": [
    108
   ],
-  "workspace/app.py::_draft_tick": [
-   11
-  ],
-  "workspace/app.py::_import_recording_folder": [
-   22
-  ],
   "workspace/app.py::_next_work": [
    11
   ],
@@ -432,6 +426,12 @@
   ],
   "workspace/recorder.py::_write_loop": [
    15
+  ],
+  "workspace/recording_ws.py::_draft_tick": [
+   11
+  ],
+  "workspace/recording_ws.py::_import_recording_folder": [
+   22
   ],
   "workspace/runner.py::_run": [
    20

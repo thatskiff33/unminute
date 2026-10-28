@@ -928,7 +928,7 @@ class EncryptedChunkTests(unittest.TestCase):
         import re
         root = Path(__file__).resolve().parents[1] / "workspace"
         found = []
-        for name in ("recorder.py", "mixdown.py", "media.py", "app.py"):
+        for name in ("recorder.py", "mixdown.py", "media.py", "app.py", "recording_ws.py"):
             text = (root / name).read_text(encoding="utf-8")
             if name != "app.py" and re.search(r"\bimport wave\b|\bwave\.open\b", text):
                 found.append((name, "wave"))
