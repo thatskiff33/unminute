@@ -1318,7 +1318,16 @@ class ChildCheckTests(unittest.TestCase):
         import io
 
         from workspace import __main__ as main
-        from workspace import speaker_load, worker
+        from workspace import shell, speaker_load, worker
+
+        # importlib.import_module is patched for the whole process below, so a
+        # call from another thread would be recorded as the self-test's. The
+        # window's backend preload (shell.preload_backend), which an earlier
+        # test's main.main() starts once per process, imports webview.guilib
+        # once .NET has loaded, and so landed here part-written, depending on
+        # test order (#480). Wait for it, as check_backend does, before
+        # patching; nothing in this test starts it again.
+        shell.wait_preload()
         seen = {}
         names = worker.DLL_PATH_VARIABLES + ("CUDA_PATH_V13_0",)
 
