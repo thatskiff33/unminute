@@ -84,12 +84,14 @@ real time, and remove it when the cause is fixed.
 - **Security lint (report only, #415).** `python tools/security_lint.py` runs ruff's S rules
   (flake8-bandit, `--exit-zero`; ruff from `requirements/ci.txt`) and compares them with
   the triaged baseline `tools/security_baseline.json`: for each file and rule, how many
-  findings are accepted and why. No CI job runs it yet, and the required "Ruff" check does
-  not select S, so run it by hand when a change starts processes, builds SQL, parses XML,
-  opens URLs or swallows exceptions. Fix a new finding, or accept it with its reason: run
-  `python tools/security_lint.py --update` (it keeps every reason and leaves a new entry's
-  `why` empty, which the report lists as untriaged), write the reason in, and say why in
-  the pull request. Making it a gate needs the owner.
+  findings are accepted and why. CI runs it on every pull request in the "Quality report
+  (report only)" job and shows a file and rule over the baseline as a warning, never a
+  failure; the required "Ruff" check does not select S. Run it by hand too when a change
+  starts processes, builds SQL, parses XML, opens URLs or swallows exceptions. Fix a new
+  finding, or accept it with its reason: run `python tools/security_lint.py --update` (it
+  keeps every reason and leaves a new entry's `why` empty, which the report lists as
+  untriaged), write the reason in, and say why in the pull request. Making it a gate needs
+  the owner.
 - **Coverage (report only, #413).** `.coveragerc` measures lines and branches in `workspace/`,
   and the Python processes the tests start (`patch = subprocess`, so each process writes its
   own data file). Set `COVERAGE_FILE` to a path outside the checkout first, as CI does, then

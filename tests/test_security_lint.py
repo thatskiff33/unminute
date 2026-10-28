@@ -179,6 +179,22 @@ class BaselineTests(unittest.TestCase):
         self.assertNotIn('"S"', select)
         self.assertNotIn("extend-select", config)
 
+    def test_ci_runs_it_report_only_inside_the_quality_report_job(self):
+        # The owner's decision of 28 Oct 2026 (#415): on every pull request, as a
+        # step in the existing report-only job that already has the checkout and
+        # ruff, so it adds no runner or install and no required check.
+        workflow = read(".github/workflows/quality.yml")
+        self.assertIn("  pull_request:\n", workflow[:workflow.index("\njobs:")])
+        job = workflow[workflow.index("\n  quality-report:"):workflow.index("\n  type-check:")]
+        self.assertIn("name: Quality report (report only)", job)
+        self.assertIn("--require-hashes -r requirements/ci.txt", job)
+        self.assertIn("run: python tools/security_lint.py\n", job)
+        self.assertNotIn("security_lint.py --update", workflow)
+        # Never in a workflow whose jobs are required checks.
+        for name in ("ci.yml", "changelog.yml", "audit.yml", "codeql.yml"):
+            with self.subTest(name):
+                self.assertNotIn("security_lint", read(f".github/workflows/{name}"))
+
 
 if __name__ == "__main__":
     unittest.main()

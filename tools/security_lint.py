@@ -1,10 +1,11 @@
 # tools/security_lint.py
 # Report-only security lint (#415 item 2): ruff's S rules (flake8-bandit) over
 # every Python file ruff.toml covers, with --exit-zero, compared with the
-# triaged baseline in tools/security_baseline.json. It is not a gate and no CI
-# job runs it yet: the required "Ruff" check keeps ruff.toml's own rules, and
-# running this in CI is a workflow change (AGENTS.md "Stop and ask"), left to
-# #415. Making it a gate needs the owner (AGENTS.md E2).
+# triaged baseline in tools/security_baseline.json. It is not a gate: CI runs it
+# on every pull request in the "Quality report (report only)" job in
+# .github/workflows/quality.yml (the owner's decision of 28 Oct 2026, #415),
+# which is not a required check, and the required "Ruff" check keeps ruff.toml's
+# own rules. Making it a gate needs the owner (AGENTS.md E2).
 #
 #   python tools/security_lint.py             report against the baseline
 #   python tools/security_lint.py --update    rewrite the baseline's counts
