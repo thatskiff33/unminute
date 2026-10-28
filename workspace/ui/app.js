@@ -1025,11 +1025,14 @@ async function openNames() {
 }
 
 // One call returns every speaker with examples. A generation counter drops
-// a render that finishes after a newer one started.
+// a render that finishes after a newer one started (the newer one takes any
+// pending focus). A failed render drops the pending focus, so a later
+// rebuild (More examples) does not move focus to a name box (#471 review).
 async function renderNames() {
   const generation = ++namesState.generation;
   const data = await attempt(() => call("speaker_panel", state.mid, namesState.offsets));
-  if (!data || generation !== namesState.generation) return;
+  if (generation !== namesState.generation) return;
+  if (!data) { namesState.focus = null; return; }
   $("n-undo").disabled = !data.can_undo;
   const blocks = data.speakers.map((sp, i) => speakerBlock(sp, data.speakers, i, data.you));
   $("n-list").replaceChildren(...blocks);

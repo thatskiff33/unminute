@@ -6,7 +6,9 @@
 #     panel would after a rebuild), so Use 'You' can never replace a name
 #     being typed; putting the box back as it was shows it again;
 #   - after Use 'You', the panel is rebuilt without the button, and focus
-#     goes to that speaker's name box (now "You"), not to the page.
+#     goes to that speaker's name box (now "You"), not to the page;
+#   - if that rebuild fails, the focus it was to set is dropped, so a later
+#     rebuild (More examples) leaves focus alone (#471 review nit).
 #
 # The real page runs in headless Microsoft Edge with the design check's fake
 # bridge (tools/design_check/fixtures.js, the "names-you" scenario) and
@@ -40,7 +42,7 @@ BRIDGE = """
 (() => {
   const real = window.pywebview.api;
   const t = window.__you = { names: { SPEAKER_00: "Speaker 1", SPEAKER_01: "Speaker 2" },
-                             renames: [] };
+                             renames: [], failPanel: 0, failed: 0 };
   const suggested = () => {
     const names = Object.values(t.names);
     return /^Speaker [0-9]+$/.test(t.names.SPEAKER_00)
@@ -51,6 +53,11 @@ BRIDGE = """
       t.renames.push([args[1], args[2]]);
       t.names[args[1]] = args[2];
       return { ok: true, value: null };
+    }
+    if (method === "speaker_panel" && t.failPanel > 0) {    // the next panels fail
+      t.failPanel -= 1;
+      t.failed += 1;
+      return { ok: false, error: "The request failed." };
     }
     const r = await real[method](...args);
     if (method === "speaker_panel" && r.ok) {
@@ -100,10 +107,25 @@ STEPS = """
     use.click();
     await wait(1500);
     const now = document.activeElement;
-    out.after = { shown: shown(), renames: t.renames,
+    out.after = { shown: shown(), renames: t.renames.slice(),
                   focus_box: boxes().indexOf(now),
                   focus_value: now && typeof now.value === "string" ? now.value : null,
                   in_dialog: !!(now && now.closest("#names")) };
+    // Use 'You' again, with the panel's rebuild failing; then a rebuild
+    // that works (More examples), from that button: focus is left alone.
+    t.names.SPEAKER_00 = "Speaker 1";
+    document.querySelector("#n-list .n-more").click();
+    await wait(1500);
+    const again = shown();
+    t.failPanel = 1;
+    row().querySelector("button").click();
+    await wait(1500);
+    const more = document.querySelector("#n-list .n-more");
+    more.focus();
+    more.click();
+    await wait(1500);
+    out.failed = { again, failed: t.failed, renames: t.renames.length, rebuilt: !shown(),
+                   focus_box: boxes().indexOf(document.activeElement) };
   } catch (e) {
     out.error = String((e && e.stack) || e);
   }
@@ -202,6 +224,15 @@ class YouSuggestionPageTests(unittest.TestCase):
         self.assertEqual((0, "You", True),
                          (after["focus_box"], after["focus_value"], after["in_dialog"]),
                          "focus was lost when the button went")
+
+    def test_a_failed_rebuild_after_use_you_drops_the_pending_focus(self):
+        failed = self.r["failed"]
+        self.assertTrue(failed["again"], "no suggestion the second time: nothing was tested")
+        self.assertEqual((1, 2, True), (failed["failed"], failed["renames"], failed["rebuilt"]),
+                         "the rebuild did not fail, or the later one did not happen")
+        self.assertEqual(-1, failed["focus_box"],
+                         "a later rebuild moved focus to a name box: the failed rebuild's "
+                         "pending focus was kept")
 
 
 if __name__ == "__main__":
