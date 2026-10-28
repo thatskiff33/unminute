@@ -760,9 +760,10 @@ def _write_activity(store, folder, mid, audio):
     feeds an optional suggestion, so it never fails the import: without it
     no suggestion is offered. A two-track recording left without the file
     is recorded in the app log as `activity_unwritten` (#461), with the
-    stage ("tracking": the mix gave no levels; "write": they could not be
-    sealed or written) and the exception's type name only (P3), so support
-    can tell it from a call where no one qualified."""
+    stage ("tracking": the mix gave no levels, or asking it for them
+    raised; "write": they could not be sealed or written) and the
+    exception's type name only (P3), so support can tell it from a call
+    where no one qualified."""
     get = getattr(audio, "activity", None)
     if get is None:
         return
