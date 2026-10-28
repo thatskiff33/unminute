@@ -339,9 +339,18 @@ class FollowTests(_Recording):
         self.assertEqual(self.kinds(rec), [])
 
     def test_the_microphone_already_recording_becoming_the_default_is_no_switch(self):
-        rec = self.start(HEADSET)                     # chosen before recording, not the default
+        # A following recording (on_default: PortAudio's default at Start,
+        # while Windows' own read names the laptop, as in N1 below) whose
+        # microphone then becomes Windows' default: nothing to switch to.
+        # (B1 of the review of 325a564: without on_default it followed
+        # nothing under DEC-080 and passed whatever _follow_default did.)
+        rec = self.start(HEADSET, on_default=True)
+        self.assertTrue(rec.status()["following"])
+        self.assertTrue(wait_for(lambda: rec._baseline is not None))   # Windows' first read
         self.win.default = HEADSET
-        time.sleep(0.5)
+        self.assertTrue(wait_for(lambda: rec._baseline == "{0.0.1}." + HEADSET),
+                        "the new default was never taken as the starting point")
+        time.sleep(0.3)
         self.assertEqual(len(self.win.streams), 1)
         self.assertEqual(self.kinds(rec), [])
 
@@ -736,6 +745,39 @@ class StartedOnTests(_Recording):
             self.assertTrue(held[0].holding.wait(10), "the follow thread never read the default")
             rec.choose(HEADSET)
             held[0].go.set()
+            time.sleep(0.5)                           # the held move finishes
+            self.assertEqual(self.win.stream.device, INDEX[HEADSET])
+            self.assertFalse(self.win.stream.closed, "the move closed the microphone chosen")
+            self.assertEqual(len(self.win.streams), 2)
+            self.assertNotIn("mic_moved", self.kinds(rec))
+            self.assertFalse(rec.status()["following"])
+            self.assertEqual(rec.stop()["device_name"], HEADSET)
+
+    def test_a_choice_made_after_the_move_is_checked_is_not_undone(self):
+        # Nit 1 of the review of 325a564: the follow thread had passed
+        # _recover's checks and let go of the switch lock, and was about to
+        # move to the default, when the person chose on the card. _switch's
+        # own check (a move with nothing lost any more) must stop the move.
+        inside, go = threading.Event(), threading.Event()
+        self.addCleanup(go.set)
+        with mock.patch.object(recorder, "SWITCH_WAIT_S", 5.0):
+            rec = self.start(USB)                     # follows no default
+            switch = rec._switch
+
+            def held_switch(name, kind, default=False):
+                if kind == "mic_moved" and not inside.is_set():
+                    inside.set()                      # between _recover and _switch's lock
+                    go.wait(10)
+                return switch(name, kind, default=default)
+            rec._switch = held_switch
+            first = self.win.stream
+            first.feed(1)
+            self.win.present.discard(USB)
+            first.finished()
+            self.assertTrue(inside.wait(10), "the move never started")
+            self.assertTrue(first.closed)             # _recover closed the lost stream
+            rec.choose(HEADSET)
+            go.set()
             time.sleep(0.5)                           # the held move finishes
             self.assertEqual(self.win.stream.device, INDEX[HEADSET])
             self.assertFalse(self.win.stream.closed, "the move closed the microphone chosen")

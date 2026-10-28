@@ -2454,12 +2454,18 @@ function fmtSeconds(s) {
 // An event as the page says it: its note without the note's own full stop,
 // then when and how long, so a line reads "...switched to it at 8:32 (about
 // 0.4 s)", never "...switched to it. at 8:32" (the owner's look, #462).
-// eventLine is one sentence (the card's list); reports join eventText with "; ".
+// In a note of several sentences the time follows the first, which says what
+// happened ("...went to sleep... at 8:32. Recording stopped; ..."), not the
+// last. The mix's notes are about the whole recording: no time (their at_s
+// is 0). eventLine adds the final full stop (the card's list); reports join
+// eventText with "; ".
 function eventText(e) {
   const note = (e.note || e.kind).replace(/\.\s*$/, "");
-  const at = e.at_s != null ? ` at ${fmtSeconds(e.at_s)}` : "";
+  const split = /^(.+?)\.\s+(?=[A-Z])([\s\S]+)$/.exec(note);
+  const first = split ? split[1] : note, rest = split ? `. ${split[2]}` : "";
+  const at = e.at_s != null && !/^mix_/.test(e.kind || "") ? ` at ${fmtSeconds(e.at_s)}` : "";
   const len = e.seconds ? ` (about ${e.seconds < 1 ? e.seconds.toFixed(1) : Math.round(e.seconds)} s)` : "";
-  return `${note}${at}${len}`;
+  return `${first}${at}${len}${rest}`;
 }
 function eventLine(e) { return `${eventText(e)}.`; }
 
