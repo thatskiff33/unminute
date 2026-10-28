@@ -29,6 +29,14 @@
 # button are named and reachable by keyboard, and the grey text's contrast;
 # and once, that the status line speaks at a change of state only, not for
 # each new line.
+# The names dialog of a two-track meeting (#475) is another: the check seals a
+# synthetic track-activity file for its meeting (seal_you_activity: levels and
+# flags made from the speakers' passages, no audio), so the panel suggests its
+# first speaker as "You", and audits the dialog with that row shown, in each
+# colour mode. Then, once, it presses Use 'You' and that speaker's More
+# examples (and First examples), from the keyboard's point of view, and fails
+# unless focus lands on that speaker's name box, then on their paging button,
+# inside the dialog and matching :focus-visible, with the row gone.
 # docs/RELEASE_STANDARD.md, "Accessibility against WCAG 2.2 AA", says what
 # each check leaves out. It does not replace testing with screen-reader users
 # and pilot users (#27), and passing it is not conformance.
@@ -53,6 +61,7 @@
 
 import argparse
 import json
+import math
 import re
 import sys
 import tempfile
@@ -646,6 +655,100 @@ def draft_findings(report):
     return out
 
 
+def you_focus_problems(r):
+    """What is wrong with the focus after Use 'You' and after the paging
+    buttons (YOU_FOCUS's answer, #475), as lines; empty when it passed."""
+    if not isinstance(r, dict):
+        return ["focus after Use 'You' was not checked"]
+    if not r.get("row_before"):
+        return ["focus after Use 'You' was not checked: the suggestion was not shown"]
+    out = []
+
+    def common(step, f):
+        if not f.get("window_focused"):
+            out.append(f"after {step}: the window lost keyboard focus, so focus was not "
+                       "measured: keep it in front and run again")
+        if not f.get("in_dialog"):
+            out.append(f"after {step}: focus left the names dialog (it is on {f.get('on')})")
+        elif not f.get("focus_visible"):
+            out.append(f"after {step}: focus on {f.get('on')} does not match :focus-visible")
+    use = r.get("use_you") or {}
+    if use.get("row_after", True):
+        out.append("after Use 'You': the suggestion is still shown")
+    if not (use.get("on_name_box") and use.get("is_you")):
+        out.append(f"after Use 'You': focus is not on the suggested speaker's name box "
+                   f"(it is on {use.get('on')})")
+    common("Use 'You'", use)
+    paging = r.get("paging")
+    if not paging:
+        out.append("focus after More examples was not checked: that speaker has no "
+                   "More examples button")
+    for p in paging or []:
+        step = p.get("pressed") or "a paging button"
+        if not (p.get("paging") and p.get("speaker_is_you")):
+            out.append(f"after {step}: focus is not on that speaker's paging button "
+                       f"(it is on {p.get('on')})")
+        common(step, p)
+    return out
+
+
+def you_findings(report):
+    """The two-track names dialog's own points (#475): the suggestion shown in
+    each audit of the view, and the focus after Use 'You' and the paging
+    buttons. Only when the report has the view (reports from before it have none)."""
+    views = {v: a for v, a in report.get("views", {}).items()
+             if v == YOU_VIEW or v.startswith(YOU_VIEW + " (")}
+    if not views:
+        return []
+    out = []
+    for view, a in views.items():
+        row = a.get("you_row") or {}
+        if not (row.get("shown") and row.get("in_dialog") and row.get("button")):
+            out.append(f"{view}: the 'You' suggestion was not shown, so it was not audited")
+    return out + [f"{YOU_VIEW}: {p}" for p in you_focus_problems(report.get("you_focus"))]
+
+
+def seal_you_activity(ws, mid):
+    """The two-track scenario (#475): seal a synthetic track-activity file for
+    the meeting, under its audio key, as a two-track recording's import does
+    (workspace/activity.py), so that the Name speakers panel suggests its
+    first speaker as "You". The flags are made from the speakers' passages:
+    that speaker's on the microphone, everyone else's on the computer track.
+    Levels and flags only, no audio, and only in the check's own throwaway
+    workspace (P1, P2). Returns that speaker's label; raises if the panel does
+    not then suggest it, so a scenario that shows nothing stops the run."""
+    import numpy as np
+
+    from workspace import activity, media, speaker_names
+    v = ws.store.active_version(mid)
+    spans = speaker_names.spans(ws.store, v["id"]) if v else {}
+    ends = [end for passages in spans.values() for _start, end in passages]
+    if not ends:
+        raise RuntimeError("the two-track scenario needs a meeting with identified speakers")
+    you = sorted(spans)[0]
+    steps = math.ceil(max(ends) / activity.HOP_S) + 1
+    mic = np.full(steps, activity.MIN_DB, dtype=np.int8)
+    comp = np.full(steps, activity.MIN_DB, dtype=np.int8)
+    flag = np.zeros(steps, dtype=np.uint8)
+    for label, passages in spans.items():
+        for start, end in passages:
+            i = max(0, math.floor(start / activity.HOP_S))
+            j = min(steps, math.ceil(end / activity.HOP_S))
+            if label == you:
+                mic[i:j] = -20
+                flag[i:j] |= activity.OWN | activity.MIC_ON
+            else:
+                comp[i:j] = -20
+                flag[i:j] |= activity.COMP_ON
+    folder = media.meeting_folder(ws.media, mid)
+    folder.mkdir(parents=True, exist_ok=True)
+    activity.write(folder, ws.store.meeting_key(mid, "audio"), mid, (mic, comp, flag))
+    shown = ws.speaker_panel(mid).get("you")
+    if shown != you:
+        raise RuntimeError(f"the two-track scenario's panel suggests {shown!r}, not {you!r}")
+    return you
+
+
 def findings(report):
     """Every finding in a report, as lines; empty when it passes."""
     out = [] if not report.get("error") else [report["error"]]
@@ -676,7 +779,7 @@ def findings(report):
             if r["horizontal_overflow_px"] > 0 or r["cut_off"]:
                 out.append(f"{view}: content cut off or scrolling at {width} CSS px "
                            f"({', '.join(r['cut_off'][:3]) or 'page'})")
-    return out + draft_findings(report)
+    return out + draft_findings(report) + you_findings(report)
 
 
 def owner_exceptions(report):
@@ -712,6 +815,68 @@ def reflow(window):
 
 DRAFT_VIEW = "recording draft"      # draft_scenario.DRAFT_VIEW (a test keeps them equal)
 DRAFT_WAIT_MS = 15000               # the longest the draft view waits for its text (#393)
+YOU_VIEW = "names dialog, you suggestion"   # a two-track meeting's names dialog (#475)
+YOU_WAIT_MS = 10000                 # the longest that view waits for the suggestion
+
+# The suggestion row as each audit of YOU_VIEW found it: shown inside the
+# dialog with its button. Shapes only, no text (P3).
+YOU_ROW = r"""
+const row = document.querySelector('#n-list .n-you');
+const shown = !!row && !row.closest('[hidden]') && row.getClientRects().length > 0;
+return {shown, in_dialog: !!row && !!row.closest('dialog#names[open]'),
+        button: !!row && !!row.querySelector('button.n-you-use')};
+"""
+
+# Once, after YOU_VIEW's audits: Use 'You', then that speaker's More examples
+# (until it reads First examples, and that too), each pressed from the
+# keyboard's point of view (the button has keyboard focus first; a script
+# click is not a pointer press, so the browser keeps treating focus as
+# keyboard focus). After each, where focus is: element descriptions and
+# booleans only, no names or text (P3). you_focus_problems reads it, and
+# tests/test_you_suggestion_page.py runs it on the real page in headless Edge.
+YOU_FOCUS = r"""
+const boxes = () => [...document.querySelectorAll('#n-list .n-label input')];
+const rowShown = () => { const r = document.querySelector('#n-list .n-you');
+  return !!r && !r.closest('[hidden]') && r.getClientRects().length > 0; };
+const youSection = () => boxes().find((b) => b.value === 'You')?.closest('.speaker') || null;
+const seen = () => {
+  const el = document.activeElement;
+  if (!el || el === document.body || el === document.documentElement) return {on: 'page'};
+  const sec = el.closest('#n-list .speaker');
+  const cls = typeof el.className === 'string' && el.className ? el.className.split(' ')[0] : '';
+  return {on: el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + (cls ? '.' + cls : ''),
+          on_name_box: boxes().includes(el), is_you: el.value === 'You',
+          paging: el.classList.contains('n-more'),
+          speaker_is_you: !!sec && sec === youSection(),
+          in_dialog: !!el.closest('dialog#names[open]'),
+          focus_visible: el.matches(':focus-visible'), window_focused: document.hasFocus()};
+};
+const gone = async (el) => {
+  const end = performance.now() + 5000;
+  while (el.isConnected && performance.now() < end) await wait(50);
+  await wait(300);
+};
+const out = {row_before: rowShown()};
+const use = document.querySelector('#n-list .n-you button');
+if (!out.row_before || !use) return out;
+use.focus({focusVisible: true});
+use.click();
+await gone(use);
+out.use_you = {...seen(), row_after: rowShown()};
+out.paging = [];
+for (let i = 0; i < 8; i++) {
+  const more = youSection()?.querySelector('.n-more');
+  if (!more) break;
+  const pressed = more.textContent;
+  more.focus({focusVisible: true});
+  more.click();
+  await gone(more);
+  out.paging.push({pressed, ...seen()});
+  if (pressed === 'First examples') break;
+}
+document.activeElement?.blur();
+return out;
+"""
 
 # Each view the check opens, in order, with the page script that opens it
 # ({mid}: the synthetic meeting's id). tools/evidence.py requires every one
@@ -746,6 +911,15 @@ VIEWS = {
     "identify again": "document.querySelector('.wide-tabs [data-tab=speakers]').click();"
                       "document.getElementById('m-again').click(); await wait(300);",
     "names dialog": "document.getElementById('m-names').click(); await wait(1500);",
+    # A two-track meeting (#475): the check seals its synthetic track-activity
+    # file first (seal_you_activity), and the panel, opened again, suggests a
+    # speaker as "You". It waits up to YOU_WAIT_MS for that row; a row that
+    # never comes fails (you_findings).
+    YOU_VIEW: "document.getElementById('names').close(); await wait(300);"
+              "document.getElementById('m-names').click(); await wait(1500);"
+              f"for (const end = performance.now() + {YOU_WAIT_MS}; performance.now() < end;)"
+              " { const r = document.querySelector('#n-list .n-you');"
+              " if (r && r.getClientRects().length) break; await wait(50); }",
     "confirm dialog": "document.getElementById('names').close(); await wait(300);"
                       "document.getElementById('m-primary').click();"
                       "await wait(500);",
@@ -788,6 +962,8 @@ def checks(window, ws, mid, report, modes=(None,), feed=None):
                     raise RuntimeError("the recording draft view needs the check's DraftFeed")
                 feed.begin(drafts.RUNNING)
                 feed.say(draft_scenario.FOLLOW_LINES)
+            if name == YOU_VIEW:                    # the meeting becomes a two-track one
+                seal_you_activity(ws, mid)
             evaluate(window, WAIT + go.replace("{mid}", mid) + "return true;")
             for mode in modes:
                 shown = show_colour_mode(window, mode)
@@ -797,6 +973,8 @@ def checks(window, ws, mid, report, modes=(None,), feed=None):
                 audit["colour_mode"] = shown
                 if name == DRAFT_VIEW:              # settled too, before the reflow resizes
                     audit["draft"] = evaluate(window, draft_scenario.DRAFT_A11Y)
+                if name == YOU_VIEW:
+                    audit["you_row"] = evaluate(window, YOU_ROW)
                 audit["open_dialogs"] = evaluate(window, "return [...document.querySelectorAll("
                                                          "'dialog[open]')].map(d => d.id);")
                 audit["reflow"] = reflow(window)
@@ -806,6 +984,8 @@ def checks(window, ws, mid, report, modes=(None,), feed=None):
                     window, feed, evaluate)
                 feed.end()
                 evaluate(window, WAIT + "await wait(800); return true;")
+            if name == YOU_VIEW:                    # once, in the last mode
+                report["you_focus"] = evaluate(window, WAIT + YOU_FOCUS)
     except Exception as exc:
         report["error"] = error_text(exc)
     finally:

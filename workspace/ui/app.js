@@ -1076,8 +1076,10 @@ async function undoSpeakers() {
   afterNamesChange(true);
 }
 
-// focus: the label of a speaker whose name box takes focus once the panel
-// is rebuilt (after Use 'You', whose button goes with the rebuild).
+// focus: where focus goes once the panel is rebuilt, as {label, part}: that
+// speaker's name box after Use 'You', or their paging button after More
+// examples or First examples. The rebuild replaces the button that was
+// pressed, so without this focus would fall to the page (#461, #475).
 const namesState = { offsets: {}, generation: 0, focus: null };
 
 async function openNames() {
@@ -1104,8 +1106,9 @@ async function renderNames() {
   const focus = namesState.focus;
   namesState.focus = null;
   if (focus && blocks.length) {
-    const i = data.speakers.findIndex((sp) => sp.label === focus);
-    blocks[Math.max(i, 0)].querySelector(".n-label input").focus();
+    const i = data.speakers.findIndex((sp) => sp.label === focus.label);
+    const block = blocks[Math.max(i, 0)];
+    (block.querySelector(focus.part) || block.querySelector(".n-label input")).focus();
   }
 }
 
@@ -1134,7 +1137,7 @@ function youSuggestion(sp, name) {
       await call("rename_speaker", state.mid, sp.label, "You");
       name.value = "You";
       sayDone("Name saved");
-      namesState.focus = sp.label;      // the button goes with the rebuild (#461)
+      namesState.focus = { label: sp.label, part: ".n-label input" };   // the button goes (#461)
       afterNamesChange(true);
     }) } });
   return el("p", { class: "n-you" }, el("span", { textContent: "Mostly on your microphone: probably you." }), use);
@@ -1156,7 +1159,11 @@ function speakerBlock(sp, all, index, you) {
                              on: { click: () => play(it.start, it.end, true) } }, playIcon(10), fmtTime(it.start));
     return el("li", {}, b, el("span", { textContent: it.text }));
   }));
-  const page = (offset) => () => { namesState.offsets[sp.label] = offset; renderNames(); };
+  const page = (offset) => () => {
+    namesState.offsets[sp.label] = offset;
+    namesState.focus = { label: sp.label, part: ".n-more" };     // the button goes too (#475)
+    renderNames();
+  };
   const more = ex.total > sp.offset + 3
     ? el("button", { type: "button", class: "n-more", textContent: "More examples", on: { click: page(sp.offset + 3) } })
     : (sp.offset ? el("button", { type: "button", class: "n-more", textContent: "First examples", on: { click: page(0) } }) : null);

@@ -7,8 +7,14 @@
 #     being typed; putting the box back as it was shows it again;
 #   - after Use 'You', the panel is rebuilt without the button, and focus
 #     goes to that speaker's name box (now "You"), not to the page;
-#   - if that rebuild fails, the focus it was to set is dropped, so a later
-#     rebuild (More examples) leaves focus alone (#471 review nit).
+#   - after More examples, the rebuilt panel no longer has the button that
+#     was pressed, and focus goes to that speaker's new paging button, not to
+#     the page (#475, from the review of #476);
+#   - if the rebuild after Use 'You' fails, the focus it was to set is
+#     dropped, so a later rebuild (More examples) does not move focus to a
+#     name box (#471 review nit);
+#   - the accessibility check's own focus steps (tools/accessibility_check.py,
+#     YOU_FOCUS, #475) pass on the page.
 #
 # The real page runs in headless Microsoft Edge with the design check's fake
 # bridge (tools/design_check/fixtures.js, the "names-you" scenario) and
@@ -31,6 +37,7 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
+import accessibility_check  # noqa: E402
 import design_check  # noqa: E402
 
 EDGE = next((p for p in design_check.EDGE if p.is_file()), None)
@@ -111,11 +118,18 @@ STEPS = """
                   focus_box: boxes().indexOf(now),
                   focus_value: now && typeof now.value === "string" ? now.value : null,
                   in_dialog: !!(now && now.closest("#names")) };
-    // Use 'You' again, with the panel's rebuild failing; then a rebuild
-    // that works (More examples), from that button: focus is left alone.
+    // More examples, from the keyboard: the rebuild replaces the button, and
+    // focus goes to that speaker's new one, not to the page (#475).
     t.names.SPEAKER_00 = "Speaker 1";
-    document.querySelector("#n-list .n-more").click();
+    const first = document.querySelector("#n-list .n-more");
+    first.focus();
+    first.click();
     await wait(1500);
+    const was = document.activeElement;
+    out.more = { replaced: !first.isConnected,
+                 paging: was.classList.contains("n-more"),
+                 speaker: boxes().indexOf(was.closest(".speaker")?.querySelector(".n-label input")),
+                 in_dialog: !!was.closest("#names") };
     const again = shown();
     t.failPanel = 1;
     row().querySelector("button").click();
@@ -124,8 +138,11 @@ STEPS = """
     more.focus();
     more.click();
     await wait(1500);
+    const now2 = document.activeElement;
     out.failed = { again, failed: t.failed, renames: t.renames.length, rebuilt: !shown(),
-                   focus_box: boxes().indexOf(document.activeElement) };
+                   focus_box: boxes().indexOf(now2),
+                   focus_more: now2.classList.contains("n-more")
+                     && now2.closest(".speaker") === boxes()[0].closest(".speaker") };
   } catch (e) {
     out.error = String((e && e.stack) || e);
   }
@@ -138,17 +155,45 @@ STEPS = """
 """
 
 
+# The accessibility check's own focus steps (tools/accessibility_check.py,
+# YOU_FOCUS, #475), run as that check runs them once the panel is open; its
+# answer as JSON in <pre id="you-result">.
+FOCUS_STEPS = """
+(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const errors = [];
+  window.addEventListener("error", (e) => errors.push(String(e.message || e)));
+  window.addEventListener("unhandledrejection", (e) => errors.push(String(e.reason)));
+  while (document.documentElement.dataset.ready !== "1") await wait(100);
+  await wait(500);
+  let out;
+  try {
+    const open = document.getElementById("names").open;
+    out = { open, focus: await (async () => { YOU_FOCUS })() };
+  } catch (e) {
+    out = { error: String((e && e.stack) || e) };
+  }
+  out.errors = errors;
+  const pre = document.createElement("pre");
+  pre.id = "you-result";
+  pre.textContent = JSON.stringify(out);
+  document.body.append(pre);
+})();
+""".replace("YOU_FOCUS", accessibility_check.YOU_FOCUS)
+
+
 class Handler(design_check.Handler):
     """The design check's server, with the wrapper before app.js and the steps
     after it (the page's content security policy allows scripts from the
     page's own origin only)."""
+    steps = STEPS
 
     def do_GET(self):
         path = urlsplit(self.path).path.lstrip("/")
         if path == "app/you-bridge.js":
             return self._send(BRIDGE.encode("utf-8"), "text/javascript; charset=utf-8")
         if path == "app/you-steps.js":
-            return self._send(STEPS.encode("utf-8"), "text/javascript; charset=utf-8")
+            return self._send(self.steps.encode("utf-8"), "text/javascript; charset=utf-8")
         if path in ("app/", "app/index.html"):
             page = (design_check.UI / "index.html").read_text(encoding="utf-8")
             page = page.replace(design_check.APP_TAG,
@@ -191,17 +236,21 @@ def run_page(base):
     return {"error": f"twice: {problem}"}
 
 
+def serve_and_run(handler):
+    server = Server(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        return run_page(f"http://127.0.0.1:{server.server_address[1]}")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 @unittest.skipUnless(EDGE, "Microsoft Edge not installed")
 class YouSuggestionPageTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        server = Server(("127.0.0.1", 0), Handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        try:
-            cls.r = run_page(f"http://127.0.0.1:{server.server_address[1]}")
-        finally:
-            server.shutdown()
-            server.server_close()
+        cls.r = serve_and_run(Handler)
 
     def setUp(self):
         self.assertNotIn("error", self.r, self.r.get("error"))
@@ -233,6 +282,38 @@ class YouSuggestionPageTests(unittest.TestCase):
         self.assertEqual(-1, failed["focus_box"],
                          "a later rebuild moved focus to a name box: the failed rebuild's "
                          "pending focus was kept")
+        self.assertTrue(failed["focus_more"],
+                        "after More examples focus is not on that speaker's button")
+
+    def test_more_examples_keeps_focus_on_that_speakers_paging_button(self):
+        more = self.r["more"]
+        self.assertTrue(more["replaced"], "the button was not rebuilt: nothing was tested")
+        self.assertEqual((True, 0, True), (more["paging"], more["speaker"], more["in_dialog"]),
+                         "focus fell out of the panel when the rebuild replaced the button")
+
+
+class FocusHandler(Handler):
+    steps = FOCUS_STEPS
+
+
+@unittest.skipUnless(EDGE, "Microsoft Edge not installed")
+class AccessibilityFocusStepsTests(unittest.TestCase):
+    """tools/accessibility_check.py's YOU_FOCUS on the real page (#475): its
+    answer passes you_focus_problems, as the real-window run must. Headless
+    Edge treats its page as focused; the real window is checked by the
+    accessibility check itself, with release evidence."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.r = serve_and_run(FocusHandler)
+
+    def test_the_checks_focus_steps_pass_on_the_page(self):
+        self.assertNotIn("error", self.r, self.r.get("error"))
+        self.assertEqual([], self.r["errors"], "the page threw")
+        self.assertTrue(self.r["open"], "the panel did not open: nothing was tested")
+        focus = self.r["focus"]
+        self.assertEqual("More examples", (focus.get("paging") or [{}])[0].get("pressed"), focus)
+        self.assertEqual([], accessibility_check.you_focus_problems(focus), focus)
 
 
 if __name__ == "__main__":

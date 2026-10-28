@@ -63,7 +63,7 @@ ACCESSIBILITY_VIEWS = (
     "setup", "setup speech model", "setup speaker names", "setup microphone", "setup ready",
     "downloads", "meetings", "microphone chooser", "recording draft", "settings", "help",
     "meeting", "versions tab", "holds tab", "identify again", "names dialog",
-    "confirm dialog", "handoff page",
+    "names dialog, you suggestion", "confirm dialog", "handoff page",
 )
 # The performance states with the window on screen (tools/perf_check.py): each
 # window measured in one counts only if it was drawn (its "drawing" block; #292),
