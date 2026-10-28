@@ -200,6 +200,20 @@ class EchoAndSuggestionTests(unittest.TestCase):
                 self.assertEqual(int(result[0][-1]), round(20 * np.log10(1000 / 32768)))
                 self.assertEqual(int(result[1][-1]), activity.MIN_DB)
 
+    def test_a_jump_inside_the_open_step_keeps_both_parts_of_it(self):
+        # #461: a block that starts after a gap but still inside the step
+        # left open averages with what that step already had, as one block
+        # would (the mix feeds the time line without gaps, so not reachable
+        # from it today).
+        t = activity.Tracker(RATE, 2 * RATE // 100)           # two steps of 160 frames
+        t.add(0, np.full(80, 1000.0), np.zeros(80))
+        t.add(100, np.full(60, 4000.0), np.zeros(60))         # 20 frames skipped, step 0 open
+        t.add(160, np.full(160, 1000.0), np.zeros(160))
+        mic = t.finish()[0]
+        power = (80 * 1000.0 ** 2 + 60 * 4000.0 ** 2) / 140 / 32768.0 ** 2
+        self.assertEqual(int(mic[0]), round(10 * np.log10(power)))
+        self.assertEqual(int(mic[1]), round(20 * np.log10(1000 / 32768)))
+
     def test_a_mix_not_read_to_its_end_gives_no_result(self):
         t = activity.Tracker(RATE, RATE * 2)
         t.add(0, np.ones(RATE), np.ones(RATE))
@@ -357,6 +371,16 @@ class MixKeepsActivityTests(unittest.TestCase):
         self.assertIsNone(mix.activity())
 
 
+    def test_a_tracker_that_cannot_be_made_never_stops_the_mix(self):
+        # #461: the tracker is made inside a try, as it is fed.
+        mic, b16 = tracks()
+        with mock.patch.object(activity, "Tracker", side_effect=MemoryError):
+            mix = mixdown.Mix({"rate": RATE, "tracks": {"computer": {"rate": RATE}}},
+                              _Array(mic[:RATE * 3]), _Array(b16[:RATE * 3]), [])
+        self.assertEqual(len(b"".join(mix.blocks())), RATE * 3 * 2)
+        self.assertIsNone(mix.activity())
+
+
 class _Array:
     def __init__(self, samples):
         self.samples = np.asarray(samples, dtype=np.float32)
@@ -439,6 +463,97 @@ class WorkspaceSuggestionTests(unittest.TestCase):
         (self.folder / activity.FILE).unlink()                # audio cleanup removes the folder
         self.assertIsNone(self.ws.speaker_panel(self.mid)["you"])
         self.assertNotIn(self.mid, self.ws._activity_cache)
+
+
+    def test_flags_kept_in_memory_go_once_the_audio_key_is_destroyed(self):
+        # #461: audio cleanup destroys the audio key first; if removing the
+        # folder then fails (a locked file), the file is still there with
+        # the same size and time, and the flags kept in memory must not
+        # bring the suggestion back.
+        self.assertEqual(self.ws.speaker_panel(self.mid)["you"], "SPEAKER_00")
+        with self.ws.store.tx() as db:
+            self.ws.store.remove_audio_keys(db, self.mid)
+        self.assertTrue((self.folder / activity.FILE).exists())
+        self.assertIsNone(self.ws.speaker_panel(self.mid)["you"])
+        self.assertNotIn(self.mid, self.ws._activity_cache)
+
+    def test_the_panel_resolves_the_speakers_once(self):
+        # #461: the suggestion uses the panel's own resolve of the speakers.
+        from workspace import speaker_names
+        with mock.patch.object(speaker_names, "resolve",
+                               side_effect=speaker_names.resolve) as resolve:
+            self.assertEqual(self.ws.speaker_panel(self.mid)["you"], "SPEAKER_00")
+        self.assertEqual(resolve.call_count, 1)
+
+
+@unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
+class WriteFailureTraceTests(unittest.TestCase):
+    """#461: a track-activity file not written leaves a content-free
+    record in the app log (P3: the stage and an exception type name only),
+    so support can tell it from a call where no one qualified."""
+
+    def setUp(self):
+        from workspace import diag
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.folder = root / MID
+        self.folder.mkdir()
+        self.log = diag.Log(root / "logs", "app")
+        self.store = mock.Mock(log=self.log)
+        self.store.meeting_key.return_value = KEY
+        mic, comp = tracks()
+        self.result = tracked(mic, comp)
+
+    def records(self):
+        import json
+        path = self.log.path
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text(encoding="ascii").splitlines()]
+
+    def audio(self, result=None, two_track=True, fails=None):
+        def get():
+            if fails is not None:
+                raise fails
+            return result
+        return mock.Mock(activity=get, two_track=two_track)
+
+    def test_a_write_that_fails_is_recorded_without_its_message(self):
+        from workspace import media
+        marker = r"C:\Users\Aroha Marker\private"
+        with mock.patch.object(activity, "write", side_effect=PermissionError(marker)):
+            media._write_activity(self.store, self.folder, MID, self.audio(self.result))
+        records = self.records()
+        self.assertEqual([{k: v for k, v in r.items() if k != "t"} for r in records],
+                         [{"kind": "activity_unwritten", "stage": "write",
+                           "error": "PermissionError"}])
+        self.assertNotIn("Marker", self.log.path.read_text(encoding="ascii"))
+        self.assertFalse((self.folder / activity.FILE).exists())
+
+    def test_no_audio_key_is_recorded_as_a_write_failure(self):
+        from workspace import media
+        from workspace.store import KeyMissing
+        self.store.meeting_key.side_effect = KeyMissing()
+        media._write_activity(self.store, self.folder, MID, self.audio(self.result))
+        self.assertEqual([(r["kind"], r["stage"], r["error"]) for r in self.records()],
+                         [("activity_unwritten", "write", "KeyMissing")])
+
+    def test_a_two_track_mix_with_no_levels_is_recorded(self):
+        from workspace import media
+        media._write_activity(self.store, self.folder, MID, self.audio(None))
+        media._write_activity(self.store, self.folder, MID,
+                              self.audio(fails=MemoryError("x")))
+        self.assertEqual([(r["kind"], r["stage"], r.get("error")) for r in self.records()],
+                         [("activity_unwritten", "tracking", None),
+                          ("activity_unwritten", "tracking", "MemoryError")])
+
+    def test_a_microphone_only_recording_or_a_written_file_records_nothing(self):
+        from workspace import media
+        media._write_activity(self.store, self.folder, MID, self.audio(None, two_track=False))
+        media._write_activity(self.store, self.folder, MID, self.audio(self.result))
+        self.assertEqual(self.records(), [])
+        self.assertTrue((self.folder / activity.FILE).exists())
 
 
 @unittest.skipUnless(HAVE_NUMPY, "numpy not installed")

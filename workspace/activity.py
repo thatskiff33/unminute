@@ -105,7 +105,9 @@ class Tracker:
     def add(self, start, mic, comp):
         """Frames [start, start + len(mic)): the microphone's samples and the
         computer track's at the same moments (sample values, full scale
-        32768). Blocks come in time order; a jump finishes the open step."""
+        32768). Blocks come in time order; a jump past the open step
+        finishes it, and one that lands inside it adds to it (#461: the
+        step's level is then the mean of the frames it was given)."""
         n = min(len(mic), len(comp))
         if n <= 0:
             return
@@ -123,7 +125,7 @@ class Tracker:
         cnt = np.diff(np.append(cuts, n)).astype(np.float64)
         if self._carry is not None:
             step, a, b, c = self._carry
-            if step == first and start == self.next:
+            if step == first:
                 sm[0] += a
                 sc[0] += b
                 cnt[0] += c

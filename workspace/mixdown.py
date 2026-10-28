@@ -325,8 +325,14 @@ class Mix:
                                      track_level_db(comp, crate) if comp.frames else None)
         except Exception:
             self.gains = (1.0, 1.0)
-        from workspace import activity          # numpy only, like this module
-        self.tracker = activity.Tracker(rate, mic.frames)
+        # The track-activity levels (header, step 5): a tracker that cannot
+        # be made (memory for a very long recording) only means no "You"
+        # suggestion, never a failed mix (#461).
+        try:
+            from workspace import activity      # numpy only, like this module
+            self.tracker = activity.Tracker(rate, mic.frames)
+        except Exception:
+            self.tracker = None
 
     def activity(self):
         """The track-activity result (activity.Tracker.finish) once blocks()

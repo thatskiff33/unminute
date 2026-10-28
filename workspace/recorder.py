@@ -1608,6 +1608,12 @@ class RecordingAudio:
     def seconds(self):
         return self.frames / self.rate
 
+    @property
+    def two_track(self):
+        """Made from both tracks (the mix), so a track-activity result is
+        expected (media._write_activity records it when there is none)."""
+        return self._mix is not None
+
     def activity(self):
         """The track-activity result of the mix (workspace/activity.py), once
         blocks() has been read to the end; None for a microphone-only

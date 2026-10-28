@@ -321,6 +321,10 @@
    "count": 1,
    "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
   },
+  "tests/test_you_suggestion_page.py::S603": {
+   "count": 1,
+   "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
+  },
   "tools/accessibility_check.py::S101": {
    "count": 1,
    "why": "Assertions in a developer check run by hand, never with -O; a failed one stops the check, as intended. Not shipped (packaging/app-allowlist.json)."
