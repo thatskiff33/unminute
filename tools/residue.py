@@ -12,6 +12,14 @@
 #   - unexpected(): files left after final cleanup that are not on the list of
 #     the workspace's own files, built from the app's constants (names()), so
 #     a rename in the app moves the list with it.
+#   - profile_files() and wipe_profile(): the window's WebView2 profile
+#     (workspace\webview), named after the window closes, and removed as
+#     the app's next start removes it; start_files(): the real start's own
+#     files (#418).
+#   - rest_of(): what a run left in the redirected LOCALAPPDATA outside the
+#     app's folder and the check's own files, to scan and name (#418).
+#   - event_log_entries(): how many Windows Event Log entries the app's own
+#     starts wrote for a throwaway workspace, counted, never printed (#418).
 #   - listing() and new_or_changed(): what a run added or changed in a
 #     folder outside the profile (names, sizes and times only, never
 #     opened), and explain(): whether each such file is one the run is
@@ -161,12 +169,14 @@ def names():
     evidence.add_app). Folders are relative to the
     workspace folder (%LOCALAPPDATA%\\Unminute\\workspace). They include
     what only the real start writes (the workspace lock, the launcher's
-    record) and the download queue with its temporary file: today's checks
-    write none of them before the scan after final cleanup, and a later step
-    that did must not fail "only the workspace's own files" (review of
-    #335). The window's WebView2 profile (workspace\\webview) is not on
-    the list: no check opens the window with content yet (T7)."""
-    from workspace import asr_engines, audit, diag, handoff, instance, power, setup, store
+    record), which tools/packaged_check.py's window step writes before its
+    scans (review of #335; #418), and the download queue with its
+    temporary file. The window's WebView2 profile folder ("webview", from
+    workspace/shell.py) is named but its files are not on the list: a
+    normal close deletes the profile, and the window step removes anything
+    left as the next start would (wipe_profile()), so a file still there
+    after final cleanup fails (#418)."""
+    from workspace import asr_engines, audit, diag, handoff, instance, power, setup, shell, store
     queue = Path(setup.QUEUE_FILE)
     return {
         "db": diag.DB_FILE,
@@ -182,6 +192,9 @@ def names():
         "crash_suffix": diag.CRASH_SUFFIX,
         "audit": diag.AUDIT_FOLDER,
         "audit_segment": audit.SEGMENT.pattern,
+        "lock": instance.NAME,
+        "launch": diag.LAUNCH_FILE,
+        "webview": shell.STORAGE_FOLDER,
     }
 
 
@@ -221,14 +234,134 @@ def unexpected(profile, workspace, n):
     return out
 
 
+# -- the window's own files (#418) ---------------------------------------------------------------
+
+def profile_files(workspace, n):
+    """The files in the window's WebView2 profile folder (n["webview"] in the
+    workspace folder), relative to the workspace folder (POSIX form), and
+    the folders that could not be listed (with a trailing "/"). Names only:
+    nothing is opened."""
+    unreadable = []
+    files = sorted(_rel(p, workspace)
+                   for p in _files([Path(workspace) / n["webview"]], unreadable, workspace))
+    return files, unreadable
+
+
+def wipe_profile(workspace, n):
+    """Remove what the window left in its WebView2 profile folder, as the
+    app's next start does (workspace/shell.py storage_folder(): a link is
+    removed, never followed; a file still in use is left). How many files
+    were there and how many are left (a folder that cannot be listed counts
+    as one left), by count only."""
+    from workspace import shell
+    before, refused = profile_files(workspace, n)
+    try:
+        shell.storage_folder(workspace)
+    except shell.ShellError:
+        pass                                  # whatever it could not remove is counted below
+    left, unreadable = profile_files(workspace, n)
+    return {"files_before": len(before) + len(refused),
+            "files_left": len(left) + len(unreadable)}
+
+
+def start_files(workspace, n):
+    """Whether the real start's own files are there: the workspace lock and
+    the launcher's record, from the app's constants (names())."""
+    workspace = Path(workspace)
+    return {"instance_lock": (workspace / n["lock"]).is_file(),
+            "launch_record": (workspace / n["logs"] / n["launch"]).is_file()}
+
+
+LINK_FROM = 1 << 20     # lend_models(): a file this large is hard-linked, a smaller one copied
+
+
+def lend_models(cache, target):
+    """Lend the model cache to the window step's real start (#418), which
+    looks for models only in the throwaway profile's own models folder
+    (target) and would otherwise open on Setup, not on the meeting. Folders
+    are made; a file of LINK_FROM bytes or more (model weights, which the
+    app only reads) is hard-linked, and a smaller one copied with its times,
+    so a verification record the app rewrites in place is the throwaway
+    copy, never the cache's own; a file a link cannot reach (another drive)
+    is copied. A symbolic link is followed to its file, never lent itself.
+    Returns (listing() of target as lent, {"linked": n, "copied": n,
+    "unreadable": [name]}); return_models() takes it back."""
+    import shutil
+    cache, target = Path(cache), Path(target)
+    counts, unreadable = {"linked": 0, "copied": 0}, []
+    for path in _files([cache], unreadable, cache):
+        dest = target / path.relative_to(cache)
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            source = path.resolve(strict=True)
+            if source.stat().st_size >= LINK_FROM:
+                try:
+                    os.link(source, dest)
+                    counts["linked"] += 1
+                    continue
+                except OSError:
+                    pass                           # another drive: copied below
+            shutil.copy2(source, dest)
+            counts["copied"] += 1
+        except OSError:
+            unreadable.append(_rel(path, cache))
+    refused = []
+    lent = listing(target, refused) if target.exists() else {}
+    return lent, {**counts, "unreadable": sorted(unreadable + refused)}
+
+
+def return_models(target, lent, n):
+    """Take back what lend_models() lent: the files the window added or
+    changed there, by name, and those nothing in EXPLAINED's model cache
+    entries explains (as "model_cache/<name>"); then the folder is removed
+    (a hard link is removed, never the cache's own file). Whether it is
+    gone, and the folders that could not be listed."""
+    import shutil
+    target, refused = Path(target), []
+    now = listing(target, refused) if target.exists() else {}
+    new = new_or_changed(lent, now)
+    shutil.rmtree(target, ignore_errors=True)
+    return {"new": new, "unexplained": unexplained({"model_cache": new}, n),
+            "removed": not os.path.lexists(target), "unreadable": refused}
+
+
+def rest_of(base, keep):
+    """The entries directly in base (the children's redirected LOCALAPPDATA)
+    other than those named in keep (the app's folder, the other redirected
+    folders and the check's own files): whatever else a run, its window
+    included, left there. They are scanned with the profile and their files
+    named (left_in()). A base that cannot be listed is returned whole, so
+    it is reported rather than skipped."""
+    base = Path(base)
+    try:
+        return sorted(p for p in base.iterdir() if p.name not in keep)
+    except OSError:
+        return [base]
+
+
+def event_log_entries(audit_folder, read=None):
+    """How many Windows Event Log entries under the app's source name a
+    chain that this workspace's audit file holds (workspace/audit.py
+    compare_event_log(): chains are random, so another workspace's
+    entries never count), or None when the log or the file cannot be read.
+    A count only: no entry, chain or SID is returned. read stands in for
+    audit.read_event_log in tests."""
+    from workspace import audit
+    r = audit.compare_event_log(audit_folder, read=read)
+    if r["result"] == "unreadable":
+        return None
+    return r["entries"] - r["other_chains"] - r["unmatched"]
+
+
 # -- outside the profile: what a run added or changed ---------------------------------------
 
 # New or changed files a run may leave outside the profile, by place and a
 # pattern of the name (relative to that place, POSIX form), each with why it
 # holds no meeting content. Anything else a run leaves there fails the
 # check. "{verified_marker}" stands for asr_engines.VERIFIED_MARKER (names()).
-# The redirected places (the child's TEMP, APPDATA and user folder) explain
-# nothing: no file is expected there. The model-cache patterns follow
+# The redirected places (the child's TEMP, APPDATA and user folder, and the
+# rest of its LOCALAPPDATA, REST) explain nothing: no file is expected
+# there. The model-cache patterns follow
 # workspace/asr_engines.py (VERIFIED_MARKER in a model's folder, and
 # _marker_for()'s <family>/.verified/<folder>-<key>.json for a Hugging Face
 # copy); tests/test_residue.py ties them to the app's own paths.
@@ -315,14 +448,20 @@ def compare(before, places, n=None, earlier=None):
             "unreadable": unreadable}
 
 
-def left_in(places, base):
+REST = "LOCALAPPDATA"    # the place left_in() names rest_of()'s files under
+
+
+def left_in(places, base, rest=None):
     """Every file in the redirected places (all of them made by the run),
     by name: {"files": {place: [name]}, "unexplained": [...], "explained":
     {...} (explained()), "unreadable": [...]}, the unreadable folders
-    relative to base."""
+    relative to base. rest: rest_of()'s entries, whose files are named
+    relative to base under REST (#418)."""
     files, unreadable = {}, []
     for place, root in places.items():
         files[place] = sorted(_rel(p, root) for p in _files([root], unreadable, base))
+    if rest is not None:
+        files[REST] = sorted(_rel(p, base) for p in _files(rest, unreadable, base))
     return {"files": files, "unexplained": unexplained(files), "explained": explained(files),
             "unreadable": unreadable}
 

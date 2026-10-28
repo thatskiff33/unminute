@@ -14,21 +14,38 @@
 # children's APPDATA and USERPROFILE (so a library's cache under ~\.cache or
 # %APPDATA% lands there too), so no real workspace is touched. The children
 # that open the workspace keep its audit log in its file only: they pass a
-# mirror that drops the Windows Event Log copy, so a run adds no entries
-# under the app's source. The idle window (step 6), started as the app is,
-# still writes its own content-free entries, so it is tested exactly as
-# shipped; it runs after the last scan and comparison, so what it writes is
-# not compared (the owner's decision, 26 Oct 2026; #418). It checks:
+# mirror that drops the Windows Event Log copy. The two windows, started as
+# the app is (the window step and the idle window), still write their own
+# content-free entries, so the window is tested exactly as shipped (the
+# owner's decision DEC-056, 26 Oct 2026); the report counts them, never
+# reads them out (#418). It needs an idle, unlocked desktop: the window step
+# drives a real window. It checks:
 #   - self-test (dependencies, network guard) from the packaged runtime;
 #   - offline processing with cached models and no Hugging Face token present;
 #   - the full lifecycle (import, transcribe, speakers, review, cleanup);
+#   - the window with content (#418): the marked meeting opened in the real
+#     window through the real start (the Start menu shortcut's flags),
+#     driven by UI Automation in that window only; its transcript shown,
+#     nothing played, then the window closed normally, before the at-rest
+#     scan. The model cache is lent to that start in its profile (large
+#     files hard-linked, small ones copied), so it opens on Meetings rather
+#     than Setup, and taken back when it closes; what it added there must be
+#     explained. The real start's own files (instance.lock, logs\launch.json)
+#     must be new from that start; what a normal close leaves of the
+#     WebView2 profile (workspace\webview) is counted and scanned with the
+#     rest, then removed as the app's next start removes it, so a file still
+#     there after final cleanup fails "only the workspace's own files"; and
+#     anything else the run leaves in the redirected LOCALAPPDATA is scanned
+#     and named;
 #   - #111 phase C (C7), since content is sealed and the audio encrypted, so
 #     "no plain copy" alone no longer shows much (tools/residue.py):
 #       * a positive control: the finder that scans the profile must find
 #         every pattern planted in a control file outside it;
-#       * at rest, while the meeting exists: the marker (title, edit, speaker
-#         name, hold reason) and windows of the decoded audio are in no file
-#         under the profile or TEMP, and --verify-audit says "ok";
+#       * at rest, while the meeting exists and after the window step: the
+#         marker (title, edit, speaker name, hold reason) and windows of the
+#         decoded audio are in no file under the profile (the WebView2
+#         profile included), TEMP or the rest of the redirected folders, and
+#         --verify-audit says "ok";
 #       * a microphone recording through the shipped confirmation, from a
 #         synthetic stream: its audio is in no file while it records (the
 #         scan must include at least one finished chunk), and its key is
@@ -39,9 +56,10 @@
 #         empty write-ahead log (byte absence of a wrapped key stays a unit
 #         test: tests/test_cleanup.py);
 #       * after final cleanup, only the workspace's own files remain (a list
-#         built from the app's constants), logs included and listed; TEMP
-#         and the redirected APPDATA and user folder hold nothing (their
-#         files are named, and scanned with the rest);
+#         built from the app's constants), logs included and listed; TEMP,
+#         the redirected APPDATA and user folder, and the rest of the
+#         redirected LOCALAPPDATA hold nothing (their files are named, and
+#         scanned with the rest);
 #       * outside the throwaway base, the real LocalLow and the model cache
 #         are listed before and after (names, sizes and times only, never
 #         opened): every file the run added or changed there must be one
@@ -51,10 +69,9 @@
 #         the children's results are redacted, and a report that would
 #         still carry it anywhere (a file-name list included) fails in
 #         place of being written, naming only where (residue.guarded());
-#   - not covered yet (the owner's decision, 26 Oct 2026): the window with
-#     content. No step shows a meeting in the real window, so the WebView2
-#     profile (workspace\webview) and the real start's own files are not
-#     shown free of content (docs/SECURITY_MODEL.md T7);
+#       * the Event Log entries the two windows wrote under the app's
+#         source for this throwaway workspace, counted (residue.
+#         event_log_entries()), with why;
 #   - idle CPU and memory of the open app window, and peak memory of the
 #     worker during a long transcription.
 # Measurements, not promises: compare them on the lowest-supported laptop. The
@@ -88,6 +105,24 @@ WINDOWS = 8                        # how many, at fixed offsets through the clip
 WINDOW_BYTES = WINDOW_SAMPLES * 4
 RECORDING_WINDOW_BYTES = 2048      # from the middle of a synthetic block (int16)
 CHILD_TIMEOUT_S = 7200
+# The meeting's title and its first passage once the lifecycle child has
+# renamed and edited it (LIFECYCLE's process()): what the window step looks
+# for in the real window.
+TITLE = "Marker " + MARKER
+PASSAGE = TITLE + " for the residual check"
+WINDOW_UI_TIMEOUT_S = 300          # each UI Automation step of the window step
+WINDOW_CLOSE_S = 120               # the window and its WebView2 processes, after Close
+# Where the real start looks for models: the folder beside the workspace
+# folder in the profile (workspace/__main__.py, model_cache()).
+MODELS_FOLDER = "models"
+# The check's own files in the base, beside the redirected folders: never
+# part of the run's residue (the patterns themselves are in two of them).
+CHECK_FILES = ("lifecycle.py", "windows.bin", "recording_windows.bin", residue.CONTROL_FOLDER)
+EVENT_LOG_WHY = ("written by the app's own starts (the window step and the idle window), "
+                 "which keep the audit log's Windows Event Log copy as the app is shipped "
+                 "(the owner's decision DEC-056): each entry holds a chain, a sequence "
+                 "number, a kind and the line's hash, never an id or content (T20); the "
+                 "children drop the copy")
 
 
 class _PMC(ctypes.Structure):
@@ -149,6 +184,33 @@ def tree(root_pid):
             seen.append(p)
             todo += kids.get(p, [])
     return seen
+
+
+def running(pid):
+    """Whether a process is still running (STILL_ACTIVE). One that cannot
+    be opened has ended, or was never this check's."""
+    k32 = ctypes.WinDLL("kernel32")
+    k32.OpenProcess.restype = wintypes.HANDLE
+    h = k32.OpenProcess(0x1000, False, pid)       # QUERY_LIMITED_INFORMATION
+    if not h:
+        return False
+    try:
+        code = wintypes.DWORD()
+        return bool(k32.GetExitCodeProcess(h, ctypes.byref(code))) and code.value == 259
+    finally:
+        k32.CloseHandle(h)
+
+
+def ended(pids, timeout):
+    """Wait up to timeout seconds for every process in pids to end (the
+    window's WebView2 processes can outlive it for a moment, holding its
+    profile's files); whether they all did."""
+    end = time.monotonic() + timeout
+    while any(running(x) for x in pids):
+        if time.monotonic() > end:
+            return False
+        time.sleep(0.5)
+    return True
 
 
 def last_json(text):
@@ -225,10 +287,19 @@ def check(version_dir, cache, wav, report, system_dumps=False):
             return {"error": residue.redact((r.stderr or r.stdout)[-2000:], base)}
         return residue.redact_json(result, base)
 
+    # The check's own files in the base, and the folders above: everything
+    # else in the base (the rest of the redirected LOCALAPPDATA) is the
+    # run's, scanned and named with them (#418).
+    keep = {profile.name, *(f.name for f in redirected.values()), *CHECK_FILES}
+
     # 1. Import, transcribe and identify speakers; the marker goes into the
     #    title, an edit, a speaker's name and a hold reason; the child writes
     #    windows of the decoded audio to the base (outside the profile).
     report["lifecycle"] = child("process")
+
+    # 1b. The window with content (#418): the marked meeting in the real
+    #     window, through the real start, closed normally before the scans.
+    report["window"] = window_step(runtime, flags, env, app, workspace, names, base, cache)
 
     # 2. At rest, while the meeting exists. The positive control first: the
     #    same finder must find every pattern in a planted file.
@@ -237,7 +308,10 @@ def check(version_dir, cache, wav, report, system_dumps=False):
                if windows_file.exists() else {})
     patterns = {**residue.text_patterns(MARKER), **windows}
     report["control"] = {"patterns": len(patterns), "missed": residue.control(base, patterns)}
-    at_rest = scan(base, roots, patterns)
+    at_rest = scan(base, roots + residue.rest_of(base, keep), patterns)
+    # What the close left of the WebView2 profile has been scanned: it goes
+    # now, as the app's next start would remove it (#418).
+    report["window"]["profile_wipe"] = residue.wipe_profile(workspace, names)
     outside = residue.compare(before, places, names)
     r = subprocess.run([py, *flags, "-m", "workspace", "--verify-audit"], capture_output=True,
                        text=True, env=env, cwd=app)
@@ -266,20 +340,23 @@ def check(version_dir, cache, wav, report, system_dumps=False):
         patterns.update({f"recording_{k}": v for k, v in residue.split_windows(
             rec_file.read_bytes(), RECORDING_WINDOW_BYTES).items()})
     report["control"]["after_cleanup_missed"] = residue.control(base, patterns)
-    after = scan(base, roots, patterns)
+    others = residue.rest_of(base, keep)
+    after = scan(base, roots + others, patterns)
     # Listed through residue, which names a folder it cannot list rather
     # than skipping it (review of #335).
     in_base = Path(os.path.relpath(profile, base)).as_posix()
     files = sorted(f"{in_base}/{name}"
                    for name in residue.listing(profile, after["unreadable"], base))
-    left = residue.left_in(redirected, base)
+    left = residue.left_in(redirected, base, rest=others)
+    webview, webview_refused = residue.profile_files(workspace, names)
     outside = residue.compare(before, places, names, earlier=outside)
     report["residual"] = {"files_after_cleanup": files, "found": after["hits"],
                           "unreadable": sorted(set(after["unreadable"]) | set(left["unreadable"])),
                           "unexpected_files": residue.unexpected(profile, workspace, names),
                           "logs_scanned": residue.logs_scanned(after["scanned"], names,
                                                                ws_prefix),
-                          # TEMP, APPDATA and the user folder: every file, by name.
+                          # TEMP, APPDATA, the user folder and the rest of
+                          # LOCALAPPDATA: every file, by name.
                           "temp_files_left": left["files"]["TEMP"],
                           "redirected_files_left": left["files"],
                           "left_unexplained": left["unexplained"],
@@ -290,6 +367,9 @@ def check(version_dir, cache, wav, report, system_dumps=False):
                           # Each residue.EXPLAINED entry relied on, by name.
                           "outside_explained": outside["explained"],
                           "outside_unreadable": outside["unreadable"],
+                          # The window's WebView2 profile: what is left in it,
+                          # by count (any file in it is also unexpected).
+                          "webview_files": len(webview) + len(webview_refused),
                           "content_backups": [n for n in files if n.endswith(
                               (".bak", ".backup", ".old", ".copy")) or "backup" in n.lower()]}
 
@@ -311,6 +391,12 @@ def check(version_dir, cache, wav, report, system_dumps=False):
                              "cpu_percent_of_one_core": round((cpu1 - cpu0) / 60 * 100, 1),
                              "working_set_mb": sum(m[0] for m in mems if m)}
     kill(taskkill, pids)
+    # The Event Log entries both windows wrote for this workspace, counted
+    # (the idle window's last ones may be missing: taskkill ends it).
+    report["event_log"] = {"window_step": report["window"].get("event_log_entries"),
+                           "both_windows": residue.event_log_entries(
+                               workspace / names["audit"]),
+                           "why": EVENT_LOG_WHY}
 
     # 7. Crash dumps: none under the base (the window was ended by taskkill,
     #    which leaves its crash file empty). Counts only, nothing opened.
@@ -373,6 +459,164 @@ def record(command, rest, env, app, base, roots, timeout=1800):
                         + residue.redact("".join(err)[-2000:], base)}
     out["during"] = during
     return out
+
+
+def window_ui(pid, mode, base, timeout=WINDOW_UI_TIMEOUT_S):
+    """One UI Automation step of the window step in Windows PowerShell 5.1
+    (WINDOW_SCRIPT): "open" (the marked meeting, its transcript) or "close"
+    (the window, normally). Its result is yes-or-no answers only; an error
+    is copied without the base, the home folder or the user name (P3)."""
+    extra = {"UM_PID": str(pid), "UM_MODE": mode, "UM_TITLE": TITLE, "UM_PASSAGE": PASSAGE}
+    try:
+        r = windows_powershell.run(WINDOW_SCRIPT, extra=extra, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return {"error": f"the window's {mode} step exceeded {timeout:,} s"}
+    try:
+        return last_json(r.stdout)
+    except (ValueError, IndexError):
+        return {"error": residue.redact((r.stderr or r.stdout or "no output")[-2000:], base)}
+
+
+def window_step(runtime, flags, env, app, workspace, names, base, cache):
+    """The window with content (#418): the app started as the Start menu
+    shortcut starts it, the marked meeting opened and its transcript shown
+    through UI Automation (nothing is played), then the window closed as a
+    person closes it. The real start's own files must be new from this
+    start. The model cache is lent to it (residue.lend_models()), as the
+    real start looks for models only in the profile's own models folder and
+    would otherwise open on Setup, and taken back once it has closed: what
+    it added there is named and must be explained. Then, once every process
+    of the window has ended: how many files the close left in the WebView2
+    profile (scanned at rest with the rest), and how many Event Log entries
+    this start wrote for the workspace (counted, never read out). A window
+    that does not close is ended with taskkill, and the step fails."""
+    taskkill = windows_powershell.system_program("taskkill.exe")   # before the app starts
+    out = {"start_files_before": residue.start_files(workspace, names)}
+    models = Path(workspace).parent / MODELS_FOLDER
+    lent, out["models_lent"] = residue.lend_models(cache, models)
+    p, pids = None, []
+    try:
+        p = subprocess.Popen([str(runtime / "pythonw.exe"), *flags, "-m", "workspace"],
+                             env=env, cwd=app)
+        pids = [p.pid]
+        out["shown"] = window_ui(p.pid, "open", base)
+        pids = tree(p.pid)                      # with the window's WebView2 processes
+        out["processes"] = len(pids)
+        out["closed"] = window_ui(p.pid, "close", base)
+        try:
+            out["exit_code"] = p.wait(WINDOW_CLOSE_S)
+        except subprocess.TimeoutExpired:
+            out["exit_code"] = None
+    finally:
+        if p is not None and p.poll() is None:
+            out["killed"] = True
+            kill(taskkill, tree(p.pid))
+        # The lent models go back whatever happened, once nothing holds them.
+        out["processes_ended"] = ended(pids, WINDOW_CLOSE_S)
+        out["models_returned"] = residue.return_models(models, lent, names)
+    out["start_files"] = residue.start_files(workspace, names)
+    files, refused = residue.profile_files(workspace, names)
+    out["profile_files_after_close"] = len(files) + len(refused)
+    out["event_log_entries"] = residue.event_log_entries(workspace / names["audit"])
+    return out
+
+
+# The window step's UI Automation (#418), after tools/import_dialog_check.ps1:
+# only windows of the app instance the check started (UM_PID and its
+# children), never another program's; no mouse or keyboard input. It looks
+# for the marked meeting by its synthetic title and passage (UM_TITLE,
+# UM_PASSAGE) and prints one JSON line of yes-or-no answers, never text it
+# read, and an error by its type only.
+WINDOW_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+$A = [System.Windows.Automation.AutomationElement]
+$T = [System.Windows.Automation.TreeScope]
+$C = [System.Windows.Automation.ControlType]
+$Invoke = [System.Windows.Automation.InvokePattern]::Pattern
+$root = [int]$env:UM_PID
+
+function Get-AppPid {
+    $ids = @($root)
+    $all = Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId
+    do {
+        $more = @($all | Where-Object { $ids -contains $_.ParentProcessId -and
+            $ids -notcontains $_.ProcessId } | ForEach-Object ProcessId)
+        $ids += $more
+    } while ($more.Count)
+    return $ids
+}
+
+function Get-AppWindow {
+    $ids = Get-AppPid
+    $all = [System.Windows.Automation.Condition]::TrueCondition
+    $wins = $A::RootElement.FindAll($T::Children, $all)
+    return @($wins | Where-Object { $ids -contains $_.Current.ProcessId })
+}
+
+# The first element of control type $type in the app's windows whose name
+# passes $test, within $seconds; $null if none.
+function Find-InApp($type, $test, $seconds) {
+    $cond = New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, $type)
+    $end = (Get-Date).AddSeconds($seconds)
+    do {
+        foreach ($w in Get-AppWindow) {
+            foreach ($e in $w.FindAll($T::Descendants, $cond)) {
+                $name = $e.Current.Name
+                if ($name -and (& $test $name)) { return $e }
+            }
+        }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $end)
+    return $null
+}
+
+$r = [ordered]@{}
+try {
+    if ($env:UM_MODE -eq 'open') {
+        $r.window_found = $false; $r.opened = $false; $r.transcript_shown = $false
+        $r.playing = $null
+        # 1. The meeting's title on Meetings; the sidebar's Meetings is
+        #    pressed while it is not there (the window may open elsewhere).
+        $end = (Get-Date).AddSeconds(180)
+        $open = $null
+        while (-not $open -and (Get-Date) -lt $end) {
+            if (@(Get-AppWindow).Count) { $r.window_found = $true }
+            $open = Find-InApp $C::Button { param($n) $n -eq $env:UM_TITLE } 5
+            if (-not $open) {
+                $nav = Find-InApp $C::Button { param($n) $n -like 'Meetings*' } 1
+                if ($nav) { $nav.GetCurrentPattern($Invoke).Invoke() }
+            }
+        }
+        if ($open) {
+            $r.window_found = $true             # it was found in one of the app's windows
+            # 2. Opened: its edited first passage shows in the transcript.
+            #    Play is never pressed; the player must not be playing.
+            $open.GetCurrentPattern($Invoke).Invoke()
+            $r.opened = $true
+            $r.transcript_shown = [bool](Find-InApp $C::Text {
+                param($n) $n.Contains($env:UM_PASSAGE) } 60)
+            $play = Find-InApp $C::Button {
+                param($n) $n -eq 'Play (Space)' -or $n -eq 'Pause (Space)' } 10
+            if ($play) { $r.playing = $play.Current.Name -eq 'Pause (Space)' }
+        }
+    } else {
+        # 3. Closed as a person closes it (the title bar's Close): the
+        #    app's main window, a Windows Forms window of this instance.
+        $r.closed = $false
+        foreach ($w in Get-AppWindow) {
+            if ($w.Current.ClassName -like 'WindowsForms10.Window*') {
+                $w.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
+                $r.closed = $true
+                break
+            }
+        }
+    }
+} catch {
+    $r.error = $_.Exception.GetType().Name
+}
+$r | ConvertTo-Json -Compress
+"""
 
 
 def kill(taskkill, pids):
@@ -710,6 +954,9 @@ def verdict(r):
     rest, ctl = r.get("at_rest") or {}, r.get("control") or {}
     rec, clean = r.get("recording") or {}, r.get("cleanup") or {}
     during, dumps = rec.get("during") or {}, r.get("dumps") or {}
+    window, events = r.get("window") or {}, r.get("event_log") or {}
+    shown, closed = window.get("shown") or {}, window.get("closed") or {}
+    lent, returned = window.get("models_lent") or {}, window.get("models_returned") or {}
     meetings = clean.get("meetings") or 0
     erased = clean.get("after_audio_cleanup") or []
     checks = {
@@ -767,8 +1014,35 @@ def verdict(r):
         "no crash dumps": dumps.get("dumps") == 0 and dumps.get("crash_files") == 0,
         "idle window measured": idle.get("window_running") is True
             and (idle.get("processes") or 0) > 1 and (idle.get("working_set_mb") or 0) > 0,
+        # #418: the window with content, through the real start, before the
+        # at-rest scan (which covers what it left of its WebView2 profile).
+        "marked meeting shown in the real window, then closed": not shown.get("error")
+            and shown.get("window_found") is True and shown.get("opened") is True
+            and shown.get("transcript_shown") is True and shown.get("playing") is not True
+            and not closed.get("error") and closed.get("closed") is True
+            and window.get("exit_code") == 0 and not window.get("killed")
+            and window.get("processes_ended") is True,
+        # The model cache lent to the window step's real start (so it opens
+        # on Meetings, not Setup), then taken back: whatever it added there
+        # is named and must be explained.
+        "the model cache lent to the window, then taken back":
+            (lent.get("linked") or 0) + (lent.get("copied") or 0) > 0
+            and lent.get("unreadable") == [] and returned.get("removed") is True
+            and returned.get("unexplained") == [] and returned.get("unreadable") == [],
+        "the real start wrote its own files": window.get("start_files_before") == {
+            "instance_lock": False, "launch_record": False}
+            and window.get("start_files") == {"instance_lock": True, "launch_record": True},
+        # Written or not, the window step's entries are counted, with why.
+        "the windows' Event Log entries counted": _count(window.get("event_log_entries"))
+            and _count(events.get("window_step")) and _count(events.get("both_windows"))
+            and bool(events.get("why")),
     }
     return [name for name, ok in checks.items() if not ok]
+
+
+def _count(value):
+    """A count: an int that is not a bool, 0 or more."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 def main():

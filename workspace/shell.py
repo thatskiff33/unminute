@@ -14,6 +14,9 @@ import time
 from pathlib import Path
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
+# The window's WebView2 profile folder, inside the workspace (storage_folder);
+# tools/residue.py names it from here for the packaged checks (#418).
+STORAGE_FOLDER = "webview"
 # The app's microphone icon; next to the app code in the package.
 ICON = Path(__file__).resolve().parents[1] / "unminute.ico"
 
@@ -680,7 +683,7 @@ def storage_folder(root):
     "webview" junction must not turn this cleanup on another folder."""
     import shutil
     import uuid
-    base = Path(root) / "webview"
+    base = Path(root) / STORAGE_FOLDER
     try:
         if _is_link(base):
             _remove_link(base)

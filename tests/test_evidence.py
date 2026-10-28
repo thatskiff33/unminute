@@ -1603,7 +1603,22 @@ class PackagedCheckTests(TempDir):
                          "content_backups": []},
             "dumps": {"dumps": 0, "crash_files": 0},
             "idle_window": {"window_running": True, "processes": 7,
-                            "cpu_percent_of_one_core": 1.5, "working_set_mb": 484}}
+                            "cpu_percent_of_one_core": 1.5, "working_set_mb": 484},
+            # #418: the window with content, through the real start.
+            "window": {"start_files_before": {"instance_lock": False, "launch_record": False},
+                       "shown": {"window_found": True, "opened": True,
+                                 "transcript_shown": True, "playing": False},
+                       "processes": 6, "closed": {"closed": True}, "exit_code": 0,
+                       "processes_ended": True,
+                       "start_files": {"instance_lock": True, "launch_record": True},
+                       "profile_files_after_close": 0, "event_log_entries": 9,
+                       "profile_wipe": {"files_before": 0, "files_left": 0},
+                       "models_lent": {"linked": 4, "copied": 9, "unreadable": []},
+                       "models_returned": {"new": ["parakeet/v3/abc/.verified.json"],
+                                           "unexplained": [], "removed": True,
+                                           "unreadable": []}},
+            "event_log": {"window_step": 9, "both_windows": 14,
+                          "why": "written by the app's own starts"}}
 
     def setUp(self):
         super().setUp()
@@ -1635,6 +1650,9 @@ class PackagedCheckTests(TempDir):
     def test_each_criterion_fails_on_its_own(self):
         during = dict(self.GOOD["recording"]["during"])
         erased = self.ERASED
+        shown = dict(self.GOOD["window"]["shown"])
+        files = dict(self.GOOD["window"]["start_files"])
+        lent, returned = self.GOOD["window"]["models_lent"], self.GOOD["window"]["models_returned"]
         cases = {
             "no error": [self.changed(None, error="RuntimeError: x")],
             "self-test passed": [self.changed(None, self_test="FAIL")],
@@ -1715,6 +1733,41 @@ class PackagedCheckTests(TempDir):
             "idle window measured": [self.changed("idle_window", window_running=False),
                                      self.changed("idle_window", processes=1),
                                      self.changed("idle_window", working_set_mb=0)],
+            # #418: the marked meeting in the real window, closed normally.
+            "marked meeting shown in the real window, then closed": [
+                self.changed("window", shown=dict(shown, window_found=False)),
+                self.changed("window", shown=dict(shown, opened=False)),
+                self.changed("window", shown=dict(shown, transcript_shown=False)),
+                self.changed("window", shown=dict(shown, playing=True)),
+                self.changed("window", shown=dict(shown, error="ElementNotAvailableException")),
+                self.changed("window", shown=None),
+                self.changed("window", closed={"closed": False}),
+                self.changed("window", closed={"error": "the window's close step exceeded"}),
+                self.changed("window", exit_code=1),
+                self.changed("window", exit_code=None),
+                self.changed("window", killed=True),
+                self.changed("window", processes_ended=False)],
+            "the model cache lent to the window, then taken back": [
+                self.changed("window", models_lent={"linked": 0, "copied": 0,
+                                                    "unreadable": []}),
+                self.changed("window", models_lent=dict(lent, unreadable=["a/b.bin"])),
+                self.changed("window", models_returned=dict(returned, removed=False)),
+                self.changed("window", models_returned=dict(
+                    returned, unexplained=["model_cache/parakeet/stray.bin"])),
+                self.changed("window", models_returned=dict(returned, unreadable=["x/"])),
+                self.changed("window", models_returned=None)],
+            "the real start wrote its own files": [
+                self.changed("window", start_files=dict(files, launch_record=False)),
+                self.changed("window", start_files=dict(files, instance_lock=False)),
+                # Written by that start: neither was there before it.
+                self.changed("window", start_files_before=dict(files, instance_lock=False)),
+                self.changed("window", start_files_before=None)],
+            "the windows' Event Log entries counted": [
+                self.changed("window", event_log_entries=None),
+                self.changed("event_log", window_step=None),
+                self.changed("event_log", both_windows=None),
+                self.changed("event_log", both_windows=True),
+                self.changed("event_log", why="")],
         }
         for name, reports in cases.items():
             for n, r in enumerate(reports):
@@ -1722,11 +1775,172 @@ class PackagedCheckTests(TempDir):
                     self.assertEqual([name], self.tool.verdict(r))
 
     def test_a_missing_section_fails(self):
-        for section in ("control", "at_rest", "recording", "cleanup", "dumps"):
+        for section in ("control", "at_rest", "recording", "cleanup", "dumps", "window",
+                        "event_log"):
             with self.subTest(section=section):
                 r = json.loads(json.dumps(self.GOOD))
                 del r[section]
                 self.assertTrue(self.tool.verdict(r))
+
+    def test_no_entry_written_is_a_count_too(self):
+        # "Either no entry is written, or the report names how many" (#418).
+        r = self.changed("window", event_log_entries=0)
+        r["event_log"].update(window_step=0, both_windows=0)
+        self.assertEqual([], self.tool.verdict(r))
+
+    def window_run(self, code=0, ui_step=None):
+        """window_step (#418) with the app, PowerShell, the process tree and
+        taskkill stood in for. code: the app's exit code after Close, None
+        when it does not end. Returns the step's result, the command that
+        started the app and the processes ended with taskkill."""
+        import residue
+        tool = self.tool
+        ws = self.root / "Unminute" / "workspace"
+        ws.mkdir(parents=True)
+        n = residue.names()
+        started, killed = [], []
+        cache = self.root / "cache"
+        (cache / "parakeet" / "v3").mkdir(parents=True)
+        (cache / "parakeet" / "v3" / "model.onnx").write_bytes(b"w" * (residue.LINK_FROM + 1))
+        (cache / "parakeet" / "v3" / ".verified.json").write_text("{}", encoding="utf-8")
+
+        class App:
+            pid = 4242
+
+            def __init__(self, command, **kw):
+                started.append(command)
+                self.code = None
+
+            def wait(self, timeout):
+                if code is None:
+                    raise subprocess.TimeoutExpired("pythonw", timeout)
+                self.code = code
+                return code
+
+            def poll(self):
+                return self.code
+
+        def ui(pid, mode, base):
+            # The lent models are there while the window is open.
+            lent = (ws.parent / tool.MODELS_FOLDER / "parakeet" / "v3" / "model.onnx").is_file()
+            if mode == "open" and lent:
+                # The real start's own files, and the profile it opens.
+                (ws / n["lock"]).write_bytes(b"")
+                (ws / n["logs"]).mkdir()
+                (ws / n["logs"] / n["launch"]).write_text("{}", encoding="utf-8")
+                profile = ws / n["webview"] / ("a" * 32) / "EBWebView"
+                profile.mkdir(parents=True)
+                (profile / "Local State").write_text("{}", encoding="utf-8")
+                return {"window_found": True, "opened": True, "transcript_shown": True,
+                        "playing": False}
+            return {"closed": True}
+        with mock.patch.object(tool.subprocess, "Popen", App), \
+                mock.patch.object(tool, "window_ui", ui_step or ui), \
+                mock.patch.object(tool, "tree", lambda pid: [pid, pid + 1]), \
+                mock.patch.object(tool, "ended", lambda pids, timeout: True), \
+                mock.patch.object(tool, "kill", lambda taskkill, pids: killed.extend(pids)), \
+                mock.patch.object(tool.windows_powershell, "system_program",
+                                  lambda name: name), \
+                mock.patch.object(tool.residue, "event_log_entries", lambda folder: 3):
+            out = tool.window_step(Path("runtime"), ["-I", "-B"], {}, Path("app"), ws, n,
+                                   self.root, cache)
+        return out, started, killed, ws, n
+
+    def test_the_window_step_starts_the_app_as_the_shortcut_and_closes_it(self):
+        out, started, killed, ws, n = self.window_run()
+        self.assertEqual([[str(Path("runtime") / "pythonw.exe"), "-I", "-B", "-m", "workspace"]],
+                         started)
+        self.assertEqual([], killed)                  # closed normally: nothing ended by force
+        # The models were lent (the weights linked, the record copied), then
+        # taken back; the cache itself is untouched.
+        self.assertEqual({"linked": 1, "copied": 1, "unreadable": []}, out["models_lent"])
+        self.assertEqual({"new": [], "unexplained": [], "removed": True, "unreadable": []},
+                         out["models_returned"])
+        self.assertFalse((ws.parent / self.tool.MODELS_FOLDER).exists())
+        self.assertEqual(self.tool.residue.LINK_FROM + 1,
+                         (self.root / "cache" / "parakeet" / "v3" / "model.onnx").stat().st_size)
+        self.assertEqual(({"instance_lock": False, "launch_record": False},
+                          {"instance_lock": True, "launch_record": True}, 0, 1, 3, 2),
+                         (out["start_files_before"], out["start_files"], out["exit_code"],
+                          out["profile_files_after_close"], out["event_log_entries"],
+                          out["processes"]))
+        report = dict(json.loads(json.dumps(self.GOOD)), window=out)
+        self.assertEqual([], self.tool.verdict(report))
+
+    def test_a_window_that_does_not_close_is_ended_and_fails(self):
+        out, _, killed, _, _ = self.window_run(code=None)
+        self.assertEqual((None, True, [4242, 4243]), (out["exit_code"], out["killed"], killed))
+        report = dict(json.loads(json.dumps(self.GOOD)), window=out)
+        self.assertEqual(["marked meeting shown in the real window, then closed"],
+                         self.tool.verdict(report))
+
+    def test_the_lent_models_go_back_when_the_window_step_fails(self):
+        def broken(pid, mode, base):
+            raise FileNotFoundError("Windows PowerShell 5.1 is missing")
+        with self.assertRaises(FileNotFoundError):
+            self.window_run(ui_step=broken)
+        self.assertFalse((self.root / "Unminute" / self.tool.MODELS_FOLDER).exists())
+        self.assertTrue((self.root / "cache" / "parakeet" / "v3" / "model.onnx").is_file())
+
+    def test_the_lent_models_go_where_the_real_start_looks(self):
+        source = (ROOT / "workspace" / "__main__.py").read_text(encoding="utf-8")
+        self.assertIn(f'local_appdata() / "Unminute" / "{self.tool.MODELS_FOLDER}"', source)
+
+    def test_the_window_step_comes_before_the_at_rest_scan(self):
+        import inspect
+        source = inspect.getsource(self.tool.check)
+        order = [source.index(s) for s in (
+            'report["lifecycle"] = child("process")',
+            'report["window"] = window_step(',
+            "residue.control(base, patterns)",
+            "at_rest = scan(base, roots + residue.rest_of(base, keep), patterns)",
+            "residue.wipe_profile(workspace, names)",
+            'report["cleanup"] = child("cleanup"',
+            "after = scan(base, roots + others, patterns)",
+            "residue.left_in(redirected, base, rest=others)")]
+        self.assertEqual(sorted(order), order)
+
+    def test_the_window_step_uses_the_shortcut_s_flags(self):
+        import inspect
+        install = (ROOT / "packaging" / "install.ps1").read_text(encoding="utf-8")
+        launch = re.search(r'^\$LaunchArgs = "(.+) -m workspace"$', install, re.M).group(1)
+        source = inspect.getsource(self.tool.check)
+        flags = re.search(r"flags = \[(.+?)\]", source).group(1)
+        self.assertEqual(launch.split(), [f.strip().strip('"') for f in flags.split(",")])
+        self.assertIn('[str(runtime / "pythonw.exe"), *flags, "-m", "workspace"]',
+                      inspect.getsource(self.tool.window_step))
+
+    def test_the_window_looks_for_the_meeting_the_lifecycle_marked(self):
+        tool = self.tool
+        self.assertEqual(("Marker " + tool.MARKER, "Marker " + tool.MARKER
+                          + " for the residual check"), (tool.TITLE, tool.PASSAGE))
+        self.assertIn('ws.rename(mid, "Marker " + marker)', tool.LIFECYCLE)
+        self.assertIn('items[0]["id"], "Marker " + marker + " for the residual check")',
+                      tool.LIFECYCLE)
+
+    def test_the_window_script_presses_only_the_meeting_and_prints_no_text(self):
+        script = self.tool.WINDOW_SCRIPT
+        # Only the sidebar's Meetings and the meeting's title are pressed:
+        # never Play, and no mouse or keyboard input.
+        self.assertEqual(["$nav", "$open"],
+                         re.findall(r"(\$\w+)\.GetCurrentPattern\(\$Invoke\)\.Invoke\(\)", script))
+        self.assertEqual(2, script.count(".Invoke()"))
+        for word in ("SendKeys", "SendInput", "mouse_event", "keybd_event", "Write-Host",
+                     "Write-Output", ".Message"):
+            with self.subTest(word=word):
+                self.assertNotIn(word, script)
+        # It prints one JSON line of answers; an error by its type only.
+        self.assertTrue(script.rstrip().endswith("$r | ConvertTo-Json -Compress"))
+        self.assertIn("$r.error = $_.Exception.GetType().Name", script)
+        answers = re.findall(r"\$r\.\w+ = ([^;\n]+)", script)
+        self.assertGreaterEqual(len(answers), 8)
+        for value in answers:
+            with self.subTest(value=value):
+                self.assertRegex(value, r"^(\$true|\$false|\$null|\[bool\]\(Find-InApp |"
+                                        r"\$play\.Current\.Name -eq |"
+                                        r"\$_\.Exception\.GetType\(\)\.Name$)")
+        # Closed through the window's own Close, as a person closes it.
+        self.assertIn("[System.Windows.Automation.WindowPattern]::Pattern).Close()", script)
 
     def test_a_lifecycle_error_fails(self):
         r = self.changed(None, lifecycle={"error": "lifecycle script exceeded 7,200 s"})
