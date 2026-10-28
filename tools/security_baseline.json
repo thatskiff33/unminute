@@ -117,6 +117,10 @@
    "count": 1,
    "why": "Starts a process with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere), from the test's own fixed values and scratch paths."
   },
+  "tests/test_event_text.py::S603": {
+   "count": 1,
+   "why": "Runs Node.js (found by shutil.which) with an argument list, no shell (ruff finds no S602, S604 or S605 anywhere); the script on its standard input is built from the page's own tracked source and the test's fixed synthetic events."
+  },
   "tests/test_evidence.py::S102": {
    "count": 1,
    "why": "Runs a function or module compiled from the repository's own tracked source, to test it on its own; no outside input."
@@ -510,8 +514,8 @@
    "why": "Releasing power requests and handles, and a Windows callback that must never raise; nothing here may stop a recording ending."
   },
   "workspace/recorder.py::S110": {
-   "count": 4,
-   "why": "Stopping and closing an audio stream, and clean-up steps, as a recording ends; each runs whether or not the one before it failed."
+   "count": 5,
+   "why": "Stopping and closing an audio stream, closing the default-microphone watcher (#462), and clean-up steps, as a recording or a microphone switch ends; each runs whether or not the one before it failed."
   },
   "workspace/setup.py::S110": {
    "count": 1,

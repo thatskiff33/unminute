@@ -64,13 +64,14 @@ jobs:
     # cannot run. ruff is the one already pinned in requirements/ci.txt, so
     # nothing new is installed. Making it a gate needs the owner (AGENTS.md E2).
     #
-    # The security lint (#415 item 2; the owner's decision of 28 Oct 2026) runs
-    # in this job, with the checkout and ruff it already has, so it adds no
-    # runner, install or required check: tools/security_lint.py runs ruff's S
-    # rules with --exit-zero against tools/security_baseline.json. A file and
-    # rule over the baseline is a warning on the pull request, never a failure;
-    # the step fails only if ruff cannot run. It runs even when the quality
-    # report failed. Making it a gate needs the owner (AGENTS.md E2).
+    # The security lint (#415 item 2; the owner's decision DEC-081 of
+    # 28 Oct 2026) runs in this job, with the checkout and ruff it already has,
+    # so it adds no runner, install or required check: tools/security_lint.py
+    # runs ruff's S rules with --exit-zero against tools/security_baseline.json.
+    # A file and rule over the baseline is a warning on the pull request, never
+    # a failure; the step fails only if ruff cannot run. It runs even when the
+    # quality report failed, but not when ruff's install failed, which already
+    # fails the job. Making it a gate needs the owner (AGENTS.md E2).
     name: Quality report (report only)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -84,13 +85,14 @@ jobs:
         with:
           python-version: "3.14"
       - name: Install ruff from its hash-locked file
+        id: install-ruff
         run: >-
           python -m pip install --disable-pip-version-check --only-binary=:all:
           --require-hashes -r requirements/ci.txt
       - name: Report size, growth and complexity against the baseline
         run: python tools/quality_report.py
       - name: Report the security lint (ruff S) against the baseline
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.install-ruff.outcome == 'success' }}
         run: python tools/security_lint.py
 
   type-check:

@@ -180,15 +180,20 @@ class BaselineTests(unittest.TestCase):
         self.assertNotIn("extend-select", config)
 
     def test_ci_runs_it_report_only_inside_the_quality_report_job(self):
-        # The owner's decision of 28 Oct 2026 (#415): on every pull request, as a
-        # step in the existing report-only job that already has the checkout and
-        # ruff, so it adds no runner or install and no required check.
+        # The owner's decision DEC-081 of 28 Oct 2026 (#415): on every pull
+        # request, as a step in the existing report-only job that already has the
+        # checkout and ruff, so it adds no runner or install and no required check.
+        # It runs only once ruff's install succeeded, so a failed install is one
+        # failure, not a second one from the lint (exit 2).
         workflow = read(".github/workflows/quality.yml")
         self.assertIn("  pull_request:\n", workflow[:workflow.index("\njobs:")])
         job = workflow[workflow.index("\n  quality-report:"):workflow.index("\n  type-check:")]
         self.assertIn("name: Quality report (report only)", job)
         self.assertIn("--require-hashes -r requirements/ci.txt", job)
         self.assertIn("run: python tools/security_lint.py\n", job)
+        self.assertIn("        id: install-ruff\n", job)
+        self.assertIn("if: ${{ !cancelled() && steps.install-ruff.outcome == 'success' }}\n"
+                      "        run: python tools/security_lint.py\n", job)
         self.assertNotIn("security_lint.py --update", workflow)
         # Never in a workflow whose jobs are required checks.
         for name in ("ci.yml", "changelog.yml", "audit.yml", "codeql.yml"):
