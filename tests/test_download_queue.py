@@ -165,7 +165,8 @@ class DownloadQueueTests(unittest.TestCase):
         for bad in ("../x", 5, {"name": self.b}, "x" * 10000):
             with self.subTest(bad=str(bad)[:20]):
                 self.assertEqual(page.cancel_download(bad), {"ok": False,
-                                                             "error": "Unknown model."})
+                                                             "error": "Unknown model.",
+                                                             "kind": "error"})
         self.assertEqual(self.state(self.b), "queued")
         self.assertEqual(page.cancel_download(), {"ok": True, "value": True})   # the running one
         self.wait_started(self.b)
@@ -281,7 +282,8 @@ class DownloadQueueTests(unittest.TestCase):
             self.skipTest("Node.js not installed")
         source = hardening.page_functions("cancelQueued") + r"""
 const said = [];
-const say = (text) => { said.push(text); };
+const say = (text, opts = {}) => { said.push([text, opts.kind || "info"]); };
+const sayDone = (text) => { said.push([text, "success"]); };
 const button = (label, onClick) => onClick;
 const attempt = async (fn) => fn();
 let reply = null;
@@ -289,7 +291,7 @@ const call = async (name, model) => reply;
 (async () => {
   for (const value of [true, false]) {
     reply = value;
-    await cancelQueued({ name: "large-v3" }, () => {})();
+    await cancelQueued({ name: "large-v3" }, () => {})({ currentTarget: null });   // a click
   }
   console.log(JSON.stringify(said));
 })();
@@ -297,8 +299,10 @@ const call = async (name, model) => reply;
         done = subprocess.run([node, "-"], input=source, capture_output=True, text=True,
                               timeout=60, check=False)
         self.assertEqual(done.returncode, 0, done.stderr)
+        # The kind (#416): a removal is a success, nothing removed is information.
         self.assertEqual(json.loads(done.stdout),
-                         ["Removed from the queue.", "It is no longer in the queue."])
+                         [["Removed from the queue.", "success"],
+                          ["It is no longer in the queue.", "info"]])
 
     # -- persistence and restart (criterion 3) -----------------------------------------
 

@@ -2015,13 +2015,13 @@ class PagePartTests(DraftWorkspaceCase):
         self.assertNotIn("recording_draft", api.LOCKED_METHODS)      # nothing records then
         page = api.make_api(self.ws)
         self.assertEqual(page.recording_draft(0),
-                         {"ok": False, "error": "Nothing is being recorded."})
+                         {"ok": False, "error": "Nothing is being recorded.", "kind": "error"})
         self.record()
         self.assertTrue(wait_for(self.running))
         for bad in (-1, True, 1.5, "0", None, [0], 10 ** 8, float("nan")):
             with self.subTest(bad=bad):
                 self.assertEqual(page.recording_draft(bad),
-                                 {"ok": False, "error": "Out of range."})
+                                 {"ok": False, "error": "Out of range.", "kind": "error"})
         self.holder["stream"].play(self.speech(2))
         self.assertTrue(wait_for(lambda: len(self.draft_phrases()) == 2))
         got = page.recording_draft(1)

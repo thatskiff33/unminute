@@ -1488,7 +1488,7 @@ class FinishOnlyTests(unittest.TestCase):
         self.assertEqual(api.FINISH_ONLY_REFUSED,
                          {"import_dialog", "start_recording", "scan_now"})
         self.assertTrue(api.FINISH_ONLY_REFUSED <= api.API_METHODS - api.LOCKED_METHODS)
-        refused = {"ok": False, "error": FINISH_ONLY_TEXT}
+        refused = {"ok": False, "error": FINISH_ONLY_TEXT, "kind": "info"}
         with mock.patch.object(self.ws, "import_paths") as imported, \
                 mock.patch.object(self.ws, "start_recording") as recorded, \
                 mock.patch.object(self.ws, "check_can_record") as checked:

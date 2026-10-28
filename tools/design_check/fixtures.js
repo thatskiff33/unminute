@@ -971,6 +971,55 @@
       steps: [() => window.workspace.setStep(3)],
     },
     "downloads-resumed": { change: (d) => queueDownloads(d, true), steps: [show("downloads")] },
+    // #416: an error stays beside the action that caused it, until dismissed
+    // (no boards yet: compared with the nearest one, for the owner's look).
+    // The refusals are the app's own wording; the kind comes from the bridge.
+    "home-import-error": {
+      change: (d) => { d.fail = { import_dialog: "The file dialog is not available." }; },
+      steps: [show("meetings"), wait(300), () => document.getElementById("import").click(), wait(300),
+              () => document.activeElement.blur()],
+    },
+    "handoff-error": {
+      change: (d) => {
+        reviewed(d);
+        d.fail = { copy_handoff: "The handoff changed since the preview. Check the preview again, then copy or save." };
+      },
+      steps: [openGarden, () => document.getElementById("m-primary").click(), wait(800),
+              () => document.getElementById("ho-copy").click(), wait(300),
+              () => document.activeElement.blur()],
+    },
+    "settings-error": {
+      change: (d) => {
+        SCENARIOS.settings.change(d);
+        d.fail = { set_settings: "Stop the recording before turning the microphone off." };
+      },
+      steps: [show("settings"), wait(400), () => document.getElementById("s-microphone").click(), wait(300),
+              () => document.activeElement.blur()],
+    },
+    "downloads-error": {
+      change: (d) => { d.fail = { download_model: "Downloads are turned off by your organisation. Ask your IT team to install the models." }; },
+      steps: [show("downloads"), wait(400),
+              () => [...document.querySelectorAll("#dl-list button")]
+                .find((b) => b.textContent.startsWith("Download (")).click(), wait(300),
+              () => document.activeElement.blur()],
+    },
+    "setup-3-token-error": {
+      change: firstRun,
+      steps: [() => window.workspace.setStep(3), wait(300),
+              () => document.getElementById("s-download-speakers").click(),
+              () => document.activeElement.blur()],
+    },
+    // An error from elsewhere still reaches the toast, now with an alert mark:
+    // here Copy diagnostics fails unexpectedly (the bridge's wording, a sample code).
+    "help-toast-error": {
+      change: (d) => { d.fail = { copy_diagnostics: "Something went wrong (code U-3F2A9C). Please try again." }; },
+      // The toast clears after 8 s, and Edge's virtual time runs past that before
+      // the screenshot, so the same message is held (sticky) once it has shown.
+      steps: [show("help"), wait(300), () => document.getElementById("help-diagnostics").click(), wait(300),
+              () => document.activeElement.blur(),
+              () => window.workspace.say(document.getElementById("status").textContent,
+                                         { sticky: true, kind: "error" })],
+    },
     // #244: a chosen model that is not downloaded (no board yet): the note
     // beside the picker; and the failed meeting's Transcribe with another model.
     "settings-model-not-ready": {
@@ -1103,6 +1152,7 @@
       return null;
     },
     continue_despite_damage: () => null,
+    clear_import_errors: () => null,
     copy_diagnostics: () => ({ chars: 1200 }),
     open_help: () => null,
     close_app: () => null,
@@ -1168,15 +1218,16 @@
     get: (_, method) => async (...args) => {
       perf.calls[method] = (perf.calls[method] || 0) + 1;
       perf.allCalls[method] = (perf.allCalls[method] || 0) + 1;
-      if (data.fail && data.fail[method]) return { ok: false, error: data.fail[method] };   // #404
+      // A refusal carries its kind, as the app's bridge sends it (#416).
+      if (data.fail && data.fail[method]) return { ok: false, error: data.fail[method], kind: "error" };   // #404
       if (method === "status" && data.failStatus > 0) {    // locked-after-error
         data.failStatus -= 1;
-        return { ok: false, error: "The request failed." };
+        return { ok: false, error: "The request failed.", kind: "error" };
       }
       // As the app's bridge gate (api.make_api): while locked, only these.
-      if (data.locked && !LOCKED_METHODS.has(method)) return { ok: false, error: LOCKED_TEXT };
+      if (data.locked && !LOCKED_METHODS.has(method)) return { ok: false, error: LOCKED_TEXT, kind: "error" };
       const fn = handlers[method];
-      if (!fn) return { ok: false, error: `The design check has no sample data for ${String(method)}.` };
+      if (!fn) return { ok: false, error: `The design check has no sample data for ${String(method)}.`, kind: "error" };
       return { ok: true, value: fn(...args) };
     },
   });

@@ -71,7 +71,7 @@
     <div id="reminders" class="notices" hidden></div>
     <ul id="import-errors" class="notices"></ul>
 
-    <div id="start" class="start">
+    <div id="start" class="start" data-errors>
       <div class="actions">
         <button type="button" id="rec-start" class="action action-record" hidden>
           <span class="action-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/><path d="M8 21h8"/></svg></span>
@@ -334,7 +334,7 @@
         <div class="su-foot end"><button type="button" class="primary" data-go="2">Get started</button></div>
       </section>
 
-      <section id="su-2" class="su-step" aria-labelledby="su-2-title" hidden>
+      <section id="su-2" class="su-step" aria-labelledby="su-2-title" data-errors hidden>
         <div class="su-head">
           <span class="eyebrow">Step 2 of 5</span>
           <h2 id="su-2-title">Download a speech model</h2>
@@ -348,6 +348,7 @@
           </summary>
           <ul id="setup-cards" class="dl-list"></ul>
         </details>
+        <div class="error-slot"></div>
         <div class="su-foot">
           <button type="button" data-go="1">Back</button>
           <span class="su-foot-right"><span id="su-2-note" class="su-note"></span>
@@ -355,7 +356,7 @@
         </div>
       </section>
 
-      <section id="su-3" class="su-step" aria-labelledby="su-3-title" hidden>
+      <section id="su-3" class="su-step" aria-labelledby="su-3-title" data-errors hidden>
         <div class="su-head">
           <span class="eyebrow">Step 3 of 5 · Optional</span>
           <h2 id="su-3-title">Work out who spoke when</h2>
@@ -383,6 +384,7 @@
             <button type="button" id="s-use-remembered" class="link-plain" hidden>Download with the remembered token</button>
           </div>
         </div>
+        <div class="error-slot"></div>
         <p id="su-speaker-status" class="su-status" role="status" aria-live="polite"></p>
         <div class="su-token-note">
           <p id="s-token-note"></p>
@@ -450,7 +452,7 @@
     <p id="s-assistant" class="set-text" hidden></p>
     <p id="s-repaired" class="set-text" hidden></p>
     <div class="set-grid two">
-      <section class="set-card" aria-labelledby="h-processing">
+      <section class="set-card" data-errors aria-labelledby="h-processing">
         <h2 id="h-processing">Processing</h2>
         <div class="segmented" role="radiogroup" aria-label="Processing speed">
           <label><input type="radio" name="mode" value="quiet" class="sr"><span>Quiet</span></label>
@@ -460,7 +462,7 @@
         <label class="toggle-row" for="s-battery"><span class="t-label">Process automatically on battery power</span>
           <input type="checkbox" id="s-battery" class="switch" role="switch"></label>
       </section>
-      <section class="set-card" aria-labelledby="h-model">
+      <section class="set-card" data-errors aria-labelledby="h-model">
         <h2 id="h-model">Speech model</h2>
         <label class="field" for="s-model">Used for new recordings and Transcribe again
           <select id="s-model" aria-describedby="s-model-hint"></select></label>
@@ -470,7 +472,7 @@
       </section>
     </div>
 
-    <section class="set-card" aria-labelledby="h-rec">
+    <section class="set-card" data-errors aria-labelledby="h-rec">
       <h2 id="h-rec">Recording and speakers</h2>
       <div class="set-grid three">
         <label class="toggle-row top" for="s-microphone"><span class="t-text"><span class="t-label strong">Record with a microphone</span>
@@ -512,7 +514,7 @@
       </div>
     </section>
 
-    <section class="set-card" aria-labelledby="h-folders">
+    <section class="set-card" data-errors aria-labelledby="h-folders">
       <div class="set-head">
         <h2 id="h-folders">Watched folders</h2>
         <button type="button" id="s-scan">Check now</button>
@@ -526,13 +528,13 @@
     </section>
 
     <div class="set-grid two">
-      <section class="set-card" aria-labelledby="h-updates">
+      <section class="set-card" data-errors aria-labelledby="h-updates">
         <h2 id="h-updates">Updates</h2>
         <p id="s-version" class="set-strong"></p>
         <p id="s-deployment" class="set-text"></p>
         <ul id="s-update-blockers" class="set-bullets"></ul>
       </section>
-      <section class="set-card" aria-labelledby="h-receipts">
+      <section class="set-card" data-errors aria-labelledby="h-receipts">
         <h2 id="h-receipts">Cleanup receipts</h2>
         <p class="set-text">A record of what was removed, kept for 30 days. No meeting content is kept.</p>
         <ul id="receipts" class="set-receipts"></ul>
@@ -548,7 +550,7 @@
   </section>
 
   <!-- Downloads: every model and component, its state and what can be done -->
-  <section id="view-downloads" class="view page downloads-page" aria-labelledby="h-downloads" hidden>
+  <section id="view-downloads" class="view page downloads-page" aria-labelledby="h-downloads" data-errors hidden>
     <div class="page-head">
       <button type="button" id="dl-back" class="back-link link-plain">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>Settings
@@ -556,6 +558,7 @@
       <h1 id="h-downloads">Downloads</h1>
       <p class="lede">Each file is checked against a published checksum before it is used. Downloads happen only here, when you choose.</p>
     </div>
+    <div class="error-slot"></div>
     <ul id="dl-list" class="dl-list framed"></ul>
     <div id="dl-token" class="dl-token" hidden>
       <span id="dl-token-note" class="set-text"></span>
@@ -585,7 +588,7 @@
             <button type="button" id="ho-new" class="link-plain">New template</button>
           </span>
         </li>
-        <li class="ho-step now">
+        <li class="ho-step now" data-errors>
           <h2 class="ho-step-title"><span class="ho-n" aria-hidden="true">2</span>Remove details <span class="ho-note">(this hand off only)</span></h2>
           <label class="ho-check"><input type="checkbox" id="ho-anon"> <span>Replace names with Speaker 1, Speaker 2</span></label>
           <label class="ho-field" for="ho-redactions">Words or phrases to redact, one per line
@@ -596,7 +599,7 @@
           </div>
           <button type="button" id="ho-apply" class="small">Apply</button>
         </li>
-        <li id="ho-out" class="ho-step">
+        <li id="ho-out" class="ho-step" data-errors>
           <h2 class="ho-step-title"><span class="ho-n" aria-hidden="true">3</span>Copy or save</h2>
           <!-- Copy and open (#109): the app copies, then opens the address
                policy sets (ChatGPT by default). The page never names it.
@@ -615,7 +618,7 @@
         </li>
       </ol>
 
-      <section id="ho-preview-pane" class="ho-preview-pane" aria-labelledby="ho-preview-title">
+      <section id="ho-preview-pane" class="ho-preview-pane" aria-labelledby="ho-preview-title" data-errors>
         <div class="ho-preview-head">
           <h2 id="ho-preview-title">Preview</h2>
           <span id="ho-info" class="ho-info"></span>
@@ -623,13 +626,14 @@
         <p id="ho-dirty" class="ho-notice" hidden>You changed what is left out or redacted. Select Apply to update the preview before copying or saving.</p>
         <p id="ho-long" class="ho-notice" hidden>This handoff is long. It is never shortened, but some assistants cut off long pasted text: prefer Save Markdown, attach the file and use Copy prompt only.</p>
         <pre id="ho-preview" class="ho-pre" tabindex="0" aria-label="Exact preview of what is copied"></pre>
+        <div class="error-slot"></div>
         <div class="ho-next">
           <span>Next: once the final document is reviewed and saved, come back and confirm. Unminute then clears this transcript.</span>
           <button type="button" id="ho-final">Final document saved…</button>
         </div>
       </section>
 
-      <section id="ho-editor" class="ho-editor" aria-labelledby="ho-editor-title" hidden>
+      <section id="ho-editor" class="ho-editor" aria-labelledby="ho-editor-title" data-errors hidden>
         <h2 id="ho-editor-title">Edit template</h2>
         <label class="ho-field" for="ho-t-title">Name
           <input id="ho-t-title" maxlength="120" autocomplete="off"></label>

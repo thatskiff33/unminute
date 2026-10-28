@@ -116,6 +116,14 @@ CASES = [
      "board": "Models-Queued-Dark.dc.html", "h": 1000, "dark": True},
     {"name": "downloads-resumed", "app": "downloads-resumed", "board": "Models-Resumed.dc.html",
      "h": 1000},
+    # #416: errors that stay beside their action, and an error toast (no
+    # boards yet: compared with the nearest one, for the owner's look).
+    {"name": "home-import-error", "board": "Home.dc.html", "app": "home-import-error"},
+    {"name": "help-toast-error", "board": "Help.dc.html", "app": "help-toast-error"},
+    {"name": "handoff-error", "app": "handoff-error", "board": "Handoff.dc.html", "h": 1000},
+    {"name": "settings-error", "board": "Settings.dc.html", "app": "settings-error", "h": 1320},
+    {"name": "downloads-error", "app": "downloads-error", "board": "Models.dc.html"},
+    {"name": "setup-3-token-error", "app": "setup-3-token-error", "board": "Setup-3.dc.html"},
     {"name": "help", "board": "Help.dc.html", "app": "help"},
     {"name": "locked", "board": "Locked.dc.html", "app": "locked"},
     {"name": "meeting-900", "board": "Meeting-Narrow.dc.html", "app": "meeting", "w": 900},

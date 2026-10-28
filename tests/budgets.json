@@ -34,7 +34,7 @@
     }
   },
   "ui_live_regions": {
-    "note": "Changes to the text of live regions (polite or assertive, or role status, alert or log) per minute of page time while nothing changes, in more views than the idle and recording runs, the computer audio hint shown among them (#346 review of 3c058a6, G1: with its guard removed it changed 630 times a minute) (tools/ui_idle_check.py LIVE_SCENARIOS, visible, 20 s of page time each; tools/design_check/fixtures.js perf mode). A screen reader may read a live region again at each change, even to the same text: Narrator stuttered on the recording card's state line (#346, the owner's check of 26 Oct 2026). Added by #346 on 26 Oct 2026 after its delta review (F2) at 0 for each view. Before the fix the reviewed meeting's banner (#m-banner) changed 12 times a minute, and the stopped meeting's #m-error (an assertive alert) and Setup's #su-speaker-status during a download were set at every poll too. recording-bridge-error added by #404 on 27 Oct 2026 at 0: before its fix the toast (#status) changed 33 times a minute while the reminders and recording_status calls failed at every poll, and 6 with only say() leaving the same text alone. recording-switched (the card after a switch of microphone, with its choice of microphone) added by #462 on 28 Oct 2026 at 0.",
+    "note": "Changes to the text of live regions (polite or assertive, or role status, alert or log) per minute of page time while nothing changes, in more views than the idle and recording runs, the computer audio hint shown among them (#346 review of 3c058a6, G1: with its guard removed it changed 630 times a minute) (tools/ui_idle_check.py LIVE_SCENARIOS, visible, 20 s of page time each; tools/design_check/fixtures.js perf mode). A screen reader may read a live region again at each change, even to the same text: Narrator stuttered on the recording card's state line (#346, the owner's check of 26 Oct 2026). Added by #346 on 26 Oct 2026 after its delta review (F2) at 0 for each view. Before the fix the reviewed meeting's banner (#m-banner) changed 12 times a minute, and the stopped meeting's #m-error (an assertive alert) and Setup's #su-speaker-status during a download were set at every poll too. recording-bridge-error added by #404 on 27 Oct 2026 at 0: before its fix the toast (#status) changed 33 times a minute while the reminders and recording_status calls failed at every poll, and 6 with only say() leaving the same text alone. recording-switched (the card after a switch of microphone, with its choice of microphone) added by #462 on 28 Oct 2026 at 0. home-import-error, handoff-error and settings-error (an error kept beside Import, Copy or save, and a Settings switch: a role alert) added by #416 on 28 Oct 2026 at 0.",
     "ratchets": {
       "recording-computer": {"live_region_changes_per_minute": 0},
       "recording-computer-quiet": {"live_region_changes_per_minute": 0},
@@ -43,7 +43,10 @@
       "meeting-error": {"live_region_changes_per_minute": 0},
       "setup-3-downloading": {"live_region_changes_per_minute": 0},
       "recording-bridge-error": {"live_region_changes_per_minute": 0},
-      "recording-switched": {"live_region_changes_per_minute": 0}
+      "recording-switched": {"live_region_changes_per_minute": 0},
+      "home-import-error": {"live_region_changes_per_minute": 0},
+      "handoff-error": {"live_region_changes_per_minute": 0},
+      "settings-error": {"live_region_changes_per_minute": 0}
     }
   },
   "ui_transcribing": {

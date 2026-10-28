@@ -145,8 +145,24 @@ COMPUTER_POLICY_STOP = ("Your organisation turned off computer audio. Only the m
                         "is recorded from here.")
 
 
+# What a refused request's message is, for the page (#416): "error" (something
+# went wrong or was refused) or "info" (nothing went wrong, such as a request
+# repeated too soon). The bridge passes it to the page as "kind", and the page
+# styles a message by it, never by its wording. Success messages are the
+# page's own. workspace/ui/app.js MESSAGE_KINDS lists the same kinds and
+# success (tests/test_message_kinds.py).
+ERROR_KINDS = ("error", "info")
+
+
 class WorkspaceError(ValueError):
-    """A refused request. The message is safe to show in the UI."""
+    """A refused request. The message is safe to show in the UI; kind is one
+    of ERROR_KINDS."""
+
+    def __init__(self, message="", kind="error"):
+        if kind not in ERROR_KINDS:
+            raise ValueError("Unknown message kind.")
+        super().__init__(message)
+        self.kind = kind
 
 
 def _key_line(locked, code):
@@ -827,7 +843,7 @@ class Workspace:
         """Refuse new work in finish-only mode (#111 B5b). The bridge refuses
         first; this covers the drop handler and any other caller."""
         if self.finish_only:
-            raise WorkspaceError(FINISH_ONLY_TEXT)
+            raise WorkspaceError(FINISH_ONLY_TEXT, kind="info")
 
     def check_can_record(self, device, name=None):
         """Refuse now what start_recording would refuse, before anyone is asked
@@ -3618,7 +3634,8 @@ class Workspace:
         with self._assistant_lock:
             last, now = self._assistant_opened_at, self._clock()
             if last is not None and now - last < ASSISTANT_PAUSE_S:
-                raise WorkspaceError("Already opening. Wait a moment and try again.")
+                raise WorkspaceError("Already opening. Wait a moment and try again.",
+                                     kind="info")
             self._assistant_opened_at = now
         try:
             copied = self.copy_handoff(mid, tid, "combined", expected, anonymise)

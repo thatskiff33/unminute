@@ -53,7 +53,13 @@ That detects a damaged download, not a replaced one. From 0.5.0 (including its p
 
 Unattended and Intune deployment, exit codes, detection rules and signing are covered in [docs/PACKAGING.md](docs/PACKAGING.md). IT teams can start from [docs/IT_DEPLOYMENT.md](docs/IT_DEPLOYMENT.md): install modes, managed policy, health monitoring, updates, offboarding and incidents. For an install for everyone on a computer, IT can also install the models from a package it builds with `tools\intune\New-ModelPackage.ps1`, so staff need no download or Hugging Face token ("Models for everyone" in the IT guide). Not yet in a release.
 
-The newest release, 0.5.0-preview.4 (27 October 2026), has everything this README describes except what is marked "Not yet in a release" (the models IT installs for everyone, above; the decoder's sandbox and the runtime firewall rule, in "Privacy and network behaviour"). The [user guide](docs/WORKSPACE_GUIDE.md) lists any later change that is not in a release yet.
+The newest release, 0.5.0-preview.4 (27 October 2026), has everything this README describes except what is marked "Not yet in a release" (the models IT installs for everyone, above; the decoder's sandbox and the runtime firewall rule, in "Privacy and network behaviour"). The [user guide](docs/WORKSPACE_GUIDE.md) describes the latest code and carries no release notes; these parts of it are not in 0.5.0-preview.4 and arrive with the next release (the [changelog](CHANGELOG.md) has the rest):
+
+- **Models from your IT team.** Where Unminute is installed for everyone on the computer, IT can install the models, and a policy can keep staff to them; staff then see no download and no Hugging Face token step. In 0.5.0-preview.4 every person downloads their own models.
+- **The firewall rule IT can turn on** for an install for everyone on the computer. In 0.5.0-preview.4 only the app's own block on its network connections applies.
+- **The protected decoder**: the message "This recording can't be opened safely on this computer" and the `--check-decoder` option for IT. In 0.5.0-preview.4 each recording is still decoded in a separate, limited process, but that process can read your files.
+- **The note on the Meetings page when Unminute removes an import cut short.** In 0.5.0-preview.4 the app still finishes or removes such an import when it starts, but says nothing when it removes one, and an update that changes how the workspace is stored counts it as a meeting to review and hand off.
+- **Errors that stay beside their action** on Import, Hand off, Settings, Downloads and Setup's download steps, until dismissed (#416). In 0.5.0-preview.4 every error shows briefly at the bottom of the window.
 
 ### Coming from 0.4.3 or earlier
 
@@ -74,7 +80,7 @@ The first start opens Setup, five short steps. Each model is a one-off download 
 
 1. **Welcome:** how a meeting moves through the app.
 2. **Speech model:** Parakeet v2 is recommended (0.66 GB). Parakeet v3, Whisper large-v3 turbo and Whisper large-v3 are under Other options.
-3. **Speaker names (optional, 0.03 GB):** the speaker identification model's publisher asks you to accept its terms with a free Hugging Face account and a "Read" token, once. Setup links to each page. The token can be remembered in Windows Credential Manager and removed at any time. Downloaded models keep working without it.
+3. **Speaker names (optional, 0.03 GB):** the speaker identification model's publisher asks you to accept its terms with a free Hugging Face account and a "Read" token, once. Setup links to each page. The token can be remembered in Windows Credential Manager and removed at any time. Downloaded models keep working without it. Where IT installed the models for everyone on the computer, this step says the speaker model is ready and asks for no account or token. Not yet in a release.
 4. **Microphone (optional):** turn on recording and test the microphone.
 5. **Ready:** a summary of what is set up.
 
