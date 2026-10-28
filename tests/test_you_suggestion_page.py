@@ -313,6 +313,10 @@ class AccessibilityFocusStepsTests(unittest.TestCase):
         self.assertTrue(self.r["open"], "the panel did not open: nothing was tested")
         focus = self.r["focus"]
         self.assertEqual("More examples", (focus.get("paging") or [{}])[0].get("pressed"), focus)
+        # The paging ends on First examples, so focus after it is checked too
+        # (#479): the fixture keeps the offsets, as the app does.
+        self.assertEqual("First examples", (focus.get("paging") or [{}])[-1].get("pressed"),
+                         focus)
         self.assertEqual([], accessibility_check.you_focus_problems(focus), focus)
 
 

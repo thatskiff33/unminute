@@ -4,8 +4,9 @@
 #   - seal_you_activity makes a throwaway workspace's meeting a two-track one:
 #     it seals a synthetic track-activity file under the meeting's audio key,
 #     from its speakers' passages, and the Name speakers panel then suggests
-#     the first speaker as "You", through the app's own speaker_panel; a
-#     meeting without identified speakers stops the run;
+#     the first speaker as "You", through the app's own speaker_panel, with
+#     a More examples button for YOU_FOCUS to press (#479); a meeting without
+#     identified speakers stops the run;
 #   - the view sits in VIEWS right after the names dialog, and release
 #     evidence requires it (tools/evidence.py, ACCESSIBILITY_VIEWS);
 #   - the verdicts (you_findings, you_focus_problems) pass a good answer and
@@ -34,13 +35,14 @@ import keyprotect  # noqa: E402
 HAVE_NUMPY = importlib.util.find_spec("numpy") is not None
 RATE = 16000
 SECONDS = 60
-# Speakers alternate every 10 s, a 3 s passage every 4 s (as the check's fake
-# engines give): SPEAKER_00 has about 24 s of passages, SPEAKER_01 about 21 s.
+# Speakers alternate every 10 s, a 3 s passage every 4 s, and SPEAKER_01 talks
+# over SPEAKER_00 from 25 s to 27 s (as the check's fake engines give,
+# tests/fake_worker_engines.py: sentences and fake_diarizer): SPEAKER_00 has
+# about 21 s of passages without overlap, SPEAKER_01 about 21 s.
 PASSAGES = [(t + 0.5, t + 3.5) for t in range(0, SECONDS - 4, 4)]
-
-
-def label(start):
-    return "SPEAKER_00" if int(start // 10) % 2 == 0 else "SPEAKER_01"
+EXCLUSIVE = [(float(t), float(t + 10), "SPEAKER_00" if (t // 10) % 2 == 0 else "SPEAKER_01")
+             for t in range(0, SECONDS, 10)]
+TURNS = EXCLUSIVE + [(25.0, 27.0, "SPEAKER_01")]
 
 
 @unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
@@ -67,9 +69,8 @@ class SealYouActivityTests(unittest.TestCase):
                                    chunk_plan=[(0, SECONDS * RATE, 0, SECONDS * RATE)])
         store.commit_chunk(vid, 0, [Segment(a, b, f"passage {a}") for a, b in PASSAGES])
         if speakers:
-            turns = [(a, b, label(a)) for a, b in PASSAGES]
             rid = store.start_speaker_run(vid)
-            self.assertTrue(store.finish_speaker_run(rid, turns, turns))
+            self.assertTrue(store.finish_speaker_run(rid, TURNS, EXCLUSIVE))
         return mid
 
     def test_the_first_speaker_is_suggested_through_the_apps_panel(self):
@@ -86,6 +87,18 @@ class SealYouActivityTests(unittest.TestCase):
         flag = activity.read(folder, self.ws.store.meeting_key(mid, "audio"), mid)[3]
         self.assertGreater(int(((flag & activity.OWN) > 0).sum()) * activity.HOP_S,
                            activity.YOU_MIN_S)
+
+    def test_the_suggested_speaker_has_a_paging_button(self):
+        # YOU_FOCUS presses that speaker's More examples, then First examples
+        # (#479): the panel offers More examples only past the first page of 3.
+        from workspace import speaker_names
+        mid = self.meeting()
+        you = ac.seal_you_activity(self.ws, mid)
+        vid = self.ws.store.active_version(mid)["id"]
+        overlap = speaker_names.resolve(self.ws.store, vid)["overlap"]
+        self.assertEqual(1, sum(overlap.values()), "the overlap turn marked no passage")
+        sp = next(s for s in self.ws.speaker_panel(mid)["speakers"] if s["label"] == you)
+        self.assertGreater(sp["examples"]["total"], 3, sp["examples"]["total"])
 
     def test_a_meeting_without_identified_speakers_stops_the_run(self):
         mid = self.meeting(speakers=False)
