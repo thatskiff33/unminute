@@ -167,7 +167,8 @@ def load_draft_engine(name, cache_dir, threads, allow_test=False):
                              "only.")
     state, detail = asr_engines.parakeet_status(name, cache_dir)
     if state != "ready":
-        raise ModelLoadError(f"{asr_engines.label(name)} is not ready. {fix_speech(name)} "
+        # IT, when IT's copy is there but not usable (#464), as the full pass says.
+        raise ModelLoadError(f"{asr_engines.label(name)} is not ready. {_parakeet_fix(name)} "
                              f"({detail})")
     return asr_engines.DraftEngine(name, cache_dir, threads).load()
 

@@ -1242,42 +1242,65 @@ class DraftEngine:
                 f"revision {self.spec.revision[:7]})")
 
     def load(self):
-        """Verify then load, entirely from local files. Raises ModelLoadError."""
+        """Verify then load, entirely from local files. Raises ModelLoadError.
+        IT's copy is handled as ParakeetEngine.load handles it (#464): one that
+        passes on its record but fails to load and then fails a full check is
+        kept as failed (check_machine), and the load is tried once more without
+        it, with the user's own copy where AllowUserModels allows one, or an
+        error that names IT. The window finds that sentence in the worker's
+        message (DraftSession._take)."""
+        for again in (False, True):
+            folders = self._locate()
+            try:
+                self._load(folders)
+            except Exception as exc:
+                self._asr = self._vad = None
+                parts = (self.spec, SILERO_VAD)
+                damaged = [s for s, f in zip(parts, folders, strict=True)
+                           if _is_machine(s, f) and check_machine(s, f, full=True)]
+                if damaged and not again:
+                    continue
+                fix = f". {machine_damaged(damaged[0])} " if damaged else " "
+                raise ModelLoadError(f"{label(self.spec.name)} failed to load for drafts{fix}"
+                                     f"({type(exc).__name__}: {exc})") from exc
+            self.reset()
+            return self
+
+    def _locate(self):
         folders = []
         for spec in (self.spec, SILERO_VAD):
             folder, problems = locate(spec, self.cache_dir)     # IT's copy first (#111 B7a)
             if problems:
                 # Not shown as a meeting's error: drafts only say they are
                 # not available (the full pass reports the model's problem).
-                raise ModelLoadError(f"{label(spec.name)} cannot be used for drafts "
+                # Only IT can repair IT's copy, which comes first (#464).
+                fix = f". {machine_damaged(spec)} " if machine_copy(spec) is not None else " "
+                raise ModelLoadError(f"{label(spec.name)} cannot be used for drafts{fix}"
                                      f"({'; '.join(problems)})")
             folders.append(folder)
-        try:
-            import onnx_asr
-            import onnxruntime as rt
-            rt.disable_telemetry_events()   # before any session, in every process
+        return folders
 
-            def options(threads):
-                opts = rt.SessionOptions()
-                opts.intra_op_num_threads = threads
-                opts.inter_op_num_threads = 1
-                # No busy-waiting threads (see ParakeetEngine.load).
-                opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
-                return opts
-            cpu = ["CPUExecutionProvider"]
-            self._asr = onnx_asr.load_model(
-                self.spec.onnx_asr_name, folders[0],
-                quantization=self.spec.quantization, sess_options=options(self.threads),
-                providers=cpu)
-            # The verified Silero file, scored one step at a time (onnx-asr's
-            # own VAD object takes whole recordings only).
-            self._vad = rt.InferenceSession(str(Path(folders[1]) / "silero_vad.onnx"),
-                                            sess_options=options(1), providers=cpu)
-        except Exception as exc:
-            raise ModelLoadError(f"{label(self.spec.name)} failed to load for drafts "
-                                 f"({type(exc).__name__}: {exc})") from exc
-        self.reset()
-        return self
+    def _load(self, folders):
+        import onnx_asr
+        import onnxruntime as rt
+        rt.disable_telemetry_events()   # before any session, in every process
+
+        def options(threads):
+            opts = rt.SessionOptions()
+            opts.intra_op_num_threads = threads
+            opts.inter_op_num_threads = 1
+            # No busy-waiting threads (see ParakeetEngine.load).
+            opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
+            return opts
+        cpu = ["CPUExecutionProvider"]
+        self._asr = onnx_asr.load_model(
+            self.spec.onnx_asr_name, folders[0],
+            quantization=self.spec.quantization, sess_options=options(self.threads),
+            providers=cpu)
+        # The verified Silero file, scored one step at a time (onnx-asr's
+        # own VAD object takes whole recordings only).
+        self._vad = rt.InferenceSession(str(Path(folders[1]) / "silero_vad.onnx"),
+                                        sess_options=options(1), providers=cpu)
 
     def reset(self):
         """Forget the stream so far (a new recording, or after a gap)."""

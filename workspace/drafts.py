@@ -157,7 +157,30 @@ REASONS = {
     "ended": ("Draft text stopped for this recording because a speech model was downloaded "
               "or removed. The recording is not affected."),
     "failed": NOTES[FAILED],
+    # IT's copy of Parakeet v2, or of its speech detector, is damaged (#464): only IT
+    # can repair it, so Manage downloads is not named (asr_engines.machine_damaged).
+    "machine": (f"Draft text is not available: your IT team's copy of "
+                f"{asr_engines.label(DRAFT_MODEL)} is damaged. Ask your IT team to repair it. "
+                "The recording is not affected."),
 }
+
+
+def unavailable_reason(model):
+    """Why drafts cannot start when the draft model is not ready (#464):
+    "machine" when IT installed it on a machine install and its copy, or its
+    speech detector's, is not usable (a quick check, or a failure kept in this
+    process), else "unavailable". A test engine is never IT's."""
+    if model in asr_engines.MANAGED_MODELS and asr_engines.machine_damaged_model(model):
+        return "machine"
+    return "unavailable"
+
+
+def _names_machine_damage(message):
+    """True when a draft worker's message says IT's copy of the draft model or
+    its speech detector is damaged (asr_engines.machine_damaged)."""
+    specs = (asr_engines.PARAKEET_MODELS[DRAFT_MODEL], asr_engines.SILERO_VAD)
+    return isinstance(message, str) and any(asr_engines.machine_damaged(s) in message
+                                            for s in specs)
 
 
 # -- audio: resampling, phrase splitting (pure; tested without a model) -------------
@@ -734,6 +757,7 @@ class DraftSession:
         self._phrases = []               # [{kind, text, start, end} | {kind, seconds}]
         self._first = 0                  # index of _phrases[0] (older ones were let go)
         self.state, self.reason = STARTING, None
+        self.machine_damaged = False     # the worker found IT's copy damaged (#464)
         self.restarts = 0
         self.skipped_s = 0.0
         # Draft audio lost: by the tap (the writer thread only) and by the
@@ -1100,6 +1124,11 @@ class DraftSession:
             self.state = UNAVAILABLE if msg[3:4] == ("load",) else FAILED
             self.reason = "load" if self.state == UNAVAILABLE else "error"
             self._feeding = False
+            if self.state == UNAVAILABLE and len(msg) > 2 and _names_machine_damage(msg[2]):
+                # IT's copy found damaged: the window keeps it failed too, so
+                # Downloads shows it so, and the note names IT (#464, as #451).
+                asr_engines.note_machine_damage(msg[2])
+                self.machine_damaged = True
 
     def _keep(self, item):
         """Call with _lock held. MAX_KEPT counts phrases and skipped notes."""
@@ -1140,12 +1169,20 @@ class DraftSession:
 
     # -- reading (for the page, #104 slice 3) -----------------------------------------
 
+    @property
+    def note(self):
+        """The state's note in the page's words; IT's, when the worker could not
+        load because IT's copy is damaged (#464)."""
+        if self.state == UNAVAILABLE and self.machine_damaged:
+            return REASONS["machine"]
+        return NOTES.get(self.state)
+
     def snapshot(self, since=0, limit=200):
         """State and the phrases after index since (at most limit): text and
         times only, never a path."""
         with self._lock:
             start = max(int(since), self._first)
             items = self._phrases[start - self._first: start - self._first + limit]
-            return {"state": self.state, "note": NOTES.get(self.state),
+            return {"state": self.state, "note": self.note,
                     "generation": self.generation, "count": self.count,
                     "since": start, "phrases": [dict(p) for p in items]}

@@ -70,9 +70,11 @@ class FeedTests(WorkspaceCase):
 
     def app_status(self, state=None, why="off", count=0):
         """What Workspace._draft_status says for a session in `state` (or
-        none, and why), with the feed's generation."""
+        none, and why), with the feed's generation. The session's note is
+        DraftSession.note for a worker that did not find IT's copy damaged."""
         ws = self.ws
         ws._drafts = (types.SimpleNamespace(state=state, count=count,
+                                            note=drafts.NOTES.get(state),
                                             generation=self.feed.generation, mixing=False)
                       if state else None)
         ws._draft_why, ws._draft_gen = why, self.feed.generation
