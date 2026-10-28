@@ -13,7 +13,7 @@ This guide covers the packaged workspace, as it is in the project's latest code.
 3. [Review](#working-on-a-meeting) the transcript: play passages, fix words and name speakers, then confirm.
 4. [Hand off](#handing-off-and-cleaning-up) the reviewed text to your organisation's approved AI assistant, then confirm the final document is saved. Unminute clears the meeting.
 
-If something cannot be done, Unminute says why next to the button you used, and the message stays until you select **Dismiss** or the action works. [Troubleshooting and support](#troubleshooting-and-support) lists the messages and what to do.
+On Import, Hand off, Settings, Downloads and Setup's download steps, if something cannot be done, Unminute says why next to the button you used, and the message stays until you select **Dismiss** or the action works. Elsewhere the reason shows briefly at the bottom right of the window. [Troubleshooting and support](#troubleshooting-and-support) lists the messages and what to do.
 
 ## Getting started
 
@@ -203,7 +203,7 @@ The earlier version's workspace and models stay on the computer until they are d
 
 ## Troubleshooting and support
 
-When something you asked for cannot be done, the reason appears next to it: under **Import a recording**, in the Hand off step you used, in the Settings card you changed, or on the Downloads page. It stays until you select **Dismiss** or the same action works. Other messages show briefly at the bottom right of the window, an error with an alert mark and a success with a tick.
+When something you asked for cannot be done, the reason appears next to it: under **Import a recording**, in the Hand off step you used, in the Settings card you changed, on the Downloads page, or in Setup's download steps. It stays until you select **Dismiss** or the same action works. Other messages show briefly at the bottom right of the window, an error with an alert mark and a success with a tick.
 
 ![An error kept under Import a recording, with Dismiss (sample)](screenshots/workspace-error.png)
 

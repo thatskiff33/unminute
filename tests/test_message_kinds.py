@@ -54,9 +54,12 @@ class WorkspaceErrorKindTests(unittest.TestCase):
             with self.subTest(kind=bad), self.assertRaises(ValueError):
                 app.WorkspaceError("x", kind=bad)
 
-    def test_it_still_pickles_with_its_message(self):
-        again = pickle.loads(pickle.dumps(app.WorkspaceError("Refused.")))
-        self.assertEqual((str(again), again.kind), ("Refused.", "error"))
+    def test_it_still_pickles_with_its_message_and_kind(self):
+        for kind in app.ERROR_KINDS:
+            with self.subTest(kind=kind):
+                again = pickle.loads(pickle.dumps(app.WorkspaceError("Refused.", kind=kind)))
+                self.assertEqual((type(again), str(again), again.kind),
+                                 (app.WorkspaceError, "Refused.", kind))
 
     def test_the_kinds_are_the_pages(self):
         found = re.search(r"^const MESSAGE_KINDS = \[([^\]]*)\];", APP_JS, re.M)
@@ -254,8 +257,8 @@ const say = (message, opts) => said.push([message, opts.kind]);
 
 SHOW_CASES = FAKE_DOM + r"""
 const card = el("section", { "data-errors": "" });
-const button = el("button");
-card.append(button);
+const button = el("button"), other = el("button");
+card.append(button, other);
 const step = el("li", { "data-errors": "" });
 const slot = el("div", { class: "error-slot" });
 step.append(el("pre"), slot, el("div"));
@@ -272,12 +275,14 @@ showError(card, "Refused.", button);
 out.same = { count: boxes(card).length, writes: span.writes - writes };
 showError(card, "Refused again.", button);
 out.changed = { count: boxes(card).length, texts: text(card) };
+showError(card, "Refused again.", other);     // the same error, now from another control
 showError(step, "Not found.");
 out.slot = { inSlot: text(slot),
              stepDirect: step.children.filter((c) => c.has("inline-error")).length };
 const dismiss = boxes(card)[0].children.find((c) => c.tag === "button");
 dismiss.click();
-out.dismissed = { count: boxes(card).length, focused: button.focused, label: dismiss._text };
+out.dismissed = { count: boxes(card).length, focused: [button.focused, other.focused],
+                  label: dismiss._text };
 clearError(step);
 out.cleared = boxes(step).length;
 clearError(null);
@@ -343,7 +348,8 @@ class PageKindTests(unittest.TestCase):
                          "the same error again must leave the alert alone (#404, #346)")
         self.assertEqual(out["changed"], {"count": 1, "texts": ["Refused again."]})
         self.assertEqual(out["slot"], {"inSlot": ["Not found."], "stepDirect": 0})
-        self.assertEqual(out["dismissed"], {"count": 0, "focused": 1, "label": "Dismiss"})
+        # Dismiss returns focus to the control of the latest error in that place.
+        self.assertEqual(out["dismissed"], {"count": 0, "focused": [0, 1], "label": "Dismiss"})
         self.assertEqual(out["cleared"], 0)
         self.assertEqual(out["toasted"], [["Nowhere to put it.", "error"]])
 
@@ -409,6 +415,90 @@ class ErrorPlaceTests(unittest.TestCase):
         for name in sorted(named):
             with self.subTest(element=name):
                 self.assertTrue(self.homed.get(name), f"#{name} has no [data-errors] place")
+
+
+def call_args(source, name):
+    """The arguments of each call of name( in source (not its definition), as
+    source text split at the call's own commas. Strings, template literals,
+    line comments and nested brackets are skipped over; a call that does not
+    close fails."""
+    found = []
+    for m in re.finditer(r"(?<![\w.])" + re.escape(name) + r"\(", source):
+        if source[max(0, m.start() - 9):m.start()] == "function ":
+            continue
+        stack, args, start, i = ["("], [], m.end(), m.end()
+        while stack:
+            if i >= len(source):
+                raise AssertionError(f"a call of {name}( at {m.start()} does not close")
+            ch, top = source[i], stack[-1]
+            if top == "`":                                 # inside a template literal
+                if ch == "\\":
+                    i += 1
+                elif ch == "`":
+                    stack.pop()
+                elif source.startswith("${", i):
+                    stack.append("{")
+                    i += 1
+            elif source.startswith("//", i):              # a comment: to the end of its line
+                i = source.index("\n", i)
+                continue
+            elif ch in "'\"":                               # a string: to its closing quote
+                i += 1
+                while source[i] != ch:
+                    i += 2 if source[i] == "\\" else 1
+            elif ch in "`([{":
+                stack.append(ch)
+            elif ch in ")]}":
+                stack.pop()
+                if not stack:
+                    args.append(source[start:i].strip())
+            elif ch == "," and len(stack) == 1:
+                args.append(source[start:i].strip())
+                start = i + 1
+            i += 1
+        found.append([a for a in args if a])
+    return found
+
+
+# The bridge methods of the download steps: Setup's steps 2 and 3 and the
+# Downloads page. An error from any of them stays beside the control used.
+DOWNLOAD_METHODS = ("download_model", "cancel_download", "remove_model", "verify_model",
+                    "remove_token")
+
+
+class DownloadPlaceTests(unittest.TestCase):
+    """Every download action on Setup and Downloads passes the control that
+    asked, so a refusal stays beside it rather than in the toast (#473 review:
+    Setup step 2's own Download, Repair and Cancel passed none)."""
+
+    def test_every_start_download_passes_its_control(self):
+        calls = call_args(APP_JS, "startDownload")
+        self.assertGreaterEqual(len(calls), 4, "the page's startDownload calls were not found")
+        for args in calls:
+            with self.subTest(call=", ".join(args)):
+                self.assertEqual(len(args), 2, "startDownload without a place")
+                self.assertRegex(args[1], r"\bnear:", "startDownload without a place")
+
+    def test_every_attempt_on_the_download_cards_passes_a_place(self):
+        cards = page_functions("cancelQueued", "modelCard", "downloadRow", "renderDownloads",
+                               "startDownload")
+        calls = call_args(cards, "attempt")
+        self.assertGreaterEqual(len(calls), 6, "the download cards' attempt calls were not found")
+        for args in calls:
+            with self.subTest(call=args[0][:60]):
+                self.assertEqual(len(args), 2, "attempt without a place")
+                self.assertNotEqual(args[1], "null", "attempt without a place")
+
+    def test_every_download_method_is_attempted_with_a_place(self):
+        named = 0
+        for args in call_args(APP_JS, "attempt"):
+            if not any(f'"{method}"' in args[0] for method in DOWNLOAD_METHODS):
+                continue
+            named += 1
+            with self.subTest(call=args[0][:60]):
+                self.assertEqual(len(args), 2, "a download action without a place")
+                self.assertNotEqual(args[1], "null", "a download action without a place")
+        self.assertGreaterEqual(named, 6, "the page's download actions were not found")
 
 
 if __name__ == "__main__":

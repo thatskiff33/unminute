@@ -93,12 +93,14 @@ function showError(home, message, back = null) {
     const dismiss = el("button", { type: "button", class: "link-plain", textContent: "Dismiss",
       on: { click: () => {
         box.remove();
-        if (back && back.isConnected && !back.disabled) back.focus();   // not lost to the page
+        const to = box.errorBack;                    // the control of the latest error here
+        if (to && to.isConnected && !to.disabled) to.focus();   // not lost to the page
       } } });
     box = el("div", { class: "inline-error", role: "alert" }, icon("alert", 18),
              el("span", { class: "inline-error-text" }), dismiss);
     slot.append(box);
   }
+  box.errorBack = back;
   putText(box.querySelector(".inline-error-text"), message);
 }
 function clearError(home) {
@@ -2027,7 +2029,7 @@ function renderSuSteps() {
 function modelCard(c, s) {
   const dl = c.download;
   let action;
-  if (isRunning(c)) action = button("Cancel", () => attempt(() => call("cancel_download", c.name).then(renderSetup)));
+  if (isRunning(c)) action = button("Cancel", (e) => attempt(() => call("cancel_download", c.name).then(renderSetup), e.currentTarget));
   else if (isQueued(c)) action = cancelQueued(c, renderSetup);
   else if (c.state === "ready")
     action = el("span", { class: "su-ready" }, el("span", { class: "tick" }, icon("tick", 13)), "Ready");
@@ -2035,7 +2037,8 @@ function modelCard(c, s) {
     action = itManaged(c);
   else {
     // Another download running: this one queues behind it (#366).
-    action = button(c.state === "missing" ? `Download (${c.size_gb} GB)` : "Repair", () => startDownload(c.name), { primary: true });
+    action = button(c.state === "missing" ? `Download (${c.size_gb} GB)` : "Repair",
+                    (e) => startDownload(c.name, { near: e.currentTarget }), { primary: true });
   }
   return el("div", { class: "su-model" },
     el("div", { class: "su-model-top" },
