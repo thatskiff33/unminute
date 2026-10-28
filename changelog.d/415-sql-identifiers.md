@@ -1,2 +1,0 @@
-Security hardening (#415):
-- **The workspace database's table names are checked before use.** When Unminute checks, rebuilds or updates the storage of an older workspace, it puts a table name into its database commands only if the name is plain letters, digits and underscores. A database changed to hold any other name is refused, and nothing in it is read or dropped; an update waits for it rather than go ahead.

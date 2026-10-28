@@ -1,1 +1,0 @@
-- **More examples keeps your place in Name speakers.** After **More examples** or **First examples**, keyboard focus stays on that speaker's button instead of dropping out of the panel, so you can keep going from the keyboard.
