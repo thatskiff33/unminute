@@ -1012,11 +1012,14 @@ async function undoSpeakers() {
   afterNamesChange(true);
 }
 
-const namesState = { offsets: {}, generation: 0 };
+// focus: the label of a speaker whose name box takes focus once the panel
+// is rebuilt (after Use 'You', whose button goes with the rebuild).
+const namesState = { offsets: {}, generation: 0, focus: null };
 
 async function openNames() {
   if (!canName()) { say("Speakers can be named once they are identified, and before the review is confirmed."); return; }
   namesState.offsets = {};
+  namesState.focus = null;
   await renderNames();
   $("names").showModal();
 }
@@ -1028,7 +1031,31 @@ async function renderNames() {
   const data = await attempt(() => call("speaker_panel", state.mid, namesState.offsets));
   if (!data || generation !== namesState.generation) return;
   $("n-undo").disabled = !data.can_undo;
-  $("n-list").replaceChildren(...data.speakers.map((sp, i) => speakerBlock(sp, data.speakers, i, data.you)));
+  const blocks = data.speakers.map((sp, i) => speakerBlock(sp, data.speakers, i, data.you));
+  $("n-list").replaceChildren(...blocks);
+  youFollowsTyping(blocks, data.speakers, data.you);
+  const focus = namesState.focus;
+  namesState.focus = null;
+  if (focus && blocks.length) {
+    const i = data.speakers.findIndex((sp) => sp.label === focus);
+    blocks[Math.max(i, 0)].querySelector(".n-label input").focus();
+  }
+}
+
+// The suggestion follows what is typed (#461): a name typed for the
+// suggested speaker, or 'You' typed for anyone, hides it at once, as the
+// rebuilt panel would, so Use 'You' never replaces a name being typed.
+// Putting the boxes back as they were shows it again.
+function youFollowsTyping(blocks, speakers, you) {
+  const i = speakers.findIndex((sp) => sp.label === you);
+  const row = i < 0 ? null : blocks[i].querySelector(".n-you");
+  if (!row) return;
+  const boxes = blocks.map((b) => b.querySelector(".n-label input"));
+  const update = () => {
+    row.hidden = boxes[i].value !== speakers[i].name
+      || boxes.some((b) => b.value.trim().toLowerCase() === "you");
+  };
+  for (const box of boxes) box.addEventListener("input", update);
 }
 
 // A two-track recording (#108): the speaker who was mostly on the user's
@@ -1040,6 +1067,7 @@ function youSuggestion(sp, name) {
       await call("rename_speaker", state.mid, sp.label, "You");
       name.value = "You";
       say("Name saved");
+      namesState.focus = sp.label;      // the button goes with the rebuild (#461)
       afterNamesChange(true);
     }) } });
   return el("p", { class: "n-you" }, el("span", { textContent: "Mostly on your microphone: probably you." }), use);

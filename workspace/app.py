@@ -2652,11 +2652,13 @@ class Workspace:
                 isinstance(k, str) and isinstance(o, int) and not isinstance(o, bool)
                 and 0 <= o <= 10**6 for k, o in offsets.items()):
             raise WorkspaceError("Out of range.")
-        out = speaker_names.panel(self.store, v["id"], offsets)
-        out["you"] = self._you_suggestion(mid, v["id"], out["speakers"])
+        # One resolve of the speakers for the panel and the suggestion (#461).
+        view = speaker_names.resolve(self.store, v["id"])
+        out = speaker_names.panel(self.store, v["id"], offsets, view=view)
+        out["you"] = self._you_suggestion(mid, v["id"], out["speakers"], view)
         return out
 
-    def _you_suggestion(self, mid, vid, speakers):
+    def _you_suggestion(self, mid, vid, speakers, view=None):
         """The speaker label to suggest as "You" in the Name speakers panel,
         or None (#108 slice 5, the owner's decision 5 of 20 Oct 2026). Only for
         a two-track recording whose track-activity file is there and opens
@@ -2670,7 +2672,7 @@ class Workspace:
             return None
         from workspace import activity
         try:
-            label = activity.suggest(speaker_names.spans(self.store, vid), flag)
+            label = activity.suggest(speaker_names.spans(self.store, vid, view), flag)
         except Exception:
             return None
         sp = next((sp for sp in speakers if sp["label"] == label), None)
@@ -2681,7 +2683,10 @@ class Workspace:
         microphone-only recording, an import, audio cleaned up; or it does
         not open). Kept in memory for a few meetings, by the file's size and
         time, so the panel's renders do not open it each time; never logged
-        or shown (P3)."""
+        or shown (P3). What is kept is used only while the meeting still has
+        its audio key: audio cleanup destroys the key before it removes the
+        folder, and a folder that could not be removed (a locked file) must
+        not bring the suggestion back from memory (#461)."""
         from workspace import activity
         folder = media.meeting_folder(self.media, mid)
         try:
@@ -2693,12 +2698,18 @@ class Workspace:
         sig = (st.st_size, st.st_mtime_ns)
         with self._activity_lock:
             hit = self._activity_cache.get(mid)
+        try:
+            key = self.store.meeting_key(mid, "audio")
+        except Exception:                # no key (audio cleaned up), damaged, locked
+            with self._activity_lock:
+                self._activity_cache.pop(mid, None)
+            return None
         if hit is not None and hit[0] == sig:
             return hit[1]
         try:
-            flag = activity.read(folder, self.store.meeting_key(mid, "audio"), mid)[3]
+            flag = activity.read(folder, key, mid)[3]
         except Exception:
-            return None                  # no key (audio cleaned up), damaged, not its own
+            return None                  # damaged, not its own
         with self._activity_lock:
             self._activity_cache.pop(mid, None)
             self._activity_cache[mid] = (sig, flag)

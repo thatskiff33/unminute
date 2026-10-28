@@ -1,0 +1,208 @@
+# tests/test_you_suggestion_page.py
+# The "You" suggestion in the Name speakers panel (#108 slice 5), follow-ups
+# from the review of #458 (#461):
+#   - the suggestion row follows what is typed: a name typed for the
+#     suggested speaker, or "You" typed for anyone, hides it at once (as the
+#     panel would after a rebuild), so Use 'You' can never replace a name
+#     being typed; putting the box back as it was shows it again;
+#   - after Use 'You', the panel is rebuilt without the button, and focus
+#     goes to that speaker's name box (now "You"), not to the page.
+#
+# The real page runs in headless Microsoft Edge with the design check's fake
+# bridge (tools/design_check/fixtures.js, the "names-you" scenario) and
+# synthetic speaker names, wrapped here so the test controls the panel and
+# sees each rename asked for: no app window, workspace or audio. The
+# real-window accessibility run (tools/accessibility_check.py) is separate.
+#   python tools/run_tests.py --only test_you_suggestion_page
+
+import html
+import http.server
+import json
+import re
+import subprocess
+import sys
+import tempfile
+import threading
+import unittest
+from pathlib import Path
+from urllib.parse import urlsplit
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
+import design_check  # noqa: E402
+
+EDGE = next((p for p in design_check.EDGE if p.is_file()), None)
+
+# Loaded after fixtures.js and before app.js: speaker_panel answers from the
+# test's names, suggesting SPEAKER_00 as the app would (a default name, and
+# no one called "You"), and rename_speaker changes them and is recorded.
+BRIDGE = """
+(() => {
+  const real = window.pywebview.api;
+  const t = window.__you = { names: { SPEAKER_00: "Speaker 1", SPEAKER_01: "Speaker 2" },
+                             renames: [] };
+  const suggested = () => {
+    const names = Object.values(t.names);
+    return /^Speaker [0-9]+$/.test(t.names.SPEAKER_00)
+      && !names.some((n) => n.trim().toLowerCase() === "you") ? "SPEAKER_00" : null;
+  };
+  window.pywebview = { api: new Proxy({}, { get: (_, method) => async (...args) => {
+    if (method === "rename_speaker") {
+      t.renames.push([args[1], args[2]]);
+      t.names[args[1]] = args[2];
+      return { ok: true, value: null };
+    }
+    const r = await real[method](...args);
+    if (method === "speaker_panel" && r.ok) {
+      const speakers = r.value.speakers.map((sp) => ({ ...sp, name: t.names[sp.label] }));
+      return { ok: true, value: { ...r.value, you: suggested(), speakers } };
+    }
+    return r;
+  } }) };
+})();
+"""
+
+# Run after app.js, once the scenario has opened the panel: the steps, then
+# the observations as JSON in <pre id="you-result">.
+STEPS = """
+(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const t = window.__you;
+  const boxes = () => [...document.querySelectorAll("#n-list .n-label input")];
+  const row = () => document.querySelector("#n-list .n-you");
+  const shown = () => !!row() && row().getClientRects().length > 0;
+  const type = (box, value) => {
+    box.value = value;
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  const errors = [];
+  window.addEventListener("error", (e) => errors.push(String(e.message || e)));
+  window.addEventListener("unhandledrejection", (e) => errors.push(String(e.reason)));
+  while (document.documentElement.dataset.ready !== "1") await wait(100);
+  await wait(500);
+  const out = {};
+  try {
+    out.open = document.getElementById("names").open;
+    out.first = shown();
+    // A name typed for the suggested speaker, then put back.
+    type(boxes()[0], "Aroha");
+    out.typed_name = shown();
+    type(boxes()[0], "Speaker 1");
+    out.put_back = shown();
+    // "You" typed for the other speaker, then put back.
+    type(boxes()[1], " you ");
+    out.other_you = shown();
+    type(boxes()[1], "Speaker 2");
+    out.other_back = shown();
+    // Use 'You', from the keyboard's point of view: the button has focus.
+    const use = row().querySelector("button");
+    use.focus();
+    use.click();
+    await wait(1500);
+    const now = document.activeElement;
+    out.after = { shown: shown(), renames: t.renames,
+                  focus_box: boxes().indexOf(now),
+                  focus_value: now && typeof now.value === "string" ? now.value : null,
+                  in_dialog: !!(now && now.closest("#names")) };
+  } catch (e) {
+    out.error = String((e && e.stack) || e);
+  }
+  out.errors = errors;
+  const pre = document.createElement("pre");
+  pre.id = "you-result";
+  pre.textContent = JSON.stringify(out);
+  document.body.append(pre);
+})();
+"""
+
+
+class Handler(design_check.Handler):
+    """The design check's server, with the wrapper before app.js and the steps
+    after it (the page's content security policy allows scripts from the
+    page's own origin only)."""
+
+    def do_GET(self):
+        path = urlsplit(self.path).path.lstrip("/")
+        if path == "app/you-bridge.js":
+            return self._send(BRIDGE.encode("utf-8"), "text/javascript; charset=utf-8")
+        if path == "app/you-steps.js":
+            return self._send(STEPS.encode("utf-8"), "text/javascript; charset=utf-8")
+        if path in ("app/", "app/index.html"):
+            page = (design_check.UI / "index.html").read_text(encoding="utf-8")
+            page = page.replace(design_check.APP_TAG,
+                                '<script src="/tools/design_check/fixtures.js"></script>\n'
+                                '<script src="you-bridge.js"></script>\n'
+                                + design_check.APP_TAG + '\n<script src="you-steps.js"></script>')
+            return self._send(page.encode("utf-8"), "text/html; charset=utf-8")
+        return super().do_GET()
+
+
+class Server(http.server.ThreadingHTTPServer):
+    # Edge asks for the page's files at once: a longer queue than the default
+    # five, so no connection is refused (as tests/test_ui_page_audit.py).
+    request_queue_size = 64
+    daemon_threads = True
+
+
+def run_page(base):
+    url = f"{base}/app/index.html#names-you"
+    # Headless Edge now and then never finishes a page, or loses one of its
+    # files: one more try, with a fresh profile (as tests/test_mic_list_refresh.py).
+    problem = None
+    for _attempt in (1, 2):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as profile:
+            cmd = [str(EDGE), "--headless=new", "--disable-gpu", "--hide-scrollbars",
+                   "--no-first-run", "--disable-extensions", f"--user-data-dir={profile}",
+                   "--mute-audio", "--force-device-scale-factor=1", "--window-size=1100,760",
+                   "--virtual-time-budget=30000", "--dump-dom", url]
+            try:
+                out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                                     errors="replace", timeout=120)
+            except subprocess.TimeoutExpired:
+                problem = "Edge did not finish in 120 seconds"
+                continue
+        found = re.search(r'<pre id="you-result">(.*?)</pre>', out.stdout or "", re.DOTALL)
+        if found:
+            return json.loads(html.unescape(found.group(1)))
+        problem = (f"Edge returned no result (exit {out.returncode}): "
+                   f"{(out.stderr or '').strip()[-300:]}")
+    return {"error": f"twice: {problem}"}
+
+
+@unittest.skipUnless(EDGE, "Microsoft Edge not installed")
+class YouSuggestionPageTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        server = Server(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            cls.r = run_page(f"http://127.0.0.1:{server.server_address[1]}")
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def setUp(self):
+        self.assertNotIn("error", self.r, self.r.get("error"))
+        self.assertEqual([], self.r["errors"], "the page threw")
+        self.assertTrue(self.r["open"], "the panel did not open: nothing was tested")
+        self.assertTrue(self.r["first"], "no suggestion was shown: nothing was tested")
+
+    def test_a_name_typed_for_the_suggested_speaker_hides_the_suggestion(self):
+        self.assertFalse(self.r["typed_name"])
+        self.assertTrue(self.r["put_back"])
+
+    def test_you_typed_for_another_speaker_hides_the_suggestion(self):
+        self.assertFalse(self.r["other_you"])
+        self.assertTrue(self.r["other_back"])
+
+    def test_use_you_names_the_speaker_and_keeps_focus_on_their_name(self):
+        after = self.r["after"]
+        self.assertEqual([["SPEAKER_00", "You"]], after["renames"])
+        self.assertFalse(after["shown"], "the suggestion stayed after Use 'You'")
+        self.assertEqual((0, "You", True),
+                         (after["focus_box"], after["focus_value"], after["in_dialog"]),
+                         "focus was lost when the button went")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -758,17 +758,44 @@ def _write_activity(store, folder, mid, audio):
     #108), sealed under the meeting's audio key in its folder, before the
     import commits: a failed import removes it with the folder. It only
     feeds an optional suggestion, so it never fails the import: without it
-    no suggestion is offered."""
+    no suggestion is offered. A two-track recording left without the file
+    is recorded in the app log as `activity_unwritten` (#461), with the
+    stage ("tracking": the mix gave no levels; "write": they could not be
+    sealed or written) and the exception's type name only (P3), so support
+    can tell it from a call where no one qualified."""
     get = getattr(audio, "activity", None)
     if get is None:
         return
     try:
         result = get()
-        if result is not None:
-            from workspace import activity
-            activity.write(folder, store.meeting_key(mid, "audio"), mid, result)
+    except Exception as exc:
+        _activity_unwritten(store, "tracking", exc)
+        return
+    if result is None:
+        if getattr(audio, "two_track", False):
+            _activity_unwritten(store, "tracking", None)
+        return
+    try:
+        from workspace import activity
+        activity.write(folder, store.meeting_key(mid, "audio"), mid, result)
+    except Exception as exc:
+        _activity_unwritten(store, "write", exc)
+
+
+def _activity_unwritten(store, stage, exc):
+    """The content-free record of a track-activity file not written: the
+    stage and the exception's type name, never its message (P3)."""
+    from workspace import diag
+    log = getattr(store, "log", None) or diag.current()
+    if log is None:
+        return
+    fields = {"stage": stage}
+    if exc is not None:
+        fields["error"] = type(exc).__qualname__
+    try:
+        log.write("activity_unwritten", **fields)
     except Exception:
-        pass
+        pass                                   # diagnostics never fail the import
 
 
 class BadMeetingId(ValueError):

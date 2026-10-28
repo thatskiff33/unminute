@@ -76,7 +76,10 @@ KINDS = {"start", "stop", "timing", "incident", "crash", "worker_exit", "native_
          # install failed the machine trust test (update.machine_trusted)
          "machine_claim_refused",
          # #376: a two-track recording mixed without echo cancellation (cause)
-         "echo_skipped"}
+         "echo_skipped",
+         # #461: a two-track recording's track-activity file not written
+         # (stage, and the exception's type name as error)
+         "activity_unwritten"}
 INTEGRITY_FILE = "integrity.json"   # the last database check (R11): see integrity_state()
 KEYS_FILE = "keys.json"             # the key's state at the last start (#111 C4a): keys_state()
 KEY_REASONS = ("windows", "key", "protector", "missing")   # store.KeyUnavailable.reason
@@ -185,6 +188,8 @@ FIELDS = {
     "frames": _frames,
     # #376: why echo cancellation was not used (mixdown.Mix.echo_skipped)
     "cause": _set("check", "error"),
+    # #461: where a track-activity file was not made (media._write_activity)
+    "stage": _set("tracking", "write"),
 }
 
 

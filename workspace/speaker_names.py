@@ -203,9 +203,10 @@ def examples(store, vid, label, offset=0, count=EXAMPLES, view=None, rows=None):
         {"id": sid, "start": a, "end": b, "text": text} for a, b, text, sid in page]}
 
 
-def panel(store, vid, offsets=None):
-    """Everything the Name speakers panel shows, from one resolve."""
-    view = resolve(store, vid)
+def panel(store, vid, offsets=None, view=None):
+    """Everything the Name speakers panel shows, from one resolve (the
+    caller's view, when it has one)."""
+    view = view or resolve(store, vid)
     rows = _rows(store, vid)
     out = summary(store, vid, view)
     for sp in out["speakers"]:
