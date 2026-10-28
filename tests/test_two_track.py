@@ -1337,8 +1337,12 @@ def cancel(mic, ref, rate):
 
 @unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
 class EchoCancellationTests(unittest.TestCase):
-    SECONDS = 40
-    TALKS_AT = 20                    # the far side alone before this, both after it
+    # Two of the canceller's 10 s blocks (echo.BLOCK_S): the first the far
+    # side alone, the second both talking. Halved from 40 s and 20 s for CI
+    # time (#376, the owner's decision of 28 Oct 2026), with every check and
+    # threshold as it was.
+    SECONDS = 20
+    TALKS_AT = 10                    # the far side alone before this, both after it
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
