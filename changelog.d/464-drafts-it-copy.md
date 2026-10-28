@@ -1,2 +1,0 @@
-Security hardening (#111, slice B7a):
-- **Draft text names your IT team when its copy is damaged.** Where IT installed Parakeet v2 for everyone and its copy turns out to be damaged when draft text starts, the draft area now says to ask your IT team to repair it, rather than pointing to Manage downloads, and Manage downloads shows the copy as damaged. Where your own copies are allowed and you have one, draft text uses it instead.

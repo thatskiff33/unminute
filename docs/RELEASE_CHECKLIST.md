@@ -63,7 +63,7 @@ Step-by-step instructions for each item: [VALIDATION_RUNBOOK.md](VALIDATION_RUNB
 
 ## Dated reminders (every release)
 
-- **The Python runtime (#178, closed with this reminder).** The package ships CPython 3.14 (`PYTHON_VERSION` in `tools/build_package.py`). [PEP 745](https://peps.python.org/pep-0745/) plans 3.14's last Windows binary release, 3.14.14, for 5 October 2027. After that only source releases follow, so the shipped runtime would stop getting security fixes. Every release:
+- **The Python runtime (#178, closed with this reminder).** The package ships CPython 3.14 (`PYTHON_VERSION` in `tools/build_package.py`). [PEP 745](https://peps.python.org/pep-0745/) plans 3.14's last Windows binary release, 3.14.16, for 5 October 2027 (read 28 October 2026; it was numbered 3.14.14 when this reminder was written, with the same date). After that only source releases follow, so the shipped runtime would stop getting security fixes. Every release:
   - confirms that date in PEP 745, and records any change on #178;
   - from 1 April 2027 (or sooner, if PEP 745 brings the date forward), while the runtime is still 3.14, reopens #178 so the move starts. The move is to a Python that still gets Windows binary releases, by the same steps as B4 (#166): wheel spike, re-lock, A/B on public audio, packaged checks. It must land well before October 2027.
 
