@@ -1197,8 +1197,12 @@
     speaker_examples: (mid, label) => ({ total: 3, items: transcriptPage(mid, 0, 1000).items
       .filter((it) => it.label === label).slice(0, 3).map((it) => ({ id: it.id, start: it.t, end: it.end, text: it.text })) }),
     clip: (mid, start, end) => silence(end - start),
-    speaker_panel: (mid) => ({ can_undo: false, you: data.panelYou || null,
-      speakers: SPEAKERS.map((sp) => ({ ...sp, name: (data.panelNames || {})[sp.label] || sp.name, offset: 0,
+    // Six examples a speaker, the same three on each page; the offsets asked
+    // for are kept, as the app's panel keeps them, so More examples leads to
+    // First examples (#479).
+    speaker_panel: (mid, offsets) => ({ can_undo: false, you: data.panelYou || null,
+      speakers: SPEAKERS.map((sp) => ({ ...sp, name: (data.panelNames || {})[sp.label] || sp.name,
+                                        offset: (offsets || {})[sp.label] || 0,
                                         examples: { total: 6, items: EXAMPLES[sp.label] } })) }),
     handoff_templates: () => [TEMPLATE],
     handoff_preview: (mid, tid, anonymise) => handoffPreview(!!anonymise),

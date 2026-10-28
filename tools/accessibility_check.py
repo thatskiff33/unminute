@@ -985,6 +985,8 @@ def checks(window, ws, mid, report, modes=(None,), feed=None):
                 feed.end()
                 evaluate(window, WAIT + "await wait(800); return true;")
             if name == YOU_VIEW:                    # once, in the last mode
+                # It leaves the throwaway meeting with a speaker named 'You' and paged
+                # offsets in the panel, so the views after it are audited on that state.
                 report["you_focus"] = evaluate(window, WAIT + YOU_FOCUS)
     except Exception as exc:
         report["error"] = error_text(exc)
