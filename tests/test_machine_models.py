@@ -541,6 +541,13 @@ class DamagedCopyTests(TinyParakeetFixture):
         rt = types.ModuleType("onnxruntime")
         rt.disable_telemetry_events = lambda: None
         rt.SessionOptions = mock.MagicMock
+
+        def session(path, **kwargs):          # the drafts' speech detector (#464)
+            if Path(path).parent in fails:
+                raise RuntimeError("synthetic: model is damaged")
+            loaded.append(Path(path).parent)
+            return mock.MagicMock()
+        rt.InferenceSession = session
         return mock.patch.dict(sys.modules, onnx_asr=onnx_asr, onnxruntime=rt), loaded
 
     def test_parakeet_names_it_when_its_copy_fails_to_load(self):
@@ -582,6 +589,112 @@ class DamagedCopyTests(TinyParakeetFixture):
         self.assertIn(f"failed to load. {ae.PARAKEET_FIX} (RuntimeError", str(caught.exception))
         with machine(self.root):
             self.assertTrue(ae.machine_ready(ae.PARAKEET_V2))
+
+    # -- live drafts (#464): the draft worker does as the full pass does ---------------
+
+    def test_drafts_name_it_when_its_copy_fails_to_load(self):
+        self.stage_parakeet()
+        main = ae.PARAKEET_MODELS[ae.PARAKEET_V2]
+        folder = ae.machine_model_dir(main, self.root)
+        fooled(folder)
+        modules, loaded = self.fake_onnx({folder})
+        with modules, machine(self.root), user_models(False):
+            with self.assertRaises(ae.ModelLoadError) as caught:
+                ae.DraftEngine(ae.PARAKEET_V2, self.cache, 1).load()
+            # The full check's failure is kept, so Downloads shows it in this process.
+            self.assertIn("checksum", ae._machine_failure(main, folder)[0])
+        message = str(caught.exception)
+        # Tried again without IT's copy: with no copy of the user's allowed, it names IT.
+        self.assertTrue(message.startswith(f"Parakeet v2 cannot be used for drafts. "
+                                           f"{ae.machine_damaged(main)} ("), message)
+        self.assertNotIn("Manage downloads", message)
+        self.assertEqual(loaded, [])
+
+    def test_drafts_name_it_when_its_speech_detector_fails_to_load(self):
+        self.stage_parakeet()
+        main = ae.PARAKEET_MODELS[ae.PARAKEET_V2]
+        vad = ae.machine_model_dir(ae.SILERO_VAD, self.root)
+        fooled(vad, data=b"\x07\x07" * 400)
+        modules, _ = self.fake_onnx({vad})
+        with modules, machine(self.root), user_models(False):
+            with self.assertRaises(ae.ModelLoadError) as caught:
+                ae.DraftEngine(ae.PARAKEET_V2, self.cache, 1).load()
+            self.assertEqual(ae._machine_failure(main, ae.machine_model_dir(main, self.root)),
+                             [])
+        self.assertIn(f"for drafts. {ae.machine_damaged(ae.SILERO_VAD)} (",
+                      str(caught.exception))
+
+    def test_drafts_fall_back_to_the_users_copy_when_allowed(self):
+        self.stage_parakeet()
+        main = ae.PARAKEET_MODELS[ae.PARAKEET_V2]
+        folder = ae.machine_model_dir(main, self.root)
+        fooled(folder)
+        write_files(ae.model_dir(main, self.cache), GOOD)
+        modules, loaded = self.fake_onnx({folder})
+        with modules, machine(self.root), user_models(True), \
+                mock.patch.object(ae.DraftEngine, "reset"):
+            ae.DraftEngine(ae.PARAKEET_V2, self.cache, 1).load()
+        self.assertEqual(loaded, [ae.model_dir(main, self.cache),
+                                  ae.machine_model_dir(ae.SILERO_VAD, self.root)])
+
+    def test_a_draft_load_failure_of_a_sound_copy_keeps_its_advice(self):
+        # The files hash correctly, so the runtime failed, not IT's copy: the
+        # message is today's, and IT's copy stays ready.
+        self.stage_parakeet()
+        folder = ae.machine_model_dir(ae.PARAKEET_MODELS[ae.PARAKEET_V2], self.root)
+        modules, _ = self.fake_onnx({folder})
+        with modules, machine(self.root), user_models(False), \
+                self.assertRaises(ae.ModelLoadError) as caught:
+            ae.DraftEngine(ae.PARAKEET_V2, self.cache, 1).load()
+        self.assertEqual(str(caught.exception), "Parakeet v2 failed to load for drafts "
+                         "(RuntimeError: synthetic: model is damaged)")
+        with machine(self.root):
+            self.assertTrue(ae.machine_ready(ae.PARAKEET_V2))
+
+    def test_a_draft_model_that_is_not_ready_names_it_only_for_its_copy(self):
+        from workspace import engines
+        self.stage_parakeet()
+        (ae.machine_model_dir(ae.SILERO_VAD, self.root) / "weights.onnx").unlink()
+        with machine(self.root), user_models(False), \
+                self.assertRaises(ae.ModelLoadError) as caught:
+            engines.load_draft_engine(ae.PARAKEET_V2, self.cache, 1)
+        self.assertIn(f"is not ready. {ae.machine_damaged(ae.SILERO_VAD)} (",
+                      str(caught.exception))
+        self.assertNotIn("Manage downloads", str(caught.exception))
+        # No copy of IT's: today's advice.
+        with self.assertRaises(ae.ModelLoadError) as caught:
+            engines.load_draft_engine(ae.PARAKEET_V2, self.cache, 1)
+        self.assertIn(f"is not ready. {engines.fix_speech(ae.PARAKEET_V2)} (",
+                      str(caught.exception))
+
+    def test_the_window_keeps_it_failed_from_the_draft_workers_message(self):
+        from workspace import drafts
+        self.stage_parakeet()
+        main = ae.PARAKEET_MODELS[ae.PARAKEET_V2]
+        with machine(self.root):
+            self.assertEqual(drafts.unavailable_reason(ae.PARAKEET_V2), "unavailable")
+            sound = drafts.DraftSession("r1", 16000, self.cache)
+            sound._take(("error", "ModelLoadError", "Parakeet v2 failed to load for drafts "
+                         "(RuntimeError: x)", "load", None))
+            self.assertEqual(sound.snapshot()["note"], drafts.NOTES[drafts.UNAVAILABLE])
+            self.assertTrue(ae.machine_ready(ae.PARAKEET_V2))
+            session = drafts.DraftSession("r2", 16000, self.cache)
+            session._take(("error", "ModelLoadError", "Parakeet v2 cannot be used for drafts. "
+                           f"{ae.machine_damaged(main)} (checksum)", "load", None))
+            self.assertEqual(session.state, drafts.UNAVAILABLE)
+            # Downloads shows it as damaged, and the note names IT.
+            self.assertTrue(ae.machine_damaged_model(ae.PARAKEET_V2))
+            self.assertEqual(setup.status(ae.PARAKEET_V2, self.cache)[:2],
+                             ("invalid", setup.IT_COPY_DAMAGED))
+            self.assertEqual(session.note, drafts.REASONS["machine"])
+            self.assertEqual(session.snapshot()["note"], drafts.REASONS["machine"])
+            self.assertNotIn("Manage downloads", drafts.REASONS["machine"])
+            self.assertIn("Ask your IT team to repair it.", drafts.REASONS["machine"])
+            # The next recording says so before any draft worker starts.
+            self.assertEqual(drafts.unavailable_reason(ae.PARAKEET_V2), "machine")
+        # A test engine, or a copy IT did not install: today's reason.
+        self.assertEqual(drafts.unavailable_reason("test:fake:draft"), "unavailable")
+        self.assertEqual(drafts.unavailable_reason(ae.PARAKEET_V2), "unavailable")
 
     def test_whisper_and_the_speaker_model_name_it(self):
         from workspace import engines

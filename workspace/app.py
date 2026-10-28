@@ -1454,7 +1454,7 @@ class Workspace:
             return None
         session = self._drafts
         if session is not None:
-            return {"state": session.state, "note": drafts.NOTES.get(session.state),
+            return {"state": session.state, "note": session.note,
                     "count": session.count, "generation": session.generation,
                     "mix": session.mixing}
         if self._draft_why == "off":
@@ -1531,10 +1531,12 @@ class Workspace:
             self._draft_why = "busy"          # model files may be changing: not yet
             return
         if not self._draft_model_ready():
-            self._draft_why = "unavailable"   # Parakeet v2 is not downloaded or is damaged
+            # Parakeet v2 is not downloaded or is damaged; IT's copy names IT (#464).
+            why = drafts.unavailable_reason(self.draft_model)
+            self._draft_why = why
             with self._lock:
                 self._drafts_ended = rec.journal["id"]
-                self._drafts_ended_why = "unavailable"
+                self._drafts_ended_why = why
             return
         self._start_drafts(rec)
 
