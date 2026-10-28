@@ -1004,8 +1004,11 @@ class Recording:
         with none open). If the new one does not open, the previous one is
         opened again (not for a lost microphone), with an event; if neither
         opens, the microphone is lost and the follow thread waits for
-        another. Returns True if it switched. Never on the audio callback."""
+        another. Returns True if it switched, or if a microphone chosen is
+        the one recording. Never on the audio callback."""
         with self._switch_lock:
+            if kind == "mic_chosen" and self.is_current(name):
+                return True              # checked under the lock, after any switch under way
             if (self._stop.is_set() or self._stopping.is_set()
                     or self.journal["state"] != "recording"):
                 return False
@@ -1063,8 +1066,6 @@ class Recording:
         switches to it and no longer follows the Windows default. Raises
         RecorderError (safe to show, names no device) if it could not."""
         self.following = False
-        if self.is_current(name):
-            return
         if not self._switch(name, "mic_chosen"):
             if (self._stop.is_set() or self._stopping.is_set()
                     or self.journal["state"] != "recording"):
@@ -1123,7 +1124,7 @@ class Recording:
             self._seen = None
             return
         if self._baseline is None:
-            self._baseline = ident       # the first read failed: the first good one is the start
+            self._baseline = ident       # the first read failed or found none: this is the start
             return
         if ident == self._tried:
             return                       # would not open: not tried again until it changes

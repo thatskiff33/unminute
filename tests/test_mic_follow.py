@@ -425,6 +425,38 @@ class FollowTests(_Recording):
         self.assertEqual(journal["device_name"], USB)
         self.assertNotIn("mic_switched", self.kinds(rec))
 
+    def test_choosing_the_microphone_recording_during_a_follow_switch_wins(self):
+        # N6 of the review of 46753be: the follow switch to a new default had
+        # passed its check and was opening the headset when the person chose
+        # the microphone still recording. The choice must still win.
+        inside, go = threading.Event(), threading.Event()
+        self.addCleanup(go.set)
+
+        def resolve(name, default=False):
+            if name == HEADSET and not inside.is_set():
+                inside.set()                          # the follow switch, under its lock
+                go.wait(10)
+            return self.win.resolve(name, default=default)
+
+        rec = self.start(resolve=resolve)
+        self.win.stream.feed(1)
+        self.win.default = HEADSET
+        self.assertTrue(inside.wait(10), "the follow switch never started")
+        chooser = threading.Thread(target=rec.choose, args=(LAPTOP,))
+        chooser.start()
+        chooser.join(0.5)                             # it waits for the switch under way
+        go.set()
+        chooser.join(10)
+        self.assertFalse(chooser.is_alive())
+        self.assertTrue(wait_for(lambda: "mic_switched" in self.kinds(rec)))
+        status = rec.status()
+        self.assertEqual(status["device"], LAPTOP, "the follow switch won over the choice")
+        self.assertFalse(status["following"])
+        journal = rec.stop()
+        self.assertEqual(journal["device_name"], LAPTOP)
+        self.assertEqual([k for k in self.kinds(rec) if k != "gap"],
+                         ["mic_switched", "mic_chosen"])
+
     def test_a_first_read_that_fails_does_not_count_the_default_as_new(self):
         # N1 of the review of 69063a4: the first good read is the starting
         # point, so a recording on another microphone is not moved to it.
