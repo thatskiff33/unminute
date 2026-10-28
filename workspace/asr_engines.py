@@ -735,7 +735,9 @@ def _marker_for(spec, cache_dir, folder):
     """Markers for Hugging Face cache folders live outside that cache."""
     if Path(folder) == model_dir(spec, cache_dir):
         return None
-    key = hashlib.sha1(str(Path(folder).resolve()).lower().encode()).hexdigest()[:16]
+    # A short name for the folder, not a check: model files are checked by SHA-256.
+    key = hashlib.sha1(str(Path(folder).resolve()).lower().encode(),
+                       usedforsecurity=False).hexdigest()[:16]
     return Path(cache_dir) / spec.family / ".verified" / f"{spec.folder}-{key}.json"
 
 

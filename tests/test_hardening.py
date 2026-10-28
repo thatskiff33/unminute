@@ -177,6 +177,27 @@ class NavigationTests(unittest.TestCase):
                         r"<[^>]*\s(?:action|formaction|target)\s*="):         # markup only
             self.assertIsNone(re.search(pattern, html), pattern)
 
+    def test_the_page_policy_is_strict_and_has_nothing_meta_ignores(self):
+        # T1: the page's own Content-Security-Policy, in a <meta> element. No
+        # inline or eval'd script, nothing from the network, and no frames
+        # (frame-src falls back to default-src 'none'). frame-ancestors,
+        # report-uri and sandbox are ignored in a <meta> policy (CSP Level 3,
+        # section 3.3), so the page names none of them rather than seem
+        # protected by them (#415 item 4).
+        import re
+        html = (ROOT / "workspace" / "ui" / "index.html").read_text(encoding="utf-8")
+        [policy] = re.findall(r'<meta http-equiv="Content-Security-Policy"\s+content="([^"]*)"',
+                              html)
+        directives = {}
+        for part in policy.split(";"):
+            name, *values = part.split()
+            self.assertNotIn(name, directives, name)
+            directives[name] = values
+        self.assertEqual(directives, {
+            "default-src": ["'none'"], "script-src": ["'self'"], "style-src": ["'self'"],
+            "img-src": ["'self'", "data:"], "media-src": ["data:"], "connect-src": ["'none'"],
+            "font-src": ["'self'"], "base-uri": ["'none'"], "form-action": ["'none'"]})
+
     def test_the_page_names_no_assistant_until_the_app_does(self):
         # #109 review: before the preview arrived (or if it failed), the page
         # showed "Copy and open ChatGPT" even where IT had turned it off or
@@ -575,8 +596,9 @@ class AlertGuardTests(unittest.TestCase):
                 self.load_url("file:///index.html")
 
             def load_url(self, url):
-                seen.append(("load", url, self.sender.CoreWebView2.Settings
-                             .AreDefaultScriptDialogsEnabled))
+                settings = self.sender.CoreWebView2.Settings
+                seen.append(("load", url, settings.AreDefaultScriptDialogsEnabled,
+                             getattr(settings, "AreHostObjectsAllowed", None)))
 
             def load_html(self, html, base):
                 seen.append(("html",))
@@ -611,6 +633,7 @@ class AlertGuardTests(unittest.TestCase):
 
         class Settings:
             AreDefaultScriptDialogsEnabled = True
+            AreHostObjectsAllowed = True              # WebView2's default (#415)
 
         class Event:
             def __init__(self):
@@ -638,10 +661,12 @@ class AlertGuardTests(unittest.TestCase):
             view.sender = control
             view.on_webview_ready(control, None)
         # pywebview turned them on, but the page loaded with them off, and
+        # with no host objects (#415 item 4: the bridge is web messages), and
         # any dialog, permission or screen capture asked for is refused.
-        self.assertEqual(seen[-1], ("load", "file:///index.html", False))
+        self.assertEqual(seen[-1], ("load", "file:///index.html", False, False))
         core = control.CoreWebView2
         self.assertFalse(core.Settings.AreDefaultScriptDialogsEnabled)
+        self.assertFalse(core.Settings.AreHostObjectsAllowed)
         self.assertEqual(core.ScriptDialogOpening.handlers, [shell._refuse_script_dialog])
         self.assertEqual(core.ScreenCaptureStarting.handlers, [shell._refuse_screen_capture])
         [refuse_permission] = core.PermissionRequested.handlers               # each once
@@ -1588,6 +1613,17 @@ class LockedBridgeTests(unittest.TestCase):
         reached = {n for n, r in results.items()
                    if isinstance(r, AssertionError) or r.get("error") != LOCKED_TEXT}
         self.assertEqual(gated, reached)
+
+    def test_method_lists_that_do_not_match_refuse_to_build_even_under_O(self):
+        # #415 (ruff S101): the check is a raise, not an assert that -O or
+        # PYTHONOPTIMIZE would skip.
+        from workspace import api
+        for name in ("API_METHODS", "LOCKED_METHODS", "FINISH_ONLY_REFUSED"):
+            with self.subTest(name), \
+                    mock.patch.object(api, name, frozenset(getattr(api, name)) | {"not_a_method"}):
+                with self.assertRaises(RuntimeError):
+                    api.make_api(_Tripwire(locked=None))
+        api.make_api(_Tripwire(locked=None))             # the real lists build
 
     def test_the_page_keeps_the_signatures_pywebview_reads(self):
         import inspect

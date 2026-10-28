@@ -3,9 +3,12 @@
 <head>
 <meta charset="utf-8">
 <!-- Bundled assets only. No remote code, no network: connect-src 'none'.
-     Audio comes from bounded data: URLs supplied by the bridge. -->
+     Audio comes from bounded data: URLs supplied by the bridge.
+     No frame-ancestors: browsers ignore it in a <meta> policy (CSP Level 3,
+     section 3.3). The page cannot frame anything (default-src 'none'), and
+     the window loads only this page (docs/SECURITY_MODEL.md T1, #415). -->
 <meta http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src data:; connect-src 'none'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src data:; connect-src 'none'; font-src 'self'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Unminute</title>
 <link rel="stylesheet" href="tokens.css">

@@ -442,10 +442,9 @@ class VerdictTests(unittest.TestCase):
 UI = ROOT / "workspace" / "ui"
 # The page's own policy, with the changes this harness needs and the real
 # window does not: script from the check (unsafe-eval) and the bridge
-# reached over this local server (connect-src 'self'). It also turns
-# frame-ancestors 'none' into 'self' for the narrow page's frame, which is
-# harmless and not needed: browsers ignore frame-ancestors in a <meta>
-# policy, so the page could be framed anyway. Nothing else changes.
+# reached over this local server (connect-src 'self'). The page has no
+# frame-ancestors (browsers ignore it in a <meta> policy, #415), so the
+# narrow page's frame needs no change for it. Nothing else changes.
 CSP = re.compile(r'(<meta http-equiv="Content-Security-Policy"\s+content=")([^"]*)(")')
 SHIM = r"""
 "use strict";
@@ -571,8 +570,7 @@ class Harness:
                     html = body.decode("utf-8")
                     html = CSP.sub(lambda m: m.group(1) + m.group(2).replace(
                         "script-src 'self'", "script-src 'self' 'unsafe-eval'").replace(
-                        "connect-src 'none'", "connect-src 'self'").replace(
-                        "frame-ancestors 'none'", "frame-ancestors 'self'") + m.group(3), html)
+                        "connect-src 'none'", "connect-src 'self'") + m.group(3), html)
                     html = html.replace('<script src="app.js"></script>',
                                         '<script src="shim.js"></script>\n'
                                         '<script src="app.js"></script>')
