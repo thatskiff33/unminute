@@ -102,13 +102,15 @@ def load_windows_powershell():
 
 windows_powershell, WINDOWS_POWERSHELL_SOURCE = load_windows_powershell()
 
-PYTHON_VERSION = "3.14.8"
+PYTHON_VERSION = "3.14.10"
 EMBED_URL = (f"https://www.python.org/ftp/python/{PYTHON_VERSION}/"
              f"python-{PYTHON_VERSION}-embed-amd64.zip")
-# Pinned after checking the Authenticode signatures of python.exe,
-# pythonw.exe and python314.dll (Python Software Foundation, time-stamped) on
-# 17 October 2026; the SHA-256 matches the one python.org publishes for the file.
-EMBED_SHA256 = "a93abe456ab01bd96d7a085b3cdb6566b3063f4241360d114142fbdb07f0a310"
+# Pinned on 28 October 2026 (#326) after checking: the SHA-256 python.org
+# publishes for the file; its Sigstore bundle (signer hugo@python.org, the 3.14
+# release manager, issuer https://github.com/login/oauth) and its .sig and
+# .crt; and the Authenticode signatures of python.exe, pythonw.exe and
+# python314.dll (Python Software Foundation, time-stamped).
+EMBED_SHA256 = "90905e64a840557d8c1bc4f5b74db3d7ee85e3ffb217611cac1c7813acea4159"
 # "3.14" and "314": the wheel tags, the runtime's zip and DLL, and the build host.
 PYTHON_MINOR = ".".join(PYTHON_VERSION.split(".")[:2])
 PYTHON_TAG = PYTHON_MINOR.replace(".", "")
