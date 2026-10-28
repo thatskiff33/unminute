@@ -306,6 +306,209 @@ class AllowedFilesTests(TempDir):
                          residue.logs_scanned(scanned, self.n, "Unminute/workspace"))
 
 
+class WindowFilesTests(TempDir):
+    """The window step of tools/packaged_check.py (#418): the WebView2
+    profile, the real start's own files, the rest of the redirected
+    LOCALAPPDATA and the Event Log entries, from the app's constants."""
+
+    def setUp(self):
+        super().setUp()
+        self.n = residue.names()
+        self.ws = self.root / "Unminute" / "workspace"
+        self.ws.mkdir(parents=True)
+
+    def test_the_names_follow_the_app_s_constants(self):
+        from workspace import diag, instance, shell
+        self.assertEqual(("instance.lock", "launch.json", "webview"),
+                         (self.n["lock"], self.n["launch"], self.n["webview"]))
+        with mock.patch.object(instance, "NAME", "held.lock"), \
+                mock.patch.object(diag, "LAUNCH_FILE", "start.json"), \
+                mock.patch.object(shell, "STORAGE_FOLDER", "profile"):
+            n = residue.names()
+        self.assertEqual(("held.lock", "start.json", "profile"),
+                         (n["lock"], n["launch"], n["webview"]))
+        # The app makes its profile there (workspace/shell.py storage_folder).
+        self.assertEqual(self.ws / self.n["webview"], shell.storage_folder(self.ws).parent)
+        source = (ROOT / "workspace" / "shell.py").read_text(encoding="utf-8")
+        self.assertEqual(1, source.count('STORAGE_FOLDER = "webview"'))
+        self.assertIn("Path(root) / STORAGE_FOLDER", source)
+
+    def test_profile_files_are_named_never_opened(self):
+        profile = self.ws / "webview" / ("c" * 32) / "EBWebView" / "Default"
+        profile.mkdir(parents=True)
+        (profile / "Preferences").write_bytes(b"zebra")
+        (self.ws / "settings.json").write_bytes(b"{}")         # not the profile
+        with mock.patch("builtins.open", side_effect=AssertionError("opened")):
+            files, refused = residue.profile_files(self.ws, self.n)
+        self.assertEqual((["webview/" + "c" * 32 + "/EBWebView/Default/Preferences"], []),
+                         (files, refused))
+        self.assertEqual(([], []), residue.profile_files(self.root / "none", self.n))
+
+    def test_the_profile_s_files_are_not_the_workspace_s_own(self):
+        # The list is not widened (E2): a profile file left after final
+        # cleanup fails "only the workspace's own files".
+        for rel in ("webview/" + "d" * 32 + "/EBWebView/Local State", "webview/x"):
+            with self.subTest(rel=rel):
+                self.assertFalse(residue.allowed(rel, self.n))
+
+    def test_the_wipe_is_the_app_s_next_start(self):
+        from workspace import shell
+        for rel in ("a/EBWebView/Default/Cookies", "b/Crashpad/settings.dat"):
+            self.put(f"Unminute/workspace/webview/{rel}")
+        with mock.patch.object(shell, "storage_folder",
+                               wraps=shell.storage_folder) as wipe:
+            self.assertEqual({"files_before": 2, "files_left": 0},
+                             residue.wipe_profile(self.ws, self.n))
+        wipe.assert_called_once_with(self.ws)
+        self.assertEqual([], residue.unexpected(self.ws.parent, self.ws, self.n))
+
+    def test_a_profile_the_wipe_cannot_remove_is_counted_and_fails(self):
+        from workspace import shell
+        self.put("Unminute/workspace/webview/a/EBWebView/Default/Cookies")
+        for effect in (lambda root: None, shell.ShellError("in use")):
+            with self.subTest(effect=effect), \
+                    mock.patch.object(shell, "storage_folder", side_effect=effect):
+                self.assertEqual({"files_before": 1, "files_left": 1},
+                                 residue.wipe_profile(self.ws, self.n))
+        self.assertEqual(["workspace/webview/a/EBWebView/Default/Cookies"],
+                         residue.unexpected(self.ws.parent, self.ws, self.n))
+
+    def test_the_start_s_own_files(self):
+        from workspace import diag, instance
+        self.assertEqual({"instance_lock": False, "launch_record": False},
+                         residue.start_files(self.ws, self.n))
+        held = instance.acquire(self.ws)
+        try:
+            (self.ws / diag.LOGS_FOLDER).mkdir()
+            (self.ws / diag.LOGS_FOLDER / diag.LAUNCH_FILE).write_text("{}", encoding="utf-8")
+            self.assertEqual({"instance_lock": True, "launch_record": True},
+                             residue.start_files(self.ws, self.n))
+            # Both are the workspace's own files after final cleanup.
+            self.assertEqual([], residue.unexpected(self.ws.parent, self.ws, self.n))
+        finally:
+            held.release()
+
+    def test_the_rest_of_localappdata_is_scanned_and_named(self):
+        keep = {"Unminute", "temp", "roaming", "home", "lifecycle.py", "windows.bin"}
+        for rel in ("Unminute/workspace/workspace.db", "temp/a", "windows.bin", "lifecycle.py",
+                    "Microsoft/EdgeWebView/x.dat", "stray.bin"):
+            self.put(rel, b"zebra" if rel == "stray.bin" else b"x")
+        rest = residue.rest_of(self.root, keep)
+        self.assertEqual([self.root / "Microsoft", self.root / "stray.bin"], rest)
+        self.assertEqual(["stray.bin"],
+                         residue.find(rest, {"m": b"zebra"}, self.root)["hits"]["m"])
+        left = residue.left_in({"TEMP": self.root / "temp"}, self.root, rest=rest)
+        self.assertEqual({"TEMP": ["a"], residue.REST: ["Microsoft/EdgeWebView/x.dat",
+                                                         "stray.bin"]}, left["files"])
+        # Nothing explains a file there: each fails the report.
+        self.assertEqual(["LOCALAPPDATA/Microsoft/EdgeWebView/x.dat", "LOCALAPPDATA/stray.bin",
+                          "TEMP/a"], left["unexplained"])
+        self.assertNotIn(residue.REST, residue.EXPLAINED)
+        # Without rest, as before.
+        self.assertEqual({"TEMP": ["a"]},
+                         residue.left_in({"TEMP": self.root / "temp"}, self.root)["files"])
+
+    def lend(self):
+        cache = self.root / "cache"
+        weights = self.put("cache/parakeet/v3/rev/model.onnx", b"w" * residue.LINK_FROM)
+        record = self.put("cache/parakeet/v3/rev/.verified.json", b'{"ok": true}')
+        self.put("cache/whisper/.verified/small-ab.json", b"{}")
+        target = self.ws.parent / "models"
+        lent, counts = residue.lend_models(cache, target)
+        return cache, target, weights, record, lent, counts
+
+    def test_models_are_lent_weights_linked_and_records_copied(self):
+        cache, target, weights, record, lent, counts = self.lend()
+        self.assertEqual({"linked": 1, "copied": 2, "unreadable": []}, counts)
+        self.assertEqual(sorted(["parakeet/v3/rev/model.onnx", "parakeet/v3/rev/.verified.json",
+                                 "whisper/.verified/small-ab.json"]), sorted(lent))
+        self.assertTrue(os.path.samefile(weights, target / "parakeet/v3/rev/model.onnx"))
+        lent_record = target / "parakeet/v3/rev/.verified.json"
+        self.assertFalse(os.path.samefile(record, lent_record))
+        self.assertEqual(record.stat().st_mtime_ns, lent_record.stat().st_mtime_ns)
+        # A record the app rewrites in place is the throwaway copy only.
+        lent_record.write_bytes(b'{"ok": false}')
+        self.assertEqual(b'{"ok": true}', record.read_bytes())
+
+    def test_a_weight_a_link_cannot_reach_is_copied(self):
+        with mock.patch.object(residue.os, "link", side_effect=OSError(17, "another drive")):
+            cache, target, weights, _, _, counts = self.lend()
+        self.assertEqual({"linked": 0, "copied": 3, "unreadable": []}, counts)
+        self.assertFalse(os.path.samefile(weights, target / "parakeet/v3/rev/model.onnx"))
+
+    def test_models_are_taken_back_and_what_was_added_named(self):
+        cache, target, weights, record, lent, _ = self.lend()
+        (target / "parakeet/v3/rev/.verified.json").write_bytes(b'{"ok": true, "x": 1}')
+        (target / "parakeet/v3/rev/stray.bin").write_bytes(b"x")
+        back = residue.return_models(target, lent, residue.names())
+        self.assertEqual(["parakeet/v3/rev/.verified.json", "parakeet/v3/rev/stray.bin"],
+                         back["new"])
+        # A verification record is explained (EXPLAINED's model cache
+        # entries); anything else is not.
+        self.assertEqual(["model_cache/parakeet/v3/rev/stray.bin"], back["unexplained"])
+        self.assertEqual((True, []), (back["removed"], back["unreadable"]))
+        self.assertFalse(target.exists())
+        # The cache's own files are untouched: a link removed is only a link.
+        self.assertEqual((b"w" * residue.LINK_FROM, b'{"ok": true}'),
+                         (weights.read_bytes(), record.read_bytes()))
+
+    def test_nothing_to_lend_is_nothing_lent(self):
+        lent, counts = residue.lend_models(self.root / "none", self.ws.parent / "models")
+        self.assertEqual(({}, {"linked": 0, "copied": 0, "unreadable": []}), (lent, counts))
+
+    def test_a_base_that_cannot_be_listed_is_scanned_whole(self):
+        with mock.patch.object(Path, "iterdir", side_effect=PermissionError("denied")):
+            self.assertEqual([self.root], residue.rest_of(self.root, {"Unminute"}))
+
+
+class EventLogCountTests(TempDir):
+    """residue.event_log_entries (#418): only entries naming a chain of this
+    workspace's audit file count; nothing of an entry is returned."""
+
+    class Mirror:
+        def __init__(self):
+            self.texts = []
+
+        def report(self, event_id, level, text):
+            self.texts.append(text)
+
+    def chain(self, folder, records):
+        from workspace import audit
+        mirror = self.Mirror()
+        log = audit.AuditLog(folder, mirror=mirror, strict=True)
+        for _ in range(records):
+            log.record("damage_continued")
+        log.close()
+        return mirror.texts
+
+    def xml(self, texts):
+        from workspace import audit
+        ns = "http://schemas.microsoft.com/win/2004/08/events/event"
+        body = "".join(f"<Event xmlns='{ns}'><System><Provider Name='{audit.SOURCE}'/>"
+                       f"</System><EventData><Data>{t}</Data></EventData></Event>"
+                       for t in texts)
+        return f"<Events>{body}</Events>"
+
+    def test_only_this_workspace_s_entries_count(self):
+        ours = self.chain(self.root / "ours", 3)
+        theirs = self.chain(self.root / "theirs", 4)      # the real app's, say
+        self.assertTrue(ours and theirs)
+        xml = self.xml(theirs[:2] + ours + theirs[2:] + ["someone else's text"])
+        self.assertEqual(len(ours), residue.event_log_entries(
+            self.root / "ours", read=lambda source, provider: xml))
+        self.assertEqual(0, residue.event_log_entries(
+            self.root / "ours", read=lambda source, provider: self.xml(theirs)))
+        self.assertEqual(0, residue.event_log_entries(
+            self.root / "ours", read=lambda source, provider: self.xml([])))
+
+    def test_a_log_that_cannot_be_read_is_not_a_count(self):
+        self.chain(self.root / "ours", 1)
+
+        def refused(source, provider):
+            raise OSError("wevtutil could not read the log")
+        self.assertIsNone(residue.event_log_entries(self.root / "ours", read=refused))
+
+
 class DumpTests(TempDir):
     def test_dumps_and_crash_files_are_counted(self):
         self.put("crash/CrashDumps/python.exe.123.dmp", b"MDMP")

@@ -54,6 +54,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\import_dialog_check.ps
 - Expect `"pass": true` from both checks and from the dialog check. Each report lists the criteria that failed under `"failed"`.
 - Add `--zip <the zip installed>` to make a report release evidence: it then names the zip and checks that the version folder still holds exactly its files (`tools/evidence.py`; docs/RELEASING.md, step 3).
 - Do not copy anything to the clipboard during the crash check; it compares the clipboard sequence number.
+- `packaged_check.py` opens the app's window twice: first with its synthetic marked meeting, which it opens and closes itself through UI Automation, with the model cache lent to it by hard links in its throwaway folder (#418), then for the idle measurement. Run it on an idle, unlocked desktop with Unminute closed, and leave both windows alone.
 - From `packaged_check.json`, record:
   - the transcription and speaker time against the recording length;
   - the worker's peak memory;
