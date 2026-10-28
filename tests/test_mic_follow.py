@@ -144,6 +144,49 @@ class Flicker:
         self.watch.close()
 
 
+class HeldSecondSighting:
+    """A watch that holds its second sighting of the headset as the default
+    until the test lets it go: the follow thread has then read `following`
+    and is part-way through a check when the person chooses on the card."""
+
+    def __init__(self):
+        self.sightings = 0
+        self.holding, self.go = threading.Event(), threading.Event()
+
+    def wrap(self, watch):
+        outer = self
+
+        class Held:
+            def default(self):
+                found = watch.default()
+                if found and found["name"] == HEADSET:
+                    outer.sightings += 1
+                    if outer.sightings == 2:
+                        outer.holding.set()
+                        outer.go.wait(10)
+                return found
+
+            def close(self):
+                watch.close()
+        return Held()
+
+
+class FirstReadFails:
+    """A watch whose first read of the default fails, the rest as Windows."""
+
+    def __init__(self, watch):
+        self.watch, self.reads = watch, 0
+
+    def default(self):
+        self.reads += 1
+        if self.reads == 1:
+            raise OSError("Windows audio is not ready yet.")
+        return self.watch.default()
+
+    def close(self):
+        self.watch.close()
+
+
 class FakeLoopback:
     """Computer audio, pushed by the test (as tests/test_two_track.py)."""
 
@@ -362,6 +405,46 @@ class FollowTests(_Recording):
         self.assertEqual(self.kinds(rec)[0], "mic_chosen")
         self.assertEqual(journal["device_name"], HEADSET)
         self.assert_no_names(rec)
+
+    def test_a_choice_made_while_a_new_default_is_checked_wins(self):
+        # B1 of the review of 69063a4: the follow thread had read `following`
+        # and was checking a new default when the person chose on the card.
+        held = HeldSecondSighting()
+        rec = self.start(watch=lambda: held.wrap(self.win.watch()))
+        self.addCleanup(held.go.set)
+        self.win.stream.feed(1)
+        self.win.default = HEADSET
+        self.assertTrue(held.holding.wait(10), "the second check never came")
+        rec.choose(USB)
+        held.go.set()
+        time.sleep(0.5)                               # the held check finishes
+        self.assertEqual(self.win.stream.device, INDEX[USB])
+        self.assertEqual(len(self.win.streams), 2)
+        self.assertFalse(rec.status()["following"])
+        journal = rec.stop()
+        self.assertEqual(journal["device_name"], USB)
+        self.assertNotIn("mic_switched", self.kinds(rec))
+
+    def test_a_first_read_that_fails_does_not_count_the_default_as_new(self):
+        # N1 of the review of 69063a4: the first good read is the starting
+        # point, so a recording on another microphone is not moved to it.
+        self.start(USB, watch=lambda: FirstReadFails(self.win.watch()))
+        self.win.stream.feed(1)
+        time.sleep(0.5)                               # several good reads of the laptop
+        self.assertEqual(len(self.win.streams), 1)    # still the USB microphone
+        self.win.default = HEADSET                    # a real change is still followed
+        self.assertTrue(wait_for(lambda: len(self.win.streams) == 2), "it did not switch")
+        self.assertEqual(self.win.stream.device, INDEX[HEADSET])
+
+    def test_choosing_after_the_recording_stopped_says_so(self):
+        # N3 of the review of 69063a4.
+        rec = self.start()
+        self.win.stream.feed(1)
+        rec.stop()
+        with self.assertRaises(recorder.RecorderError) as caught:
+            rec.choose(HEADSET)
+        self.assertEqual(str(caught.exception), "The recording has stopped.")
+        self.assertEqual(len(self.win.streams), 1)
 
     def test_a_chosen_microphone_that_will_not_open_leaves_the_same_one_recording(self):
         rec = self.start()

@@ -1009,6 +1009,8 @@ class Recording:
             if (self._stop.is_set() or self._stopping.is_set()
                     or self.journal["state"] != "recording"):
                 return False
+            if kind == "mic_switched" and not self.following:
+                return False             # a choice on the card, made while this was checked, wins
             if not self._may_switch():
                 return False             # the policy check stops the recording itself
             before = (self.journal["device"], self.journal["device_name"])
@@ -1064,6 +1066,9 @@ class Recording:
         if self.is_current(name):
             return
         if not self._switch(name, "mic_chosen"):
+            if (self._stop.is_set() or self._stopping.is_set()
+                    or self.journal["state"] != "recording"):
+                raise RecorderError("The recording has stopped.")
             if self._lost_at is not None:
                 raise RecorderError("That microphone could not be opened, and the one "
                                     "recording before could not be opened again. The "
@@ -1116,6 +1121,9 @@ class Recording:
         ident = default["id"] if default else None
         if ident is None or ident == self._baseline:
             self._seen = None
+            return
+        if self._baseline is None:
+            self._baseline = ident       # the first read failed: the first good one is the start
             return
         if ident == self._tried:
             return                       # would not open: not tried again until it changes
