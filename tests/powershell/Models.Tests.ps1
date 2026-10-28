@@ -211,7 +211,7 @@ Describe "New-ModelPackage.ps1" {
         $text = [IO.File]::ReadAllText((Join-Path $script:Out "LICENCES.txt"), [Text.Encoding]::UTF8)
         $text | Should -BeLike "*organisation's decision*"
         $text | Should -BeLike "*Licence: Creative Commons Attribution 4.0 International, https://creativecommons.org/licenses/by/4.0/*"
-        $text | Should -BeLike "*Credit: pyannote speaker-diarization-community-1, by pyannoteAI.*"
+        $text | Should -BeLike "*Credit: pyannote speaker-diarization-community-1, pyannote (pyannoteAI).*"
         $text | Should -BeLike "*The files are unmodified*"
         $text | Should -BeLike "*their own Hugging Face account*"
         $text | Should -BeLike ("*Alexis Plaquet and Herv" + [char]0x00E9 + " Bredin.*INTERSPEECH 2023.*")

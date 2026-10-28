@@ -300,7 +300,7 @@ The repository contains this project's own code, plus one third-party wheel (`pr
 | OpenSSL | Apache-2.0 | Version 4.0.3, built into cryptography's Windows wheel, as the wheel's own bill of materials says. Its `LICENSE.txt` from OpenSSL's `openssl-4.0.3` tag is in the package. Checked 27 October 2026 (#176). |
 | Libraries inside the packages | Each under its own licence | Native libraries bundled in the wheels and code compiled into them: for example FFmpeg and its codecs (in PyAV), Intel oneMKL and Intel OpenMP (in PyTorch and CTranslate2, under Intel's licences), NVIDIA's CUDA runtime (linked into CTranslate2, under NVIDIA's licence) and several hundred Rust crates (in cryptography, hf-xet, tokenizers and safetensors). `THIRD_PARTY_NOTICES.txt` in the package names each one with its licence texts in the package's `licences/` folder. Checked 27 October 2026 (#176). |
 
-Attribution for the speaker identification model: the pyannote speaker-diarization-community-1 pipeline by pyannoteAI, released under CC BY 4.0. If you publish transcripts or derived work that relied on speaker identification, keep that attribution.
+Attribution for the speaker identification model: the pyannote speaker-diarization-community-1 pipeline, pyannote (pyannoteAI), released under CC BY 4.0. If you publish transcripts or derived work that relied on speaker identification, keep that attribution.
 
 Attribution for the Parakeet models: parakeet-tdt-0.6b-v2 and parakeet-tdt-0.6b-v3 by NVIDIA, released under CC BY 4.0, used here as ONNX exports by istupakov. If you publish transcripts or derived work produced with Parakeet, keep that attribution.
 
