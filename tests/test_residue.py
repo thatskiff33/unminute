@@ -231,11 +231,15 @@ class AllowedFilesTests(TempDir):
         # worker's or the download process's crash file (rebase onto main,
         # 26 Oct 2026: a search of the whole tree, review round 3 of #335).
         # The workspace lock and the launcher's record too, now on the list
-        # (review of #335; offboarding named the lock).
+        # (review of #335; offboarding named the lock). The recording and
+        # live-drafts code and the shared Workspace pieces moved out of app.py
+        # into recording_ws.py and app_common.py (#414 step 1), so the list
+        # names them too (review of #485).
         literals = ('"settings.json"', '"settings.unreadable.json"', '"power_restore.json"',
                     '/ "logs"', '/ "audit"', '"workspace.db', '"app.running"', '"app.log"',
                     '.crash"', '"instance.lock"', '"launch.json"')
-        for rel in ("workspace/app.py", "workspace/__main__.py", "workspace/offboard.py",
+        for rel in ("workspace/app.py", "workspace/recording_ws.py", "workspace/app_common.py",
+                    "workspace/__main__.py", "workspace/offboard.py",
                     "workspace/launch.py", "workspace/worker.py", "workspace/drafts.py",
                     "workspace/setup.py", "tools/packaged_check.py",
                     "tools/packaged_crash_check.py", "tools/perf_check.py",
