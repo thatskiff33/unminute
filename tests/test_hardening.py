@@ -190,6 +190,8 @@ class NavigationTests(unittest.TestCase):
                               html)
         directives = {}
         for part in policy.split(";"):
+            if not part.strip():
+                continue                     # a trailing ';' is harmless
             name, *values = part.split()
             self.assertNotIn(name, directives, name)
             directives[name] = values
@@ -1614,7 +1616,7 @@ class LockedBridgeTests(unittest.TestCase):
                    if isinstance(r, AssertionError) or r.get("error") != LOCKED_TEXT}
         self.assertEqual(gated, reached)
 
-    def test_method_lists_that_do_not_match_refuse_to_build_even_under_O(self):
+    def test_method_lists_that_do_not_match_refuse_with_a_raise_not_an_assert(self):
         # #415 (ruff S101): the check is a raise, not an assert that -O or
         # PYTHONOPTIMIZE would skip.
         from workspace import api
