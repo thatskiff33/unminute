@@ -402,7 +402,7 @@ const node = { _text: "", dataset: {}, classList: { toggle() {} },
                set textContent(v) { writes += 1; this._text = String(v); } };
 const $ = () => node;
 const state = { statusLine: "" };
-const OK_MESSAGE = /^(Saved)/;
+const MESSAGE_KINDS = ["success", "info", "error"];
 let toastTimer = null;
 const setTimeout = () => { timers += 1; return timers; };
 const clearTimeout = (id) => { if (id) cleared += 1; };
@@ -1607,7 +1607,8 @@ class LockedBridgeTests(unittest.TestCase):
         ws = _Tripwire(locked=RuntimeError("locked"))
         page = api.make_api(ws)
         results = self.call_all(page, gated)
-        self.assertEqual({n: {"ok": False, "error": LOCKED_TEXT} for n in gated}, results)
+        self.assertEqual({n: {"ok": False, "error": LOCKED_TEXT, "kind": "error"}
+                          for n in gated}, results)
         self.assertEqual([], ws.touched)
         # Unlocked, the same calls reach the Workspace: the gate refused them.
         ws = _Tripwire(locked=None)

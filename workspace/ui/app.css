@@ -422,7 +422,28 @@ body[data-view="meeting"] .drop-overlay { left: 80px; }
 }
 /* Windows contrast themes force background colours, which would hide the
    masked tick: there it takes the system text colour. */
-@media (forced-colors: active) { .toast.ok::before { background: CanvasText; } }
+@media (forced-colors: active) { .toast.ok::before, .toast.error::before { background: CanvasText; } }
+/* An error that reaches the toast (#416) has an alert mark in the toast's own
+   text colour: the kind shows by shape, not by a colour on the dark toast. */
+.toast.error::before {
+  content: ""; width: 16px; height: 16px; flex: none; background: var(--toast-fg);
+  -webkit-mask: no-repeat center / 16px url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M12 8v5'/%3E%3Cpath d='M12 16h.01'/%3E%3C/svg%3E");
+          mask: no-repeat center / 16px url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M12 8v5'/%3E%3Cpath d='M12 16h.01'/%3E%3C/svg%3E");
+}
+
+/* -- errors beside their action (#416) ------------------------------------------------------- */
+/* Stays until dismissed or the action next works; drawn like the Meetings
+   page's alert notices (a red outline and mark), in the card it belongs to. */
+.inline-error {
+  display: flex; align-items: flex-start; gap: 10px; margin-top: 12px; padding: 10px 14px;
+  border: 1px solid var(--danger); border-radius: var(--r-md); font-size: 14px; color: var(--text);
+}
+.inline-error > svg { flex: none; color: var(--danger); margin-top: 1px; }
+.inline-error-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.inline-error .link-plain { flex: none; min-height: 0; padding: 0; font-size: 14px; font-weight: 700; }
+.error-slot:empty { display: none; }
+.error-slot > .inline-error:first-child { margin-top: 0; }
+.error-slot { margin: 12px 0; }
 
 /* -- hold surfaces (meeting side panel) ------------------------------------------------------ */
 /* Pink (hold) surfaces keep their light look in both themes, so text and

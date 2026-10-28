@@ -3,8 +3,10 @@
 #   - the shell's dispatch guard allows only the names in API_METHODS;
 #   - the facade pywebview sees has no state; the Workspace lives in a closure;
 #   - every method returns {"ok": True, "value": ...} or {"ok": False,
-#     "error": "..."} and never raises (pywebview would send a Python stack
-#     trace, with file paths, to the page);
+#     "error": "...", "kind": "error" or "info"} and never raises (pywebview
+#     would send a Python stack trace, with file paths, to the page). The kind
+#     (#416) is the WorkspaceError's, one of app.ERROR_KINDS: the page styles
+#     a message by it, never by its wording;
 #   - the page never supplies file paths: recordings come from the native
 #     file dialog or a native drop, which pywebview resolves in Python.
 
@@ -21,7 +23,8 @@ import wave
 import numpy as np
 
 from workspace import cleanup, consent, diag
-from workspace.app import AUDIO_EXTENSIONS, FINISH_ONLY_TEXT, LOCKED_TEXT, WorkspaceError
+from workspace.app import (AUDIO_EXTENSIONS, ERROR_KINDS, FINISH_ONLY_TEXT, LOCKED_TEXT,
+                           WorkspaceError)
 from workspace.media import SAMPLE_RATE
 
 # pywebviewEventHandler delivers DOM events to handlers registered from Python
@@ -80,17 +83,23 @@ def _wav_bytes(samples):
     return buf.getvalue()
 
 
+def _refused(message, kind="error"):
+    """The bridge's answer to a refused request: the message, and its kind
+    (#416), one of ERROR_KINDS; anything else counts as an error."""
+    return {"ok": False, "error": message, "kind": kind if kind in ERROR_KINDS else "error"}
+
+
 def _safe(fn, *args):
     try:
         return {"ok": True, "value": fn(*args)}
     except WorkspaceError as exc:
-        return {"ok": False, "error": str(exc)}
+        return _refused(str(exc), getattr(exc, "kind", "error"))
     except Exception as exc:
         # Recorded without its message (R9); the code lets support find it.
         # The bridge method that called _safe (fn can be a lambda): its name
         # is one of API_METHODS, never content.
         code = diag.incident("bridge", exc, method=sys._getframe(1).f_code.co_name)
-        return {"ok": False, "error": f"Something went wrong (code {code}). Please try again."}
+        return _refused(f"Something went wrong (code {code}). Please try again.")
 
 
 def _int(value, lo, hi):
@@ -545,7 +554,7 @@ def _gated(ws, fn):
     @functools.wraps(fn)
     def gate(self, *args, **kwargs):
         if ws.locked is not None:
-            return {"ok": False, "error": LOCKED_TEXT}
+            return _refused(LOCKED_TEXT)
         return fn(self, *args, **kwargs)
     gate.__signature__ = inspect.signature(fn)
     return gate
@@ -557,7 +566,7 @@ def _finish_gated(ws, fn):
     @functools.wraps(fn)
     def gate(self, *args, **kwargs):
         if getattr(ws, "finish_only", False) is True:
-            return {"ok": False, "error": FINISH_ONLY_TEXT}
+            return _refused(FINISH_ONLY_TEXT, "info")     # as Workspace's own refusal
         return fn(self, *args, **kwargs)
     gate.__signature__ = inspect.signature(fn)
     return gate

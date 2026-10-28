@@ -70,7 +70,9 @@ RECORDING_SCENARIO = "recording"   # the Meetings view with a recording going
 # LIVE_MS of page time each.
 LIVE_SCENARIOS = ("recording-computer", "recording-computer-quiet", "recording-drafts",
                   "meeting-reviewed", "meeting-error", "setup-3-downloading",
-                  "recording-bridge-error", "recording-switched")
+                  "recording-bridge-error", "recording-switched",
+                  # #416: an error kept beside its action is not set again by the polls.
+                  "home-import-error", "handoff-error", "settings-error")
 # The calls that fail in that run: the page must have made each in the measured
 # window, or nothing was tested.
 FAILING_SCENARIO = ("recording-bridge-error", ("reminders", "recording_status"))

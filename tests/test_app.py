@@ -1435,7 +1435,7 @@ class ApiTests(unittest.TestCase):
 
     def test_errors_are_plain_results(self):
         r = self.api.detail("x" * 32)
-        self.assertEqual(r, {"ok": False, "error": "Meeting not found."})
+        self.assertEqual(r, {"ok": False, "error": "Meeting not found.", "kind": "error"})
         r = self.api.transcript(self.mid, -1, 10)
         self.assertFalse(r["ok"])
         r = self.api.edit(self.mid, {"__class__": 1}, "x")
@@ -1444,8 +1444,10 @@ class ApiTests(unittest.TestCase):
 
     def test_zoom_accepts_only_known_steps_and_needs_a_window(self):
         for bad in ("bigger", 2, None, {"__class__": 1}):
-            self.assertEqual(self.api.zoom(bad), {"ok": False, "error": "Unknown zoom."})
-        self.assertEqual(self.api.zoom("in"), {"ok": False, "error": "Zoom is not available."})
+            self.assertEqual(self.api.zoom(bad), {"ok": False, "error": "Unknown zoom.",
+                                                    "kind": "error"})
+        self.assertEqual(self.api.zoom("in"), {"ok": False,
+                         "error": "Zoom is not available.", "kind": "error"})
 
     def test_clip_is_a_bounded_data_url(self):
         r = self.api.clip(self.mid, 0, 2)

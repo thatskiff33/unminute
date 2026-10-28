@@ -161,7 +161,7 @@ class FeedTests(WorkspaceCase):
         self.assertIsNone(status["value"]["recording"])
         self.assertIsNone(status["value"]["draft"])
         self.assertEqual(page.recording_draft(0),
-                         {"ok": False, "error": "Nothing is being recorded."})
+                         {"ok": False, "error": "Nothing is being recorded.", "kind": "error"})
         self.feed.begin(drafts.RUNNING)
         lines = self.feed.say(2)
         status = page.recording_status()["value"]
@@ -176,7 +176,7 @@ class FeedTests(WorkspaceCase):
         for bad in (-1, True, 1.5, "0", None, 10 ** 8):               # the bridge's own checks
             with self.subTest(bad=bad):
                 self.assertEqual(page.recording_draft(bad),
-                                 {"ok": False, "error": "Out of range."})
+                                 {"ok": False, "error": "Out of range.", "kind": "error"})
         self.assertEqual(self.feed.fetches, [1])                       # refused calls not counted
         with self.assertRaises(WorkspaceError):                        # the app's own check
             self.feed.recording_draft(-1)

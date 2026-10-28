@@ -32,37 +32,100 @@ const state = {
 };
 
 // -- bridge -----------------------------------------------------------------
-// Calls return {ok, value} or {ok: false, error}; they never throw in Python,
-// so no stack trace (with file paths) reaches the page.
+// Calls return {ok, value} or {ok: false, error, kind}; they never throw in
+// Python, so no stack trace (with file paths) reaches the page. kind (#416)
+// says what a refusal is ("error" or "info"); an answer without a known kind
+// counts as an error.
 async function call(name, ...args) {
   const r = await window.pywebview.api[name](...args);
-  if (!r || !r.ok) throw new Error((r && r.error) || "The request failed.");
+  if (!r || !r.ok) {
+    const err = new Error((r && r.error) || "The request failed.");
+    err.kind = r && r.kind === "info" ? "info" : "error";
+    throw err;
+  }
   return r.value;
 }
 
-// Short messages appear as a toast. Confirmations ("Saved") clear after a few
-// seconds, other messages after longer; a sticky one (an import in progress)
-// stays until the app replaces it.
-const OK_MESSAGE = /^(Saved|Copied|Name saved|Template saved|Download started|Queued|Folder added|Meeting discarded|Recording saved|Edit undone|Speaker change undone|Token removed|Removed)/;
+// Short messages appear as a toast, styled by their kind, never by their
+// wording (#416): "success" (a tick; clears after 3 s), "info" (the default)
+// and "error" (an alert mark), which clear after 8 s; a sticky one (an import
+// in progress) stays until the app replaces it. Errors from Import, Hand off
+// and Settings stay beside their action instead (showError, below).
+const MESSAGE_KINDS = ["success", "info", "error"];
 // #status is a live region: a screen reader may read it again at each change,
 // even to the same text, so the same message again leaves it alone (#404, as
 // #346's putText) and only starts the timer again.
 let toastTimer = null;
-function say(message, { sticky = false } = {}) {
+function say(message, { sticky = false, kind = "info" } = {}) {
   const t = $("status");
   clearTimeout(toastTimer);
   putText(t, message || "");
-  t.classList.toggle("ok", OK_MESSAGE.test(message || ""));
+  if (!MESSAGE_KINDS.includes(kind)) kind = "info";
+  t.classList.toggle("ok", !!message && kind === "success");
+  t.classList.toggle("error", !!message && kind === "error");
   t.dataset.sticky = sticky && message ? "1" : "";
   if (message && !sticky)
     toastTimer = setTimeout(() => {
       if (state.statusLine) say(state.statusLine, { sticky: true });   // a lasting status returns
       else say("");
-    }, OK_MESSAGE.test(message) ? 3000 : 8000);
+    }, kind === "success" ? 3000 : 8000);
 }
+const sayDone = (message) => say(message, { kind: "success" });
+const sayError = (err) => say(String((err && err.message) || err), { kind: (err && err.kind) || "error" });
 
-async function attempt(fn) {
-  try { return await fn(); } catch (err) { say(String((err && err.message) || err)); }
+// -- errors beside their action (#416) ------------------------------------------
+// On Import, Hand off and Settings (with Downloads and Setup), an error stays
+// next to the control that caused it until it is dismissed or that part of the
+// page next succeeds, instead of a toast that clears after 8 s. Its place is
+// the nearest [data-errors] container: in its .error-slot if it has one, else
+// at its end. One error per place, the latest. It is a role="alert", filled
+// after it is placed, so it is announced once; the same text again is left
+// alone (putText).
+function errorHome(near) {
+  const node = typeof near === "string" ? $(near) : near;
+  return node && node.closest ? node.closest("[data-errors]") : null;
+}
+function showError(home, message, back = null) {
+  if (!home) { say(message, { kind: "error" }); return; }
+  const slot = home.querySelector(":scope .error-slot") || home;
+  let box = slot.querySelector(":scope > .inline-error");
+  if (!box) {
+    const dismiss = el("button", { type: "button", class: "link-plain", textContent: "Dismiss",
+      on: { click: () => {
+        box.remove();
+        const to = box.errorBack;                    // the control of the latest error here
+        if (to && to.isConnected && !to.disabled) to.focus();   // not lost to the page
+      } } });
+    box = el("div", { class: "inline-error", role: "alert" }, icon("alert", 18),
+             el("span", { class: "inline-error-text" }), dismiss);
+    slot.append(box);
+  }
+  box.errorBack = back;
+  putText(box.querySelector(".inline-error-text"), message);
+}
+function clearError(home) {
+  const box = home && (home.querySelector(":scope .error-slot") || home).querySelector(":scope > .inline-error");
+  if (box) box.remove();
+}
+function clearErrorsIn(view) { for (const box of $(view).querySelectorAll(".inline-error")) box.remove(); }
+
+// Runs fn and shows what went wrong. near (an element or its id) puts an
+// error beside its action; its place is found when the action starts, before
+// a redraw can remove near, and a success there clears it. An "info" refusal
+// is toasted wherever it came from.
+async function attempt(fn, near = null) {
+  const home = near ? errorHome(near) : null;
+  const back = typeof near === "string" ? $(near) : near;
+  try {
+    const value = await fn();
+    clearError(home);
+    return value;
+  } catch (err) {
+    const message = String((err && err.message) || err);
+    const kind = (err && err.kind) || "error";
+    if (home && kind === "error") showError(home, message, back);
+    else say(message, { kind });
+  }
 }
 
 // An error from the poll is shown once, not at every poll (#404): a bridge call
@@ -75,7 +138,7 @@ function pollError(where, err) {
   const message = String((err && err.message) || err);
   if (pollErrors[where] === message) return;
   pollErrors[where] = message;
-  say(message);
+  say(message, { kind: (err && err.kind) || "error" });
 }
 function pollOk(where) { delete pollErrors[where]; }
 
@@ -200,7 +263,8 @@ function discardLink(m) {
   // The app asks in its own window, which the page cannot answer (#111 A6).
   return linkButton("Discard…", () => attempt(async () => {
     const r = await call("discard_meeting", m.id);
-    say(r && r.cancelled ? declined(r, "Nothing was discarded.") : "Meeting discarded.");
+    if (r && r.cancelled) say(declined(r, "Nothing was discarded."));
+    else sayDone("Meeting discarded.");
     refresh();
   }), "Delete a meeting you do not need (for example a test recording)");
 }
@@ -522,7 +586,7 @@ function renderLocked(info) {
 function wireLocked() {
   $("locked-copy").addEventListener("click", () => attempt(async () => {
     await call("copy_diagnostics");
-    say("Copied the details for IT. They hold no meeting content.");
+    sayDone("Copied the details for IT. They hold no meeting content.");
   }));
   $("locked-help").addEventListener("click", () => attempt(() => call("open_help", "recovery")));
   $("locked-close").addEventListener("click", () => attempt(() => call("close_app")));
@@ -577,7 +641,7 @@ async function renderMeeting() {
   if (!state.mid) return;
   let d;
   try { d = await call("detail", state.mid); }
-  catch (err) { say(String(err.message || err)); show("meetings"); return; }
+  catch (err) { sayError(err); show("meetings"); return; }
   state.detail = d;
   if (state.pendingHandoff) {
     state.pendingHandoff = false;
@@ -991,7 +1055,7 @@ async function reassign(button, item) {
     await call("assign_speaker", state.mid, item.id, sel.value);
     restore();
     state.signature = "";
-    say("Speaker changed. Undo speaker change reverses it.");
+    sayDone("Speaker changed. Undo speaker change reverses it.");
     renderMeeting();
   }) } });
   const cancel = el("button", { type: "button", class: "cancel", textContent: "Cancel", on: { click: restore } });
@@ -1008,7 +1072,7 @@ async function reassign(button, item) {
 
 async function undoSpeakers() {
   const kind = await attempt(() => call("undo_speakers", state.mid));
-  say(kind ? "Speaker change undone" : "No speaker change to undo");
+  if (kind) sayDone("Speaker change undone"); else say("No speaker change to undo");
   afterNamesChange(true);
 }
 
@@ -1069,7 +1133,7 @@ function youSuggestion(sp, name) {
     "aria-label": `Use 'You' as the name for ${sp.name}`, on: { click: () => attempt(async () => {
       await call("rename_speaker", state.mid, sp.label, "You");
       name.value = "You";
-      say("Name saved");
+      sayDone("Name saved");
       namesState.focus = sp.label;      // the button goes with the rebuild (#461)
       afterNamesChange(true);
     }) } });
@@ -1082,7 +1146,7 @@ function speakerBlock(sp, all, index, you) {
   // Renaming does not rebuild the panel, so focus and typing elsewhere are kept.
   name.addEventListener("change", () => attempt(async () => {
     await call("rename_speaker", state.mid, sp.label, name.value);
-    say("Name saved");
+    sayDone("Name saved");
     afterNamesChange(false);
   }));
   const ex = sp.examples;
@@ -1261,7 +1325,7 @@ function save(span) {
     const r = await attempt(() => call("edit", mid, id, text));
     if (r) {
       span.classList.toggle("edited", r.edited);
-      say("Saved");
+      sayDone("Saved");
       $("m-undo").disabled = false;
     }
   });
@@ -1289,7 +1353,7 @@ async function undo() {
   if (r) {
     const span = document.querySelector(`#transcript .text[data-id="${r.id}"]`);
     if (span) { span.textContent = r.text; span.classList.toggle("edited", r.edited); span.scrollIntoView({ block: "center" }); }
-    say("Edit undone");
+    sayDone("Edit undone");
   } else if (r === null) say("Nothing to undo");
   renderMeeting();
 }
@@ -1365,7 +1429,7 @@ function meetingLength() {
 }
 
 function fetchClip(start, end) {
-  return call("clip", state.mid, start, end).catch((err) => { say(String(err.message || err)); return null; });
+  return call("clip", state.mid, start, end).catch((err) => { sayError(err); return null; });
 }
 
 async function playFrom(t, { exact = false, end = null } = {}) {
@@ -1387,7 +1451,7 @@ async function playFrom(t, { exact = false, end = null } = {}) {
   audio.src = url;
   audio.playbackRate = exact ? 1 : state.speed || 1;
   try { await audio.play(); }
-  catch (err) { if (err && err.name !== "AbortError") say(String(err.message || err)); }
+  catch (err) { if (err && err.name !== "AbortError") sayError(err); }
   if (generation !== clips.generation) return;
   if (!exact && stop < length - 0.05) {
     const nextEnd = Math.min(stop + 30, length);
@@ -1603,6 +1667,7 @@ async function openHandoff() {
     if ($(id).tagName === "TEXTAREA") $(id).value = ""; else $(id).textContent = "";
   }
   $("ho-passages").replaceChildren();
+  clearErrorsIn("view-handoff");                  // errors belong to the visit they came from
   $("ho-left-out").textContent = "";
   $("ho-long").hidden = true;
   $("ho-apply").disabled = true;                  // until this meeting's options have loaded
@@ -1651,10 +1716,11 @@ async function renderHandoffPreview() {
   catch (err) {
     if (generation !== handoffState.generation) return;
     $("ho-preview").textContent = "";
-    say(String(err.message || err));
+    handoffFailed(err, "ho-preview-pane");
     return;
   }
   if (generation !== handoffState.generation) return;
+  clearError($("ho-preview-pane"));
   handoffState.preview = p;
   layoutHandoff(p.assistant);
   setHandoffButtons();
@@ -1713,9 +1779,9 @@ async function applyHandoffOptions() {
     await call("set_handoff_options", state.mid, omitted, redactions);
     handoffState.anonymise = $("ho-anon").checked;
     handoffState.dirty = false;
-    say("Saved. The transcript itself is unchanged.");
+    sayDone("Saved. The transcript itself is unchanged.");
     await renderHandoffPreview();
-  });
+  }, "ho-apply");
 }
 
 // With an assistant (the default), Copy and open is the main button and Copy
@@ -1743,9 +1809,19 @@ function clearsSentence(r) {
     : "";
 }
 
-function handoffSaid(message) {
-  $("ho-status").textContent = message;   // the last result, kept on the page
-  say(message);                           // announced once, by the toast
+// A result: kept on the page for a screen reader (#ho-status) and announced
+// once, by the toast; it clears an earlier error beside Copy or save.
+function handoffSaid(message, kind = "success") {
+  $("ho-status").textContent = message;
+  clearError($("ho-out"));
+  say(message, { kind });
+}
+// An error stays beside its action (#416): Copy or save, or the preview.
+function handoffFailed(err, where = "ho-out") {
+  const message = String((err && err.message) || err);
+  if (err && err.kind === "info") { handoffSaid(message, "info"); return; }
+  $("ho-status").textContent = "";
+  showError($(where), message, document.activeElement);   // Dismiss returns to the button
 }
 
 async function copyHandoff(kind) {
@@ -1753,7 +1829,7 @@ async function copyHandoff(kind) {
   const p = handoffState.preview;
   if (!p || handoffState.dirty) return;
   try { r = await call("copy_handoff", state.mid, handoffState.template, kind, p.digests[kind], handoffState.anonymise); }
-  catch (err) { handoffSaid(String(err.message || err)); return; }
+  catch (err) { handoffFailed(err); return; }
   const clears = clearsSentence(r);
   handoffSaid((kind === "combined"
     ? `Copied the prompt and transcript (${r.chars.toLocaleString("en-NZ")} characters). Paste it into your organisation's approved AI assistant.` +
@@ -1768,7 +1844,7 @@ async function copyAndOpen() {
   const p = handoffState.preview;
   if (!p || handoffState.dirty) return;
   try { r = await call("copy_and_open_assistant", state.mid, handoffState.template, p.digests.combined, handoffState.anonymise); }
-  catch (err) { handoffSaid(String(err.message || err)); return; }
+  catch (err) { handoffFailed(err); return; }
   // The app read the policy again at the click: show the name and host it used.
   if (handoffState.preview === p) {
     p.assistant = { name: r.name, host: r.host };
@@ -1779,7 +1855,7 @@ async function copyAndOpen() {
   handoffSaid((r.opened
     ? `Copied the prompt and transcript (${chars} characters) and opened ${r.name} in your browser. Sign in with your organisation's business account, paste with Ctrl+V, check it, then send. If no browser appears, open ${r.host} yourself.`
     : `Copied the prompt and transcript (${chars} characters), but Unminute could not open your browser. Open ${r.host} yourself, sign in with your organisation's business account and paste.`)
-    + long + clearsSentence(r));
+    + long + clearsSentence(r), r.opened ? "success" : "info");   // half done is not a success
 }
 
 async function saveHandoff() {
@@ -1787,7 +1863,7 @@ async function saveHandoff() {
   const p = handoffState.preview;
   if (!p || handoffState.dirty) return;
   try { r = await call("save_handoff", state.mid, handoffState.template, p.digests.markdown, handoffState.anonymise); }
-  catch (err) { handoffSaid(String(err.message || err)); return; }
+  catch (err) { handoffFailed(err); return; }
   if (r) handoffSaid(`Saved ${r.name}. The app keeps no record of this file; file or delete it yourself when you no longer need it.`);
 }
 
@@ -1807,24 +1883,28 @@ function editTemplate(isNew) {
 }
 
 function closeTemplateEditor() {
+  clearError($("ho-editor"));
   $("ho-editor").hidden = true;
   $("ho-preview-pane").hidden = false;
 }
 
 async function saveTemplate() {
   const id = $("ho-editor").dataset.id || null;
-  const saved = await attempt(() => call("save_template", id, $("ho-t-title").value, $("ho-t-prompt").value));
+  const saved = await attempt(() => call("save_template", id, $("ho-t-title").value, $("ho-t-prompt").value),
+                              "ho-t-save");
   if (!saved) return;
   handoffState.template = saved;
   handoffState.templates = await attempt(() => call("handoff_templates")) || handoffState.templates;
   renderTemplateSelect();
   closeTemplateEditor();
-  say("Template saved as a new version");
+  sayDone("Template saved as a new version");
   renderHandoffPreview();
 }
 
 async function resetTemplate() {
-  await attempt(() => call("reset_template", handoffState.template));
+  let reset = false;                               // a refusal stays in the editor, beside it
+  await attempt(async () => { await call("reset_template", handoffState.template); reset = true; }, "ho-t-reset");
+  if (!reset) return;
   handoffState.templates = await attempt(() => call("handoff_templates")) || handoffState.templates;
   if (!handoffState.templates.some((t) => t.id === handoffState.template)) handoffState.template = "minutes";
   renderTemplateSelect();
@@ -1880,11 +1960,11 @@ function queueNote(dl) {
 // Python says whether anything was cancelled: the entry may have finished or
 // failed since the page was drawn, and then nothing was removed (#368 review).
 function cancelQueued(c, then) {
-  return button("Cancel", () => attempt(async () => {
+  return button("Cancel", (e) => attempt(async () => {
     const cancelled = await call("cancel_download", c.name);
-    say(cancelled ? "Removed from the queue." : "It is no longer in the queue.");
+    if (cancelled) sayDone("Removed from the queue."); else say("It is no longer in the queue.");
     then();
-  }));
+  }, e.currentTarget));
 }
 
 function progressBlock(c, note) {
@@ -1952,7 +2032,7 @@ function renderSuSteps() {
 function modelCard(c, s) {
   const dl = c.download;
   let action;
-  if (isRunning(c)) action = button("Cancel", () => attempt(() => call("cancel_download", c.name).then(renderSetup)));
+  if (isRunning(c)) action = button("Cancel", (e) => attempt(() => call("cancel_download", c.name).then(renderSetup), e.currentTarget));
   else if (isQueued(c)) action = cancelQueued(c, renderSetup);
   else if (c.state === "ready")
     action = el("span", { class: "su-ready" }, el("span", { class: "tick" }, icon("tick", 13)), "Ready");
@@ -1960,7 +2040,8 @@ function modelCard(c, s) {
     action = itManaged(c);
   else {
     // Another download running: this one queues behind it (#366).
-    action = button(c.state === "missing" ? `Download (${c.size_gb} GB)` : "Repair", () => startDownload(c.name), { primary: true });
+    action = button(c.state === "missing" ? `Download (${c.size_gb} GB)` : "Repair",
+                    (e) => startDownload(c.name, { near: e.currentTarget }), { primary: true });
   }
   return el("div", { class: "su-model" },
     el("div", { class: "su-model-top" },
@@ -2004,10 +2085,10 @@ function downloadRow(c, s, inUse) {
     : dl && dl.state === "failed" ? ["bad", "Needs attention"]
     : c.state === "invalid" ? ["bad", "Damaged"] : ["", "Not downloaded"];
   let action;
-  if (running) action = button("Cancel", () => attempt(() => call("cancel_download", c.name).then(refresh)));
+  if (running) action = button("Cancel", (e) => attempt(() => call("cancel_download", c.name).then(refresh), e.currentTarget));
   else if (queued) action = cancelQueued(c, refresh);
   else if (c.state === "ready")
-    action = button("Check every file", () => attempt(() => call("verify_model", c.name).then(refresh)),
+    action = button("Check every file", (e) => attempt(() => call("verify_model", c.name).then(refresh), e.currentTarget),
                     { title: "Compare every file with its published checksum" });
   else if (c.needs_token && c.state === "missing")
     action = button("Set up…", () => {
@@ -2018,18 +2099,19 @@ function downloadRow(c, s, inUse) {
     }, { primary: true });
   else if (downloadOff(c))
     action = itManaged(c);
-  else action = button(c.state === "missing" ? `Download (${c.size_gb} GB)` : "Repair", () => startDownload(c.name), { primary: true });
+  else action = button(c.state === "missing" ? `Download (${c.size_gb} GB)` : "Repair",
+                       (e) => startDownload(c.name, { near: e.currentTarget }), { primary: true });
   // Download, Repair and Set up stay available: another download queues (#366).
   if (c.state === "ready" && !running && !queued && action.tagName === "BUTTON") action.disabled = busy;
-  const remove = c.removable && !running && !queued ? linkButton("Remove…", () => confirmDialog({
+  const remove = c.removable && !running && !queued ? linkButton("Remove…", (e) => confirmDialog({
     title: `Remove ${cardName(c)}?`,
     body: `This deletes it from this computer, including any damaged or unfinished copies. Meetings already transcribed keep their text. You can download it again from Downloads.`,
     check: "Remove it from this computer.", limits: false, danger: true,
-    onConfirm: () => attempt(async () => {
+    onConfirm: ((near) => () => attempt(async () => {
       const gb = await call("remove_model", c.name);
-      say(`Removed. About ${gb} GB freed.`);
+      sayDone(`Removed. About ${gb} GB freed.`);
       refresh();
-    }) })) : null;
+    }, near))(e.currentTarget) })) : null;
   if (remove) remove.disabled = busy;
   return el("li", { class: "dl-item" },
     el("div", { class: "dl-row" },
@@ -2121,12 +2203,13 @@ async function renderSuMic() {
     await attempt(() => relistMics("su-device", showSuMics));
 }
 
+// extra.near: the control that asked, so an error stays beside it (#416).
 function startDownload(name, extra = {}) {
   return attempt(async () => {
     const how = await call("download_model", name, extra.token || null, extra.remember !== false);
-    say(how === "queued" ? "Queued. It starts when the download before it finishes." : "Download started");
+    sayDone(how === "queued" ? "Queued. It starts when the download before it finishes." : "Download started");
     refresh();
-  });
+  }, extra.near || null);
 }
 
 function wireSetup() {
@@ -2137,17 +2220,17 @@ function wireSetup() {
   const speakerName = () => (state.setup.cards.find((c) => c.role === "speakers") || {}).name;
   $("s-download-speakers").addEventListener("click", () => {
     const token = $("s-token").value.trim();
-    if (!token) { say("Paste your Hugging Face token first."); return; }
+    if (!token) { showError(errorHome("s-token"), "Paste your Hugging Face token first.", $("s-token")); return; }
     $("s-token").value = "";                         // never kept in the page
     suState.skipSpeakers = false;
-    startDownload(speakerName(), { token, remember: $("s-remember").checked });
+    startDownload(speakerName(), { token, remember: $("s-remember").checked, near: $("s-download-speakers") });
   });
-  $("s-use-remembered").addEventListener("click", () => startDownload(speakerName()));
-  const removeToken = () => attempt(async () => {
+  $("s-use-remembered").addEventListener("click", () => startDownload(speakerName(), { near: $("s-use-remembered") }));
+  const removeToken = (e) => attempt(async () => {
     await call("remove_token");
-    say("Token removed. Downloaded models keep working.");
+    sayDone("Token removed. Downloaded models keep working.");
     refresh();
-  });
+  }, e.currentTarget);
   $("s-remove-token").addEventListener("click", removeToken);
   $("dl-remove-token").addEventListener("click", removeToken);
   $("s-skip-speakers").addEventListener("click", () => { suState.skipSpeakers = true; setStep(4); });
@@ -2441,24 +2524,24 @@ function folderItem(f) {
     el("div", { class: "folder-top" }, folderIcon,
       el("div", { class: "folder-text" }, el("span", { class: "folder-path", textContent: f.path }),
         el("span", { class: `folder-status${f.error ? " bad" : ""}`, textContent: status })),
-      button(f.active ? "Pause" : "Resume", () => attempt(() => call("set_folder_active", f.id, !f.active).then(renderSettings))),
+      button(f.active ? "Pause" : "Resume", () => attempt(() => call("set_folder_active", f.id, !f.active).then(renderSettings), "s-folders")),
       linkButton("Stop watching…", () => confirmDialog({
         title: "Stop watching this folder?",
         body: "Recordings already imported stay in the workspace. New recordings in this folder will no longer be imported, and its deletion permission is removed.",
         check: "Stop watching the folder.", limits: false,
-        onConfirm: () => attempt(() => call("remove_folder", f.id).then(renderSettings)) }))),
+        onConfirm: () => attempt(() => call("remove_folder", f.id).then(renderSettings), "s-folders") }))),
     el("label", {}, el("input", { type: "checkbox", checked: f.fetch_cloud,
-      on: { change: (e) => attempt(() => call("set_folder_authority", f.id, null, e.target.checked).then(renderSettings)) } }),
+      on: { change: (e) => attempt(() => call("set_folder_authority", f.id, null, e.target.checked).then(renderSettings), "s-folders") } }),
       "Download recordings that are only in cloud storage (OneDrive and similar)"),
     el("label", {}, el("input", { type: "checkbox", checked: f.delete_originals,
       disabled: !f.delete_originals && !allowed("AllowDeleteOriginals"),
       on: { change: (e) => {
-        if (!e.target.checked) { attempt(() => call("set_folder_authority", f.id, false, null).then(renderSettings)); return; }
+        if (!e.target.checked) { attempt(() => call("set_folder_authority", f.id, false, null).then(renderSettings), "s-folders"); return; }
         e.target.checked = false;                     // until the app's own window confirms
         attempt(() => call("set_folder_authority", f.id, true, null).then((r) => {
           if (r && r.cancelled) say(declined(r, "Nothing changed: originals in this folder are kept."));
           return renderSettings();
-        }));
+        }), "s-folders");
       } } }),
       "Delete originals from this folder after review…"),
     f.delete_originals && !allowed("AllowDeleteOriginals")
@@ -2466,7 +2549,13 @@ function folderItem(f) {
       : null);
 }
 
-function setSetting(changes) { attempt(() => call("set_settings", changes).then(renderSettings)); }
+// near: the control changed, so a refusal stays in its card (#416), and the
+// controls are drawn again at once from what is saved, not at the next poll.
+function setSetting(changes, near) {
+  let saved = false;
+  attempt(async () => { await call("set_settings", changes); saved = true; await renderSettings(); }, near)
+    .then(() => { if (!saved) attempt(renderSettings); });
+}
 
 // -- refresh loop ----------------------------------------------------------------
 let refreshing = false;
@@ -3202,7 +3291,7 @@ function wireRecorder() {
       const busy = ["rec-discard", "rec-stop", "rec-pause", "rec-resume"];
       for (const id of busy) $(id).disabled = true;
       say("Discarding the recording…", { sticky: true });
-      try { await call("discard_recording"); say("Recording discarded."); }
+      try { await call("discard_recording"); sayDone("Recording discarded."); }
       finally { for (const id of busy) $(id).disabled = false; renderRecorder(); }
     }),
   }));
@@ -3212,7 +3301,7 @@ function wireRecorder() {
     renderRecorder().catch(() => {});
     try { await call("stop_recording"); }
     finally { state.recSaving = false; $("rec-stop").disabled = false; }
-    say("Recording saved. It is being imported.");
+    sayDone("Recording saved. It is being imported.");
     renderRecorder();
   }));
 }
@@ -3372,18 +3461,18 @@ window.addEventListener("pywebviewready", () => {
 function wire() {
   $("help-diagnostics").addEventListener("click", () => attempt(async () => {
     await call("copy_diagnostics");
-    say("Copied diagnostics: no meeting content. Paste them into your support request.");
+    sayDone("Copied diagnostics: no meeting content. Paste them into your support request.");
   }));
   $("s-add-folder").addEventListener("click", () => attempt(async () => {
     const added = await call("add_folder_dialog", $("s-include-existing").checked);
-    if (added) say("Folder added. It will be checked now.");
+    if (added) sayDone("Folder added. It will be checked now.");
     pollSoon();
-  }));
+  }, "s-add-folder"));
   $("s-scan").addEventListener("click", () => attempt(async () => {
     await call("scan_now");
     say("Checking watched folders");
     pollSoon();
-  }));
+  }, "s-scan"));
   wireSetup();
   wireHandoff();
   wireLocked();
@@ -3393,7 +3482,7 @@ function wire() {
     const r = await call("import_dialog");
     if (r.accepted) say(`Importing ${r.accepted} recording${r.accepted > 1 ? "s" : ""}`);
     refresh();
-  }));
+  }, "import"));
   $("back").addEventListener("click", () => { stopEditing(); show("meetings"); });
   $("top-back").addEventListener("click", () => {
     if (state.view === "handoff") { closeHandoff(); return; }
@@ -3486,20 +3575,20 @@ function wire() {
     refresh();
   }));
   $("c-check").addEventListener("change", () => { $("c-ok").disabled = !$("c-check").checked; });
-  for (const r of document.querySelectorAll('input[name="mode"]')) r.addEventListener("change", () => setSetting({ mode: r.value }));
+  for (const r of document.querySelectorAll('input[name="mode"]')) r.addEventListener("change", () => setSetting({ mode: r.value }, r));
   for (const r of document.querySelectorAll('input[name="recdisplay"]'))
-    r.addEventListener("change", () => setSetting({ recording_display: r.value }));
-  $("s-battery").addEventListener("change", () => setSetting({ battery_override: $("s-battery").checked }));
-  $("s-speakers").addEventListener("change", () => setSetting({ speakers: $("s-speakers").checked }));
-  $("s-gpu").addEventListener("change", () => setSetting({ gpu_speakers: $("s-gpu").checked }));
-  $("s-microphone").addEventListener("change", () => setSetting({ microphone: $("s-microphone").checked }));
-  $("s-computer").addEventListener("change", () => setSetting({ computer_audio: $("s-computer").checked }));
-  $("s-lid").addEventListener("change", () => setSetting({ lid_override: $("s-lid").checked }));
-  $("s-drafts").addEventListener("change", () => setSetting({ live_drafts: $("s-drafts").checked }));
+    r.addEventListener("change", () => setSetting({ recording_display: r.value }, r));
+  $("s-battery").addEventListener("change", () => setSetting({ battery_override: $("s-battery").checked }, "s-battery"));
+  $("s-speakers").addEventListener("change", () => setSetting({ speakers: $("s-speakers").checked }, "s-speakers"));
+  $("s-gpu").addEventListener("change", () => setSetting({ gpu_speakers: $("s-gpu").checked }, "s-gpu"));
+  $("s-microphone").addEventListener("change", () => setSetting({ microphone: $("s-microphone").checked }, "s-microphone"));
+  $("s-computer").addEventListener("change", () => setSetting({ computer_audio: $("s-computer").checked }, "s-computer"));
+  $("s-lid").addEventListener("change", () => setSetting({ lid_override: $("s-lid").checked }, "s-lid"));
+  $("s-drafts").addEventListener("change", () => setSetting({ live_drafts: $("s-drafts").checked }, "s-drafts"));
   for (const r of document.querySelectorAll('input[name="draftsaudio"]'))
-    r.addEventListener("change", () => setSetting({ live_drafts_audio: r.value }));
+    r.addEventListener("change", () => setSetting({ live_drafts_audio: r.value }, r));
   wireRecorder();
-  $("s-model").addEventListener("change", () => setSetting({ model: $("s-model").value }));
+  $("s-model").addEventListener("change", () => setSetting({ model: $("s-model").value }, "s-model"));
   document.addEventListener("keydown", (e) => {
     const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement
       || e.target instanceof HTMLSelectElement || (e.target instanceof HTMLElement && e.target.isContentEditable);
