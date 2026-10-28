@@ -2,7 +2,11 @@
 # The microphone follows Windows mid-recording (#462, the owner's decisions of
 # 28 Oct 2026): a new Windows default microphone is followed, a microphone
 # that is lost moves to the one Windows now uses, and the person may choose
-# another on the card, which stops following the default. The recording
+# another on the card, which stops following the default. Only a recording
+# that started on the Windows default follows a new default; one started on
+# a microphone the person chose stays on it, and if that one is lost it moves
+# to the default and follows it from then on (the owner's refinement of 28
+# Oct 2026, DEC-080). The recording
 # carries on in the same meeting; the short gap is saved as silence and
 # reported as a gap; nothing committed is lost or saved twice (D1); a pause
 # stays paused (D2); managed policy is read before every switch (K3); events
@@ -187,6 +191,27 @@ class FirstReadFails:
         self.watch.close()
 
 
+class HeldLossRead:
+    """A watch that holds its second read of the default until the test
+    lets it go. On a recording that follows no default, the first read is
+    the starting point and the second is the follow thread's read for a lost
+    microphone: the thread has seen the loss and is part-way through it."""
+
+    def __init__(self, watch):
+        self.watch, self.reads = watch, 0
+        self.holding, self.go = threading.Event(), threading.Event()
+
+    def default(self):
+        self.reads += 1
+        if self.reads == 2:
+            self.holding.set()
+            self.go.wait(10)
+        return self.watch.default()
+
+    def close(self):
+        self.watch.close()
+
+
 class FakeLoopback:
     """Computer audio, pushed by the test (as tests/test_two_track.py)."""
 
@@ -234,9 +259,13 @@ class _Recording(unittest.TestCase):
             self.addCleanup(patch.stop)
 
     def start(self, name=LAPTOP, computer=None, **follow):
+        """A recording on name, which starts on the Windows default (and so
+        follows it, DEC-080) when it is FakeWindows' default, as the app tells
+        the recorder; a test may say otherwise with on_default."""
+        follow = {**self.win.follow(), "on_default": name == self.win.default, **follow}
         rec = recorder.Recording(self.root / "rec", INDEX[name], name, RATE,
                                  open_stream=self.win.open_stream, key=KEY,
-                                 follow={**self.win.follow(), **follow}, computer=computer)
+                                 follow=follow, computer=computer)
         rec.start()
         self.addCleanup(rec.stop)
         return rec
@@ -310,9 +339,18 @@ class FollowTests(_Recording):
         self.assertEqual(self.kinds(rec), [])
 
     def test_the_microphone_already_recording_becoming_the_default_is_no_switch(self):
-        rec = self.start(HEADSET)                     # chosen before recording, not the default
+        # A following recording (on_default: PortAudio's default at Start,
+        # while Windows' own read names the laptop, as in N1 below) whose
+        # microphone then becomes Windows' default: nothing to switch to.
+        # (B1 of the review of 325a564: without on_default it followed
+        # nothing under DEC-080 and passed whatever _follow_default did.)
+        rec = self.start(HEADSET, on_default=True)
+        self.assertTrue(rec.status()["following"])
+        self.assertTrue(wait_for(lambda: rec._baseline is not None))   # Windows' first read
         self.win.default = HEADSET
-        time.sleep(0.5)
+        self.assertTrue(wait_for(lambda: rec._baseline == "{0.0.1}." + HEADSET),
+                        "the new default was never taken as the starting point")
+        time.sleep(0.3)
         self.assertEqual(len(self.win.streams), 1)
         self.assertEqual(self.kinds(rec), [])
 
@@ -460,7 +498,9 @@ class FollowTests(_Recording):
     def test_a_first_read_that_fails_does_not_count_the_default_as_new(self):
         # N1 of the review of 69063a4: the first good read is the starting
         # point, so a recording on another microphone is not moved to it.
-        self.start(USB, watch=lambda: FirstReadFails(self.win.watch()))
+        # (A recording PortAudio started on as the default, while Windows'
+        # own first good read names another: it follows, DEC-080.)
+        self.start(USB, on_default=True, watch=lambda: FirstReadFails(self.win.watch()))
         self.win.stream.feed(1)
         time.sleep(0.5)                               # several good reads of the laptop
         self.assertEqual(len(self.win.streams), 1)    # still the USB microphone
@@ -587,6 +627,167 @@ class FollowTests(_Recording):
 
 
 @unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
+class StartedOnTests(_Recording):
+    """DEC-080 (the owner's refinement of 28 Oct 2026): only a recording that
+    started on the Windows default follows a new default. One started on a
+    microphone the person chose stays on it; if that one is lost, it moves to
+    the default and follows it from then on. A choice on the card still stops
+    following for the rest of the recording."""
+
+    def test_a_recording_started_on_a_chosen_microphone_stays_on_it(self):
+        rec = self.start(USB)                         # chosen before Record (the laptop is default)
+        self.assertFalse(rec.status()["following"])
+        self.win.stream.feed(1)
+        self.win.default = HEADSET                    # a headset connects and becomes the default
+        time.sleep(0.5)                               # many checks
+        self.assertEqual(len(self.win.streams), 1, "it left the microphone chosen")
+        self.assertEqual(self.kinds(rec), [])
+        journal = rec.stop()
+        self.assertEqual(journal["device_name"], USB)
+        self.check_saved(rec, journal, RATE)
+
+    def test_a_chosen_microphone_that_is_lost_moves_to_the_default_and_follows_it(self):
+        rec = self.start(USB)
+        first = self.win.stream
+        first.feed(1)
+        self.assertTrue(wait_for(lambda: rec.journal["frames"] + rec._buffered == first.fed))
+        self.win.present.discard(USB)                 # unplugged
+        first.finished()
+        self.assertTrue(wait_for(lambda: len(self.win.streams) == 2), "it did not move")
+        self.assertEqual(self.win.stream.device, INDEX[LAPTOP])      # the Windows default
+        self.assertTrue(rec.status()["following"])
+        time.sleep(0.2)
+        self.win.stream.feed(1)
+        self.win.default = HEADSET                    # followed from now on
+        self.assertTrue(wait_for(lambda: len(self.win.streams) == 3),
+                        "the new default was not followed after the move")
+        self.assertEqual(self.win.stream.device, INDEX[HEADSET])
+        journal = rec.stop()
+        self.assertEqual(journal["device_name"], HEADSET)
+        self.assertEqual([k for k in self.kinds(rec) if k != "gap"],
+                         ["mic_moved", "mic_switched"])
+        self.assert_no_names(rec)
+
+    def test_a_card_choice_that_is_lost_moves_but_follows_no_default(self):
+        # DEC-079: a choice on the card stops following for the rest of the
+        # recording, as before; a loss still moves it to the default.
+        rec = self.start()
+        self.win.stream.feed(1)
+        rec.choose(USB)
+        self.win.present.discard(USB)
+        self.win.stream.finished()
+        self.assertTrue(wait_for(lambda: len(self.win.streams) == 3), "it did not move")
+        self.assertEqual(self.win.stream.device, INDEX[LAPTOP])
+        self.assertFalse(rec.status()["following"])
+        self.win.default = HEADSET
+        time.sleep(0.5)
+        self.assertEqual(len(self.win.streams), 3)
+        self.assertEqual(rec.stop()["device_name"], LAPTOP)
+
+    def test_choosing_the_lost_microphone_while_it_is_lost_opens_it_again(self):
+        # N8 of the review of e836d54: the microphone recording, chosen while
+        # it is lost, was reported done with no microphone recording.
+        with mock.patch.object(recorder, "SWITCH_WAIT_S", 5.0):
+            rec = self.start()
+            first = self.win.stream
+            first.feed(1)
+            self.win.default = None                   # Windows offers no other for now
+            first.finished()                          # the driver ended it; it is still listed
+            self.assertTrue(wait_for(lambda: first.closed), "the loss was not handled")
+            rec.choose(LAPTOP)
+            self.assertEqual(len(self.win.streams), 2, "reported done without opening it")
+            second = self.win.stream
+            self.assertEqual(second.device, INDEX[LAPTOP])
+            self.assertTrue(second.started)
+            self.assertIsNone(rec._lost_at)
+            time.sleep(0.2)
+            second.feed(1)
+            journal = rec.stop()
+        self.assertEqual(journal["state"], "stopped")
+        self.assertEqual([k for k in self.kinds(rec) if k != "gap"], ["mic_chosen"])
+        self.check_saved(rec, journal, RATE, RATE)
+
+    def test_choosing_the_lost_microphone_that_will_not_open_says_so(self):
+        with mock.patch.object(recorder, "SWITCH_WAIT_S", 5.0):
+            rec = self.start()
+            first = self.win.stream
+            first.feed(1)
+            self.win.default = None
+            self.win.present.discard(LAPTOP)          # gone, though the card still listed it
+            first.finished()
+            self.assertTrue(wait_for(lambda: first.closed), "the loss was not handled")
+            with self.assertRaises(recorder.RecorderError) as caught:
+                rec.choose(LAPTOP)
+            self.assertIn("waiting for a microphone", str(caught.exception))
+            self.assertNotIn(LAPTOP, str(caught.exception))
+            self.assertEqual(len(self.win.streams), 1)
+            self.assertFalse(rec.stopped)
+            self.assertIsNotNone(rec._lost_at)
+
+    def test_a_choice_that_opens_a_microphone_during_a_move_is_not_undone(self):
+        # Recorder thread safety: the follow thread had seen the loss and was
+        # reading Windows' default when the person chose on the card. The
+        # choice opened a microphone, so the move must neither close it nor
+        # go elsewhere.
+        held = []
+
+        def watch():
+            held.append(HeldLossRead(self.win.watch()))
+            return held[0]
+        with mock.patch.object(recorder, "SWITCH_WAIT_S", 5.0):
+            rec = self.start(USB, watch=watch)        # follows no default: reads only for a loss
+            self.assertTrue(wait_for(lambda: held and held[0].reads == 1))
+            self.addCleanup(held[0].go.set)
+            first = self.win.stream
+            first.feed(1)
+            self.win.present.discard(USB)
+            first.finished()
+            self.assertTrue(held[0].holding.wait(10), "the follow thread never read the default")
+            rec.choose(HEADSET)
+            held[0].go.set()
+            time.sleep(0.5)                           # the held move finishes
+            self.assertEqual(self.win.stream.device, INDEX[HEADSET])
+            self.assertFalse(self.win.stream.closed, "the move closed the microphone chosen")
+            self.assertEqual(len(self.win.streams), 2)
+            self.assertNotIn("mic_moved", self.kinds(rec))
+            self.assertFalse(rec.status()["following"])
+            self.assertEqual(rec.stop()["device_name"], HEADSET)
+
+    def test_a_choice_made_after_the_move_is_checked_is_not_undone(self):
+        # Nit 1 of the review of 325a564: the follow thread had passed
+        # _recover's checks and let go of the switch lock, and was about to
+        # move to the default, when the person chose on the card. _switch's
+        # own check (a move with nothing lost any more) must stop the move.
+        inside, go = threading.Event(), threading.Event()
+        self.addCleanup(go.set)
+        with mock.patch.object(recorder, "SWITCH_WAIT_S", 5.0):
+            rec = self.start(USB)                     # follows no default
+            switch = rec._switch
+
+            def held_switch(name, kind, default=False):
+                if kind == "mic_moved" and not inside.is_set():
+                    inside.set()                      # between _recover and _switch's lock
+                    go.wait(10)
+                return switch(name, kind, default=default)
+            rec._switch = held_switch
+            first = self.win.stream
+            first.feed(1)
+            self.win.present.discard(USB)
+            first.finished()
+            self.assertTrue(inside.wait(10), "the move never started")
+            self.assertTrue(first.closed)             # _recover closed the lost stream
+            rec.choose(HEADSET)
+            go.set()
+            time.sleep(0.5)                           # the held move finishes
+            self.assertEqual(self.win.stream.device, INDEX[HEADSET])
+            self.assertFalse(self.win.stream.closed, "the move closed the microphone chosen")
+            self.assertEqual(len(self.win.streams), 2)
+            self.assertNotIn("mic_moved", self.kinds(rec))
+            self.assertFalse(rec.status()["following"])
+            self.assertEqual(rec.stop()["device_name"], HEADSET)
+
+
+@unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
 class FollowMixTests(_Recording):
     """The mix (#108) lines a switch up as after a resume: the microphone's
     marks start a segment at the new microphone's first block."""
@@ -704,8 +905,19 @@ class WorkspaceSwitchTests(unittest.TestCase):
         self.assertEqual(self.win.stream.device, INDEX[LAPTOP])
         self.assertEqual(len(self.win.streams), 1)
 
+    def test_a_recording_started_on_a_chosen_microphone_follows_no_default(self):
+        # DEC-080: the app tells the recorder whether it started on the default.
+        self.ws.start_recording(INDEX[USB], USB, consent=CONSENT)
+        self.addCleanup(lambda: self.ws._recording and self.ws.discard_recording())
+        self.assertFalse(self.ws.recording_status()["recording"]["following"])
+        self.win.default = HEADSET
+        time.sleep(0.5)
+        self.assertEqual(len(self.win.streams), 1)
+        self.assertEqual(self.ws.recording_status()["recording"]["device"], USB)
+
     def test_the_recording_follows_the_windows_default_through_the_app(self):
         rec = self.started()
+        self.assertTrue(self.ws.recording_status()["recording"]["following"])
         self.win.default = HEADSET
         self.assertTrue(wait_for(lambda: len(self.win.streams) == 2))
         self.assertEqual(self.ws.recording_status()["recording"]["device"], HEADSET)
