@@ -65,11 +65,12 @@ RECORDING_SCENARIO = "recording"   # the Meetings view with a recording going
 # computer" hint shown, one with draft text, a reviewed meeting (its banner), a
 # meeting whose transcription stopped (the assertive #m-error), Setup's
 # speaker step during its download, and a recording while two bridge calls fail
-# at every poll (#404: each error is toasted once, not at every poll). Visible,
+# at every poll (#404: each error is toasted once, not at every poll), and a
+# recording whose microphone switched, with its choice of microphone (#462). Visible,
 # LIVE_MS of page time each.
 LIVE_SCENARIOS = ("recording-computer", "recording-computer-quiet", "recording-drafts",
                   "meeting-reviewed", "meeting-error", "setup-3-downloading",
-                  "recording-bridge-error")
+                  "recording-bridge-error", "recording-switched")
 # The calls that fail in that run: the page must have made each in the measured
 # window, or nothing was tested.
 FAILING_SCENARIO = ("recording-bridge-error", ("reminders", "recording_status"))

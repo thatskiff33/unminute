@@ -42,7 +42,7 @@ API_METHODS = frozenset({
     "set_folder_active", "remove_folder", "scan_now", "set_folder_authority", "zoom",
     "microphone_devices", "start_recording", "pause_recording", "resume_recording",
     "stop_recording", "discard_recording", "recording_status", "discard_recording_report",
-    "test_microphone", "recording_draft",
+    "test_microphone", "recording_draft", "switch_microphone",
     "retry_recording_import", "delete_pending_recording", "remove_model", "discard_meeting",
     "close_app", "report_ui_error", "copy_diagnostics", "continue_despite_damage",
 })
@@ -397,6 +397,16 @@ def make_api(ws, get_window=lambda: None, confirm=None, decline_pause_s=DECLINE_
     def test_microphone(self, device, name):
         return _safe(lambda: ws.test_microphone(_int(device, 0, 10_000), _device_name(name)))
 
+    def switch_microphone(self, device, name):
+        """Switch the recording in progress to a microphone the card listed
+        (#462): the entry's place in the list microphone_devices gave while
+        recording, and its name; refused unless both still match, and by
+        managed policy (K3). The owner agreed the approach on #462 (28 Oct
+        2026, E2). It cannot start a recording or open a microphone when
+        nothing is recorded."""
+        return _safe(lambda: ws.switch_microphone(_int(device, 0, 10_000),
+                                                  _device_name(name)))
+
     def pause_recording(self):
         return _safe(ws.pause_recording)
 
@@ -505,7 +515,7 @@ def make_api(ws, get_window=lambda: None, confirm=None, decline_pause_s=DECLINE_
                  stop_recording=stop_recording, discard_recording=discard_recording,
                  recording_status=recording_status, recording_draft=recording_draft,
                  discard_recording_report=discard_recording_report,
-                 test_microphone=test_microphone,
+                 test_microphone=test_microphone, switch_microphone=switch_microphone,
                  retry_recording_import=retry_recording_import,
                  delete_pending_recording=delete_pending_recording,
                  remove_model=remove_model, discard_meeting=discard_meeting,

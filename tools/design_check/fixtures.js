@@ -675,6 +675,23 @@
       change: (d) => { SCENARIOS["recording-drafts"].change(d); },
       steps: [() => document.getElementById("rec-draft-toggle").click()],
     },
+    // #462: the microphone switched mid-recording (a headset connected and
+    // Windows made it the default): the card names it, with the choice of
+    // microphone, and the switch and its short gap under the card.
+    "recording-switched": {
+      change: (d) => {
+        SCENARIOS.recording.change(d);
+        Object.assign(d.recording.recording, { id: "r1", device: "Headset (sample)", switched: true,
+          following: true, events: [
+            { kind: "mic_switched", at_s: 512, seconds: null,
+              note: "Windows changed its default microphone, so the recording switched to it." },
+            { kind: "gap", at_s: 512, seconds: 0.4,
+              note: "Silence was recorded here while the microphone switched." }] });
+        d.recMics = [{ index: 0, name: "Laptop microphone", label: "Laptop microphone", default: false, current: false },
+                     { index: 1, name: "Headset (sample)", label: "Headset (sample)", default: true, current: true }];
+      },
+      steps: [],
+    },
     // Computer audio (#108): on in Settings, so the line under Record says so.
     "home-computer": { change: (d) => { d.recording.computer_audio = true; }, steps: [] },
     // A two-track recording recovered after the app closed: each track's length (#108 slice 5).
@@ -1100,7 +1117,17 @@
       }
       return data.recording;
     },
-    microphone_devices: () => [{ index: 1, name: "Laptop microphone", default: true }],
+    // While recording (#462), what Windows has now, with the one recording marked.
+    microphone_devices: () => (data.recording.recording
+      ? data.recMics || [{ index: 0, name: data.recording.recording.device, label: data.recording.recording.device,
+                           default: true, current: true }]
+      : [{ index: 1, name: "Laptop microphone", default: true }]),
+    switch_microphone: (index, name) => {
+      const rec = data.recording.recording;
+      Object.assign(rec, { device: name, switched: true, following: false });
+      if (data.recMics) for (const m of data.recMics) m.current = m.name === name;
+      return rec;
+    },
     recording_draft: (since) => {
       const d = data.recording.draft || { state: "off", generation: 0 };
       const phrases = DRAFT.slice(since, since + 200);

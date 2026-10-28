@@ -9,6 +9,13 @@
 # while it is there; if it has gone, the page says so and selects the Windows
 # default, without starting or testing anything.
 #
+# While recording (#462) the card has its own choice of microphone: the
+# microphones Windows has now, asked for once when the card shows, after its
+# microphone changes, and when that list is focused (not on idle polls).
+# Choosing one asks the app to switch the recording to it, and the card then
+# says which microphone records; a refusal is said and the list shows the one
+# still recording.
+#
 # The real page runs in headless Microsoft Edge with the design check's fake
 # bridge (tools/design_check/fixtures.js) and synthetic device names, wrapped
 # here so the test can change the devices and count the calls: no app window,
@@ -49,12 +56,26 @@ BRIDGE = """
   const t = window.__mic = {
     mics: [{ index: 1, name: __LAPTOP__, default: true }],
     recording: false, hidden: false, calls: {}, delay: 0, fail: false, changed: false,
+    // #462, while recording: what Windows lists (null: the start list), the
+    // microphone recording, whether it switched, a switch refused, and the
+    // arguments of each switch asked for.
+    recMics: null, device: __LAPTOP__, switched: false, paused: false, refuse: false, switches: [],
   };
   Object.defineProperty(document, "hidden", { configurable: true, get: () => t.hidden });
   Object.defineProperty(document, "visibilityState", { configurable: true,
     get: () => (t.hidden ? "hidden" : "visible") });
   window.pywebview = { api: new Proxy({}, { get: (_, method) => async (...args) => {
     t.calls[method] = (t.calls[method] || 0) + 1;
+    if (method === "microphone_devices" && t.recording && t.recMics)
+      return { ok: true, value: t.recMics.map((d) => ({ ...d, current: d.name === t.device })) };
+    if (method === "switch_microphone") {
+      t.switches.push(args);
+      if (t.refuse) return { ok: false, error: "That microphone could not be opened, so the "
+                                               + "recording carries on from the same microphone." };
+      t.device = args[1];
+      t.switched = true;
+      return { ok: true, value: {} };
+    }
     if (method === "microphone_devices") {
       const mics = t.mics.map((d) => ({ ...d }));
       if (t.delay) await new Promise((r) => setTimeout(r, t.delay));
@@ -67,8 +88,8 @@ BRIDGE = """
                error: "The list of microphones has changed. Choose the microphone again." };
     const r = await real[method](...args);
     if (method === "recording_status" && t.recording && r.ok)
-      return { ok: true, value: { ...r.value, recording: { state: "recording", seconds: 5,
-        level_db: -30, device: __LAPTOP__, events: [] } } };
+      return { ok: true, value: { ...r.value, recording: { state: t.paused ? "paused" : "recording",
+        seconds: 5, level_db: -30, device: t.device, switched: t.switched, events: [] } } };
     return r;
   } }) };
 })();
@@ -219,6 +240,44 @@ STEPS = """
                     ...look(sel) };
       await wait(4000);
       out.after = look(sel);
+    } else if (run === "choice") {
+      // #462: the card's choice of microphone while recording.
+      const sel = $("rec-mic");
+      t.recMics = [{ index: 0, name: LAPTOP.name, label: LAPTOP.name, default: true },
+                   { index: 1, name: HEADSET.name, label: HEADSET.name, default: false }];
+      const before = n();                          // the start list's ask when the page opened
+      t.recording = true;
+      await ws.refresh();
+      await wait(1500);
+      out.first = { calls: n() - before, shown: !$("rec-mic-row").hidden, ...look(sel),
+                    note: $("rec-note").textContent };
+      // Polls while recording ask nothing more.
+      let c = n();
+      await wait(10000);
+      out.idle_calls = n() - c;
+      // The headset is chosen: the app is asked to switch, by its place and name.
+      c = n();
+      choose(sel, 1);
+      await wait(2500);
+      out.switched = { switches: [...t.switches], calls: n() - c, ...look(sel),
+                       note: $("rec-note").textContent };
+      // Paused: still offered. A refused switch is said, and the list shows
+      // the one still recording.
+      t.paused = true;
+      await wait(2500);
+      out.paused_shown = !$("rec-mic-row").hidden;
+      t.refuse = true;
+      $("status").textContent = "";
+      choose(sel, 0);
+      await wait(2500);
+      out.refused = { ...look(sel), toast: $("status").textContent };
+      t.refuse = false;
+      t.paused = false;
+      // Once the recording has ended, the choice goes with the card.
+      t.recording = false;
+      await ws.refresh();
+      await wait(1500);
+      out.ended_hidden = $("rec-mic-row").hidden && $("rec-card").hidden;
     } else if (run === "setup") {
       const sel = $("su-device");
       out.first = { calls: n(), ...look(sel) };
@@ -285,7 +344,7 @@ STEPS = """
     "__USB__", json.dumps(USB))
 
 # Each run: the fixtures.js scenario it starts from.
-RUNS = {"meetings": "home", "recording": "home", "setup": "setup-4"}
+RUNS = {"meetings": "home", "recording": "home", "choice": "home", "setup": "setup-4"}
 
 
 class Handler(design_check.Handler):
@@ -429,6 +488,8 @@ class MicrophoneListTests(unittest.TestCase):
         self.assertEqual(0, self.result("setup")["idle_calls"])
 
     def test_nothing_is_asked_while_recording(self):
+        # The start list is not asked for while recording; the card's own
+        # choice (#462) asks once when the card first shows, before this count.
         r = self.result("recording")
         self.assertTrue(r["recording_shown"], "the recording did not show: nothing was tested")
         self.assertEqual(0, r["recording_calls"])
@@ -436,6 +497,29 @@ class MicrophoneListTests(unittest.TestCase):
         self.assertEqual({"card_hidden": True, "start_shown": True, "options": [LAPTOP],
                           "chosen": LAPTOP}, r["drawn"], "the card waited for the list")
         self.assertEqual({"options": [LAPTOP, HEADSET], "chosen": LAPTOP}, r["after"])
+
+    def test_the_card_offers_the_microphones_windows_has_while_recording(self):
+        # #462: asked for once when the card shows, the one recording selected,
+        # and not again on the polls that follow.
+        r = self.result("choice")
+        self.assertEqual({"calls": 1, "shown": True, "options": [LAPTOP, HEADSET],
+                          "chosen": LAPTOP}, {k: r["first"][k] for k in
+                                              ("calls", "shown", "options", "chosen")})
+        self.assertTrue(r["first"]["note"].startswith(LAPTOP + ". "), r["first"]["note"])
+        self.assertEqual(0, r["idle_calls"])
+
+    def test_choosing_a_microphone_switches_the_recording_and_says_which(self):
+        r = self.result("choice")
+        switched = r["switched"]
+        self.assertEqual([[1, HEADSET]], switched["switches"])
+        self.assertEqual(HEADSET, switched["chosen"])
+        self.assertTrue(switched["note"].startswith(f"Now recording from {HEADSET}. "),
+                        switched["note"])
+        self.assertTrue(r["paused_shown"], "the choice went while paused")
+        refused = r["refused"]
+        self.assertEqual(HEADSET, refused["chosen"], "a refused switch left the list wrong")
+        self.assertIn("could not be opened", refused["toast"])
+        self.assertTrue(r["ended_hidden"])
 
     def test_setup_step_4_follows_the_microphones_too(self):
         r = self.result("setup")
