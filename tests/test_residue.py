@@ -452,6 +452,29 @@ class WindowFilesTests(TempDir):
         self.assertEqual((b"w" * residue.LINK_FROM, b'{"ok": true}'),
                          (weights.read_bytes(), record.read_bytes()))
 
+    def test_a_models_folder_already_there_is_refused_and_left_alone(self):
+        # Fail closed (review of #467): return_models() removes the whole
+        # folder, so one that was there before is never lent into, and
+        # neither it nor the cache is touched.
+        cache = self.root / "cache"
+        self.put("cache/parakeet/v3/rev/model.onnx", b"w" * residue.LINK_FROM)
+        target = self.ws.parent / "models"
+        kept = self.put("Unminute/models/kept.bin", b"k")
+        with self.assertRaises(FileExistsError) as caught:
+            residue.lend_models(cache, target)
+        self.assertNotIn(str(self.root), str(caught.exception))       # P3: no path
+        self.assertEqual(["kept.bin"], sorted(p.name for p in target.iterdir()))
+        self.assertEqual(b"k", kept.read_bytes())
+        # An empty folder, or a file by that name, is refused too.
+        kept.unlink()
+        with self.assertRaises(FileExistsError):
+            residue.lend_models(cache, target)
+        target.rmdir()
+        target.write_bytes(b"")
+        with self.assertRaises(FileExistsError):
+            residue.lend_models(cache, target)
+        self.assertEqual(b"", target.read_bytes())
+
     def test_nothing_to_lend_is_nothing_lent(self):
         lent, counts = residue.lend_models(self.root / "none", self.ws.parent / "models")
         self.assertEqual(({}, {"linked": 0, "copied": 0, "unreadable": []}), (lent, counts))

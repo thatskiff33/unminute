@@ -1739,6 +1739,12 @@ class PackagedCheckTests(TempDir):
                 self.changed("window", shown=dict(shown, opened=False)),
                 self.changed("window", shown=dict(shown, transcript_shown=False)),
                 self.changed("window", shown=dict(shown, playing=True)),
+                # Not playing must be observed: a player that was not found
+                # (null) or no answer at all is not "nothing played" (review
+                # of #467).
+                self.changed("window", shown=dict(shown, playing=None)),
+                self.changed("window", shown={k: v for k, v in shown.items()
+                                              if k != "playing"}),
                 self.changed("window", shown=dict(shown, error="ElementNotAvailableException")),
                 self.changed("window", shown=None),
                 self.changed("window", closed={"closed": False}),
@@ -1881,6 +1887,35 @@ class PackagedCheckTests(TempDir):
             self.window_run(ui_step=broken)
         self.assertFalse((self.root / "Unminute" / self.tool.MODELS_FOLDER).exists())
         self.assertTrue((self.root / "cache" / "parakeet" / "v3" / "model.onnx").is_file())
+
+    def test_a_models_folder_already_there_stops_the_step_before_the_app_starts(self):
+        # Fail closed (review of #467): the step never lends into, starts
+        # with or removes a models folder it did not make.
+        import residue
+        ws = self.root / "Unminute" / "workspace"
+        ws.mkdir(parents=True)
+        kept = ws.parent / self.tool.MODELS_FOLDER / "kept.bin"
+        kept.parent.mkdir()
+        kept.write_bytes(b"k")
+        cache = self.root / "cache"
+        (cache / "parakeet").mkdir(parents=True)
+        (cache / "parakeet" / "model.onnx").write_bytes(b"w" * residue.LINK_FROM)
+        app = mock.Mock(return_value=mock.Mock(pid=4242, **{"poll.return_value": 0,
+                                                            "wait.return_value": 0}))
+        with mock.patch.object(self.tool.subprocess, "Popen", app), \
+                mock.patch.object(self.tool, "window_ui", lambda pid, mode, base: {}), \
+                mock.patch.object(self.tool, "tree", lambda pid: [pid]), \
+                mock.patch.object(self.tool, "ended", lambda pids, timeout: True), \
+                mock.patch.object(self.tool, "kill", lambda taskkill, pids: None), \
+                mock.patch.object(self.tool.residue, "event_log_entries", lambda folder: 0), \
+                mock.patch.object(self.tool.windows_powershell, "system_program",
+                                  lambda name: name), \
+                self.assertRaises(FileExistsError):
+            self.tool.window_step(Path("runtime"), ["-I"], {}, Path("app"), ws,
+                                  residue.names(), self.root, cache)
+        app.assert_not_called()
+        self.assertEqual(b"k", kept.read_bytes())
+        self.assertEqual(["kept.bin"], [p.name for p in kept.parent.iterdir()])
 
     def test_the_lent_models_go_where_the_real_start_looks(self):
         source = (ROOT / "workspace" / "__main__.py").read_text(encoding="utf-8")

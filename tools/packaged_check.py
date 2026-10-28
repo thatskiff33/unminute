@@ -15,22 +15,23 @@
 # %APPDATA% lands there too), so no real workspace is touched. The children
 # that open the workspace keep its audit log in its file only: they pass a
 # mirror that drops the Windows Event Log copy. The two windows, started as
-# the app is (the window step and the idle window), still write their own
-# content-free entries, so the window is tested exactly as shipped (the
-# owner's decision DEC-056, 26 Oct 2026); the report counts them, never
-# reads them out (#418). It needs an idle, unlocked desktop: the window step
-# drives a real window. It checks:
+# the app is, still write their own content-free entries, so the window is
+# tested exactly as shipped: the idle window by the owner's decision DEC-056
+# (26 Oct 2026), the window step as #418's criterion allows (the report
+# names how many and why). The report counts them, never reads them out
+# (#418). It needs an idle, unlocked desktop: the window step drives a real
+# window. It checks:
 #   - self-test (dependencies, network guard) from the packaged runtime;
 #   - offline processing with cached models and no Hugging Face token present;
 #   - the full lifecycle (import, transcribe, speakers, review, cleanup);
 #   - the window with content (#418): the marked meeting opened in the real
 #     window through the real start (the Start menu shortcut's flags),
 #     driven by UI Automation in that window only; its transcript shown,
-#     nothing played, then the window closed normally, before the at-rest
-#     scan. The model cache is lent to that start in its profile (large
-#     files hard-linked, small ones copied), so it opens on Meetings rather
-#     than Setup, and taken back when it closes; what it added there must be
-#     explained. The real start's own files (instance.lock, logs\launch.json)
+#     the player seen not playing, then the window closed normally, before
+#     the at-rest scan. The model cache is lent to that start in its
+#     profile (large files hard-linked, small ones copied), so it opens on
+#     Meetings rather than Setup, and taken back when it closes; what it
+#     added there must be explained. The real start's own files (instance.lock, logs\launch.json)
 #     must be new from that start; what a normal close leaves of the
 #     WebView2 profile (workspace\webview) is counted and scanned with the
 #     rest, then removed as the app's next start removes it, so a file still
@@ -120,9 +121,10 @@ MODELS_FOLDER = "models"
 CHECK_FILES = ("lifecycle.py", "windows.bin", "recording_windows.bin", residue.CONTROL_FOLDER)
 EVENT_LOG_WHY = ("written by the app's own starts (the window step and the idle window), "
                  "which keep the audit log's Windows Event Log copy as the app is shipped "
-                 "(the owner's decision DEC-056): each entry holds a chain, a sequence "
-                 "number, a kind and the line's hash, never an id or content (T20); the "
-                 "children drop the copy")
+                 "(the idle window by the owner's decision DEC-056; the window step as "
+                 "#418's criterion allows, counted here): each entry holds a chain, a "
+                 "sequence number, a kind and the line's hash, never an id or content "
+                 "(T20); the children drop the copy")
 
 
 class _PMC(ctypes.Structure):
@@ -485,7 +487,9 @@ def window_step(runtime, flags, env, app, workspace, names, base, cache):
     start. The model cache is lent to it (residue.lend_models()), as the
     real start looks for models only in the profile's own models folder and
     would otherwise open on Setup, and taken back once it has closed: what
-    it added there is named and must be explained. Then, once every process
+    it added there is named and must be explained. A models folder already
+    there stops the step before the app starts (FileExistsError), so it is
+    never lent into or removed. Then, once every process
     of the window has ended: how many files the close left in the WebView2
     profile (scanned at rest with the rest), and how many Event Log entries
     this start wrote for the workspace (counted, never read out). A window
@@ -591,7 +595,8 @@ try {
         if ($open) {
             $r.window_found = $true             # it was found in one of the app's windows
             # 2. Opened: its edited first passage shows in the transcript.
-            #    Play is never pressed; the player must not be playing.
+            #    Play is never pressed; the player must be found showing
+            #    Play (null when it is not found, which fails the report).
             $open.GetCurrentPattern($Invoke).Invoke()
             $r.opened = $true
             $r.transcript_shown = [bool](Find-InApp $C::Text {
@@ -1018,7 +1023,7 @@ def verdict(r):
         # at-rest scan (which covers what it left of its WebView2 profile).
         "marked meeting shown in the real window, then closed": not shown.get("error")
             and shown.get("window_found") is True and shown.get("opened") is True
-            and shown.get("transcript_shown") is True and shown.get("playing") is not True
+            and shown.get("transcript_shown") is True and shown.get("playing") is False
             and not closed.get("error") and closed.get("closed") is True
             and window.get("exit_code") == 0 and not window.get("killed")
             and window.get("processes_ended") is True,
