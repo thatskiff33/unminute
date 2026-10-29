@@ -239,11 +239,11 @@ class InstallIdentityTests(unittest.TestCase):
     def test_the_install_identity_names_are_pinned(self):
         # K1: the user renamed every one of these to Unminute (#136, 17 Oct 2026);
         # changing one again needs the user's say-so.
-        main, store = read("workspace/__main__.py"), read("workspace/store.py")
+        main, location = read("workspace/__main__.py"), read("workspace/location.py")
         self.assertEqual("Unlimit.Unminute", one(r'^APP_ID = "([^"]+)"', main, "APP_ID"))
         self.assertEqual("Unminute/HuggingFaceToken",
                          one(r'^TARGET = "([^"]+)"', read("workspace/credentials.py"), "TARGET"))
-        self.assertIn('return local_appdata() / "Unminute" / "workspace"', store)
+        self.assertIn('return local_appdata() / "Unminute" / "workspace"', location)
         self.assertIn('return local_appdata() / "Unminute" / "models"', main)
         self.assertEqual(r"Programs\Unminute",
                          one(r'"(Programs\\[^"]+)"', self.install, "install folder"))
