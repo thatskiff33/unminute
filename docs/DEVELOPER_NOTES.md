@@ -165,7 +165,14 @@ real time, and remove it when the cause is fixed.
   (`say = ...`) or a `let`. A page `const` (`$`, `button`, `state`) cannot be replaced:
   replace the `document` that `$` reads, or change the object (`state.view = ...`).
   Declaring a page or stand-in name again (`const document`) fails with "already declared",
-  so a test cannot quietly use its own copy while the page uses the real one. For a check on
+  so a test cannot quietly use its own copy while the page uses the real one. Assignments
+  are covered too (#495): a stub of a name that neither the page nor the test declares (a
+  function since renamed or removed, `renamedAway = () => 0`) fails with "is not defined"
+  instead of creating a new global the page never calls. The test's code runs in strict
+  mode, which stops most such assignments where they happen; Node.js's `vm` lets the
+  assignment of a function through even in strict mode (it cannot tell it from a function
+  declaration), so `page_vm.js` also fails the run if the test's code added a global, both
+  once that code has run and as Node.js exits (for a callback or a timer). For a check on
   how a function is written, `page_scripts.function_text(name)` and `listener_texts()` give
   the loaded function's own text. Without Node.js these tests skip; CI has it, and
   `--strict-skips` does not allow that skip.
