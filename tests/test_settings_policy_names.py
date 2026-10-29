@@ -2,15 +2,13 @@
 # from #111 D2 finding 8): a mistyped name under the policy key grants and
 # withholds nothing, so the page names it for IT to fix. The names come from
 # Policy.summary() (printable ASCII, escapes for everything else) and reach the
-# page as text only. The page helpers are taken from the page's scripts (workspace/ui) by
-# name and run in Node.js with a stand-in for the two elements, as
-# tests/test_level_meter.py does.
+# page as text only. The page's own unrecognisedNote and renderUnrecognised run
+# in Node.js with the page's real scripts loaded and a stand-in for the
+# element (tests/page_scripts.py run), as tests/test_level_meter.py does.
 #   python tools/run_tests.py
 
 import json
 import re
-import shutil
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -30,18 +28,10 @@ MANAGED_LINE = ('<p id="s-managed" class="set-text" hidden>Some settings are man
                 'organisation. Ask your IT team if you need one changed.</p>')
 
 
-def source_of(name):
-    """A top-level function from the page scripts, as written there."""
-    found = re.search(r"^function " + name + r"\(.*?^\}$", APP_JS, re.M | re.S)
-    if found is None:
-        raise AssertionError(f"{name} not found at the top level of the page scripts")
-    return found.group(0)
-
-
 # Each case renders into a stand-in element and reports what a reader sees.
 SIMULATION = r"""
 const els = { "s-unrecognised": { textContent: "stale", hidden: false, innerHTML: "" } };
-const $ = (id) => els[id];
+document = { getElementById: (id) => els[id] };
 const cases = {
   one: { managed: [], invalid: [], unrecognised: ["AllowModelDownloads\\x20"] },
   two: { managed: ["AllowGpuComponent"], invalid: [],
@@ -64,18 +54,12 @@ console.log(JSON.stringify(result));
 
 
 class UnrecognisedLineTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.node = shutil.which("node")
+    out = None
 
     def simulate(self):
-        if not self.node:
-            self.skipTest("Node.js not installed")
-        script = "\n".join(source_of(n) for n in HELPERS) + "\n" + SIMULATION
-        done = subprocess.run([self.node, "-"], input=script, capture_output=True, text=True,
-                              timeout=60, check=False)
-        self.assertEqual(done.returncode, 0, done.stderr)
-        return json.loads(done.stdout)
+        if UnrecognisedLineTests.out is None:             # one run serves every test here
+            UnrecognisedLineTests.out = page_scripts.run(SIMULATION)
+        return json.loads(json.dumps(UnrecognisedLineTests.out))
 
     def test_names_are_shown_as_text_with_what_to_do(self):
         r = self.simulate()
@@ -110,12 +94,12 @@ class UnrecognisedLineTests(unittest.TestCase):
         # The new line is empty and hidden in the markup, straight after it.
         self.assertTrue(MANAGED_LINE + '\n    <p id="s-unrecognised" class="set-text" hidden></p>'
                         in INDEX, "no empty, hidden s-unrecognised line after the managed line")
-        render = re.search(r"^async function renderSettings\(\).*?^\}$", APP_JS, re.M | re.S)
-        self.assertIsNotNone(render)
-        self.assertIn("renderUnrecognised(s.managed);", render.group(0))
+        render = page_scripts.function_text("renderSettings")
+        self.assertTrue(render.startswith("async function renderSettings() {"), render[:40])
+        self.assertIn("renderUnrecognised(s.managed);", render)
         for name in HELPERS:
-            self.assertNotIn("innerHTML", source_of(name))
-            self.assertNotIn("insertAdjacentHTML", source_of(name))
+            self.assertNotIn("innerHTML", page_scripts.function_text(name))
+            self.assertNotIn("insertAdjacentHTML", page_scripts.function_text(name))
         # A name has no spaces (they show as \x20), so the line may break
         # inside one rather than run off a narrow window.
         css = (UI / "app.css").read_text(encoding="utf-8")

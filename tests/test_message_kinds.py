@@ -5,20 +5,18 @@ page styles a message by that kind, never by its wording: the OK_MESSAGE
 regular expression that matched the start of a message is gone. On Import,
 Hand off and Settings (with Downloads and Setup's download steps) an error
 stays next to the control that caused it until it is dismissed or that part
-of the page next succeeds. The page's own functions run in Node.js against
-stubs, as tests/test_hardening.py's toast and refresh tests do."""
+of the page next succeeds. The page's own functions run in Node.js with the
+page's real scripts loaded and what they reach replaced (tests/page_scripts.py
+run), as tests/test_hardening.py's toast and refresh tests do."""
 
 import json
 import pickle
 import re
-import shutil
-import subprocess
 import types
 import unittest
 from html.parser import HTMLParser
 from pathlib import Path
 
-from tests.test_hardening import page_functions
 from workspace import app
 import page_scripts
 
@@ -33,15 +31,9 @@ APP_JS = page_scripts.source()
 INDEX = (ROOT / "workspace" / "ui" / "index.html").read_text(encoding="utf-8")
 
 
-def run_node(source):
-    node = shutil.which("node")
-    if not node:
-        raise unittest.SkipTest("Node.js not installed")
-    done = subprocess.run([node, "-"], input=source, capture_output=True, text=True,
-                          timeout=60, check=False)
-    if done.returncode != 0:
-        raise AssertionError(done.stderr)
-    return json.loads(done.stdout)
+def page_functions(*names):
+    """The named page functions' own text, as the page ships them."""
+    return "\n".join(page_scripts.function_text(name) for name in names) + "\n"
 
 
 class WorkspaceErrorKindTests(unittest.TestCase):
@@ -63,10 +55,9 @@ class WorkspaceErrorKindTests(unittest.TestCase):
                                  (app.WorkspaceError, "Refused.", kind))
 
     def test_the_kinds_are_the_pages(self):
-        found = re.search(r"^const MESSAGE_KINDS = \[([^\]]*)\];", APP_JS, re.M)
-        self.assertIsNotNone(found, "MESSAGE_KINDS not found in the page scripts")
-        page = set(re.findall(r'"(\w+)"', found.group(1)))
-        self.assertEqual({"success"} | set(app.ERROR_KINDS), page)
+        page = page_scripts.run("console.log(JSON.stringify(MESSAGE_KINDS));")
+        self.assertIsInstance(page, list, "MESSAGE_KINDS is not a list in the page scripts")
+        self.assertEqual({"success"} | set(app.ERROR_KINDS), set(page))
 
 
 @unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
@@ -122,7 +113,7 @@ class BridgeKindTests(unittest.TestCase):
 
 
 CALL_CASES = r"""
-const window = { pywebview: { api: {} } };
+window = { pywebview: { api: {} } };
 const out = {};
 (async () => {
   for (const [name, reply] of [["info", { ok: false, error: "Wait.", kind: "info" }],
@@ -145,12 +136,11 @@ const toggles = {};
 const node = { _text: "", dataset: {}, classList: { toggle(c, on) { toggles[c] = on; } },
                get textContent() { return this._text; },
                set textContent(v) { this._text = String(v); } };
-const $ = () => node;
-const state = { statusLine: "" };
-const MESSAGE_KINDS = ["success", "info", "error"];
-let toastTimer = null, delay = null;
-const setTimeout = (fn, ms) => { delay = ms; return 1; };
-const clearTimeout = () => {};
+document = { getElementById: () => node };
+state.statusLine = "";
+let delay = null;
+setTimeout = (fn, ms) => { delay = ms; return 1; };
+clearTimeout = () => {};
 const step = (message, opts) => { delay = null; say(message, opts); return { ...toggles, delay }; };
 console.log(JSON.stringify({
   success: step("Saved", { kind: "success" }),
@@ -164,11 +154,11 @@ console.log(JSON.stringify({
 ATTEMPT_CASES = r"""
 const said = [], shown = [], cleared = [];
 const homes = { "s-scan": "card", "ho-out": "step" };
-const $ = (id) => ({ id });
-const errorHome = (near) => homes[typeof near === "string" ? near : near.id] || null;
-const showError = (home, message) => shown.push([home, message]);
-const clearError = (home) => cleared.push(home);
-const say = (message, opts = {}) => said.push([message, opts.kind || "info"]);
+document = { getElementById: (id) => ({ id }) };
+errorHome = (near) => homes[typeof near === "string" ? near : near.id] || null;
+showError = (home, message) => shown.push([home, message]);
+clearError = (home) => cleared.push(home);
+say = (message, opts = {}) => said.push([message, opts.kind || "info"]);
 const fail = (message, kind) => async () => {
   const e = new Error(message);
   if (kind) e.kind = kind;
@@ -187,12 +177,12 @@ const fail = (message, kind) => async () => {
 
 HANDOFF_CASES = r"""
 const nodes = {};
-const $ = (id) => (nodes[id] = nodes[id] || { id, textContent: "" });
-const document = { activeElement: { id: "ho-copy" } };
+document = { activeElement: { id: "ho-copy" },
+             getElementById: (id) => (nodes[id] = nodes[id] || { id, textContent: "" }) };
 const said = [], shown = [], cleared = [];
-const say = (message, opts) => said.push([message, opts.kind]);
-const showError = (home, message, back) => shown.push([home.id, message, back.id]);
-const clearError = (home) => cleared.push(home.id);
+say = (message, opts) => said.push([message, opts.kind]);
+showError = (home, message, back) => shown.push([home.id, message, back.id]);
+clearError = (home) => cleared.push(home.id);
 const err = (message, kind) => Object.assign(new Error(message), kind ? { kind } : {});
 handoffFailed(err("The handoff changed since the preview."));
 const afterError = $("ho-status").textContent;
@@ -246,20 +236,20 @@ class Node {
   click() { this.listeners.click(); }
 }
 const root = new Node("body");
-const el = (tag, props = {}, ...kids) => {
+el = (tag, props = {}, ...kids) => {
   const n = new Node(tag, props);
   n.append(...kids.filter(Boolean));
   return n;
 };
-const icon = () => new Node("svg");
+icon = () => new Node("svg");
 const said = [];
-const say = (message, opts) => said.push([message, opts.kind]);
+say = (message, opts) => said.push([message, opts.kind]);
 """
 
 SHOW_CASES = FAKE_DOM + r"""
 const card = el("section", { "data-errors": "" });
-const button = el("button"), other = el("button");
-card.append(button, other);
+const first = el("button"), other = el("button");
+card.append(first, other);
 const step = el("li", { "data-errors": "" });
 const slot = el("div", { class: "error-slot" });
 step.append(el("pre"), slot, el("div"));
@@ -267,14 +257,14 @@ root.append(card, step);
 const boxes = (n) => n.all().filter((c) => c.has("inline-error"));
 const text = (n) => boxes(n).map((b) => b.querySelector(".inline-error-text").textContent);
 const out = {};
-showError(card, "Refused.", button);
+showError(card, "Refused.", first);
 out.first = { texts: text(card), role: boxes(card)[0].attrs.role,
               last: card.children.at(-1).has("inline-error") };
 const span = boxes(card)[0].querySelector(".inline-error-text");
 const writes = span.writes;
-showError(card, "Refused.", button);
+showError(card, "Refused.", first);
 out.same = { count: boxes(card).length, writes: span.writes - writes };
-showError(card, "Refused again.", button);
+showError(card, "Refused again.", first);
 out.changed = { count: boxes(card).length, texts: text(card) };
 showError(card, "Refused again.", other);     // the same error, now from another control
 showError(step, "Not found.");
@@ -282,7 +272,7 @@ out.slot = { inSlot: text(slot),
              stepDirect: step.children.filter((c) => c.has("inline-error")).length };
 const dismiss = boxes(card)[0].children.find((c) => c.tag === "button");
 dismiss.click();
-out.dismissed = { count: boxes(card).length, focused: [button.focused, other.focused],
+out.dismissed = { count: boxes(card).length, focused: [first.focused, other.focused],
                   label: dismiss._text };
 clearError(step);
 out.cleared = boxes(step).length;
@@ -301,7 +291,7 @@ class PageKindTests(unittest.TestCase):
         self.assertIn('kind = "info"', say)
 
     def test_call_keeps_the_bridges_kind_and_treats_anything_else_as_an_error(self):
-        out = run_node(page_functions("call") + CALL_CASES)
+        out = page_scripts.run(CALL_CASES)
         self.assertEqual(out["info"], ["Wait.", "info"])
         self.assertEqual(out["error"], ["Refused.", "error"])
         self.assertEqual(out["none"], ["Refused.", "error"])
@@ -310,7 +300,7 @@ class PageKindTests(unittest.TestCase):
         self.assertEqual(out["ok"], 7)
 
     def test_the_toast_is_styled_by_kind(self):
-        out = run_node(page_functions("say", "putText") + SAY_CASES)
+        out = page_scripts.run(SAY_CASES)
         self.assertEqual((out["success"]["ok"], out["success"]["error"], out["success"]["delay"]),
                          (True, False, 3000))
         self.assertEqual((out["info"]["ok"], out["info"]["error"], out["info"]["delay"]),
@@ -323,7 +313,7 @@ class PageKindTests(unittest.TestCase):
                          (False, False, None))
 
     def test_attempt_puts_an_error_beside_its_action(self):
-        out = run_node(page_functions("attempt") + ATTEMPT_CASES)
+        out = page_scripts.run(ATTEMPT_CASES)
         self.assertEqual(out["shown"], [["card", "Refused."], ["card", "x is undefined"]])
         # Info is toasted wherever it came from; without a place, an error is too.
         self.assertEqual(out["said"], [["Wait.", "info"], ["Refused.", "error"]])
@@ -331,7 +321,7 @@ class PageKindTests(unittest.TestCase):
         self.assertEqual(out["cleared"], ["card", None], "a success clears the error in its place")
 
     def test_hand_off_keeps_an_error_beside_copy_or_save(self):
-        out = run_node(page_functions("handoffSaid", "handoffFailed") + HANDOFF_CASES)
+        out = page_scripts.run(HANDOFF_CASES)
         self.assertEqual(out["shown"],
                          [["ho-out", "The handoff changed since the preview.", "ho-copy"],
                           ["ho-preview-pane", "Not found.", "ho-copy"]])
@@ -343,7 +333,7 @@ class PageKindTests(unittest.TestCase):
         self.assertEqual(out["status"], "Copied the prompt only.")
 
     def test_an_error_stays_until_dismissed_and_is_set_only_when_it_changes(self):
-        out = run_node(page_functions("showError", "clearError", "putText") + SHOW_CASES)
+        out = page_scripts.run(SHOW_CASES)
         self.assertEqual(out["first"], {"texts": ["Refused."], "role": "alert", "last": True})
         self.assertEqual(out["same"], {"count": 1, "writes": 0},
                          "the same error again must leave the alert alone (#404, #346)")

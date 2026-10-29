@@ -18,8 +18,6 @@
 
 import json
 import re
-import shutil
-import subprocess
 import unittest
 
 import page_scripts
@@ -434,35 +432,76 @@ class TokeniserTests(unittest.TestCase):
         self.assertEqual(names, ["a", "a", "b", "a"])
 
 
+class RealScriptsTests(unittest.TestCase):
+    """tests/page_vm.js, which the page tests use to call the page's real
+    functions (#414 step 3b): every script loads, in index.html's order, into
+    one Node.js context where their top-level names are shared, as in the
+    browser, and a test's code cannot quietly miss the page."""
+
+    def test_every_script_loads_and_shares_its_names(self):
+        out = page_scripts.run(r"""
+console.log(JSON.stringify({
+  first: typeof say, last: typeof wire, kinds: MESSAGE_KINDS,
+  lets: [typeof pollTimer, typeof refreshing],
+  started: Object.keys(loaded.window.listeners).sort(),
+  workspace: Object.keys(loaded.window.workspace).sort(),
+}));
+""")
+        self.assertEqual(out["first"], "function")            # core.js
+        self.assertEqual(out["last"], "function")             # main.js
+        self.assertEqual(out["kinds"], ["success", "info", "error"])
+        self.assertEqual(out["lets"], ["object", "boolean"])   # polling.js, recording.js
+        # main.js ran as it does in the page: its listeners and window.workspace.
+        self.assertIn("pywebviewready", out["started"])
+        self.assertIn("refresh", out["workspace"])
+
+    def test_a_replacement_reaches_the_page_functions(self):
+        out = page_scripts.run(r"""
+const seen = [];
+document = { getElementById: (id) => ({ id }) };
+say = (text, opts) => seen.push([text, opts.kind]);
+sayDone("Saved.");                                     // a page const that calls say
+console.log(JSON.stringify({ el: $("status"), seen }));
+""")
+        self.assertEqual(out, {"el": {"id": "status"}, "seen": [["Saved.", "success"]]})
+
+    def test_declaring_a_page_or_stand_in_name_again_fails_loudly(self):
+        # A test that declared its own document or state would leave the page
+        # using the real one, and test nothing: it stops instead.
+        for code in ("const document = {};", "const state = {};", "let $ = null;"):
+            with self.subTest(code=code):
+                with self.assertRaisesRegex(AssertionError, "has already been declared"):
+                    page_scripts.run(code)
+
+    def test_function_text_is_the_loaded_function(self):
+        text = page_scripts.function_text("scriptLine")
+        self.assertTrue(text.startswith("function scriptLine(url, line) {\n"), text)
+        self.assertTrue(text.endswith("\n}"), text)
+        self.assertNotIn("\r", text)
+        with self.assertRaisesRegex(AssertionError, "not a function declared"):
+            page_scripts.function_text("noSuchFunction")
+        [handler] = page_scripts.listener_texts("document", "visibilitychange")
+        self.assertIn("pollNow();", handler)
+
+
 class ScriptLineTests(unittest.TestCase):
     """A page error's line carries its script's number (main.js, scriptLine)."""
 
     def test_script_line_numbers_page_scripts_only(self):
-        node = shutil.which("node")
-        if not node:
-            self.skipTest("Node.js not installed")
-        main = (UI / MAIN).read_text(encoding="utf-8")
-        wanted = [re.search(pattern, main, re.M | re.S) for pattern in (
-            r"^const PAGE_SCRIPTS = \[.*?\];$", r"^const SCRIPT_LINES = \d+;$",
-            r"^function scriptLine\(.*?^\}$")]
-        self.assertTrue(all(wanted), "PAGE_SCRIPTS, SCRIPT_LINES or scriptLine not found")
-        wanted = [found.group(0) for found in wanted]
+        # main.js's own scriptLine, with the page's real scripts loaded.
         base = "file:///C:/Program%20Files/Unminute/app/workspace/ui/"
         page = json.dumps(base + "index.html#meetings")
-        script = ("const document = { baseURI: " + page + " };\n"
-                  + "\n".join(wanted) + "\n"
+        script = ("document = { baseURI: " + page + " };\n"
                   + "console.log(JSON.stringify(["
                   + f"scriptLine({json.dumps(base + 'core.js')}, 7), "
                   + f"scriptLine({json.dumps(base + 'polling.js')}, 120), "
                   + f"scriptLine({json.dumps(base + 'main.js')}, 0), "
                   + "scriptLine('file:///C:/elsewhere/polling.js', 120), "
                   + "scriptLine('', 5)]));\n")
-        done = subprocess.run([node, "-"], input=script, capture_output=True, text=True,
-                              encoding="utf-8", timeout=60, check=False)
-        self.assertEqual(0, done.returncode, done.stderr)
+        lines = page_scripts.run(script)
         polling = page_scripts.names().index("polling.js") + 1
         main_no = page_scripts.names().index(MAIN) + 1
-        self.assertEqual(json.loads(done.stdout),
+        self.assertEqual(lines,
                          [100007, polling * 100000 + 120, main_no * 100000, 120, 5])
         self.assertLess(len(page_scripts.names()) * 100000 + 99999, 10 ** 7)   # api._int's limit
 

@@ -932,10 +932,10 @@ class WorkspacePolicyTests(unittest.TestCase):
 
 class PageModelGateTests(unittest.TestCase):
     """#111 B7a: what Setup and Downloads offer for each card under policy.
-    The page helpers are taken from the page's scripts (workspace/ui) by name and run in
-    Node.js, as tests/test_settings_policy_names.py does."""
+    The page's own allowed, modelDownloadsOff and downloadOff run in Node.js
+    with the page's real scripts loaded (tests/page_scripts.py run), as
+    tests/test_settings_policy_names.py does."""
 
-    HELPERS = ("allowed", "modelDownloadsOff", "downloadOff")
     CASES = {
         "all allowed": {},
         "user models off": {"AllowUserModels": False},
@@ -946,20 +946,8 @@ class PageModelGateTests(unittest.TestCase):
 
     def simulate(self):
         import json
-        import re
-        import shutil
-        import subprocess
-        node = shutil.which("node")
-        if not node:
-            self.skipTest("Node.js not installed")
-        app_js = page_scripts.source()
-        parts = []
-        for name in self.HELPERS:
-            found = re.search(r"^function " + name + r"\(.*?^\}$", app_js, re.M | re.S)
-            self.assertIsNotNone(found, f"{name} not found at the top level of the page scripts")
-            parts.append(found.group(0))
-        script = "\n".join(parts) + "\nconst cases = " + json.dumps(self.CASES) + r""";
-const state = { managed: null };
+        script = "const cases = " + json.dumps(self.CASES) + r""";
+state.managed = null;
 const result = {};
 for (const [k, allow] of Object.entries(cases)) {
   state.managed = { allow: Object.assign({ AllowModelDownloads: true, AllowUserModels: true,
@@ -970,10 +958,7 @@ for (const [k, allow] of Object.entries(cases)) {
 }
 console.log(JSON.stringify(result));
 """
-        done = subprocess.run([node, "-"], input=script, capture_output=True, text=True,
-                              timeout=60, check=False)
-        self.assertEqual(done.returncode, 0, done.stderr)
-        return json.loads(done.stdout)
+        return page_scripts.run(script)
 
     def test_user_models_off_stops_model_downloads_but_not_the_gpu_components(self):
         r = self.simulate()

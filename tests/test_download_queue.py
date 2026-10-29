@@ -8,8 +8,6 @@
 
 import importlib.util
 import json
-import shutil
-import subprocess
 import sys
 import tempfile
 import threading
@@ -21,7 +19,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import keyprotect  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import test_hardening as hardening  # noqa: E402  (page_functions: the page's own code in Node.js)
+import page_scripts  # noqa: E402  (run: the page's own code in Node.js)
 
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
 
@@ -277,30 +275,27 @@ class DownloadQueueTests(unittest.TestCase):
         self.assertFalse(self.queue_file().exists())
 
     def test_the_page_says_removed_only_when_something_was(self):
-        node = shutil.which("node")
-        if not node:
-            self.skipTest("Node.js not installed")
-        source = hardening.page_functions("cancelQueued") + r"""
+        # The page's real cancelQueued: its button is clicked by calling the
+        # click listener the page gave it (sayDone is say with the success kind).
+        said = page_scripts.run(r"""
 const said = [];
-const say = (text, opts = {}) => { said.push([text, opts.kind || "info"]); };
-const sayDone = (text) => { said.push([text, "success"]); };
-const button = (label, onClick) => onClick;
-const attempt = async (fn) => fn();
+say = (text, opts = {}) => { said.push([text, opts.kind || "info"]); };
+document = { createElement: () => ({
+  listeners: {}, setAttribute() {}, append() {},
+  addEventListener(type, fn) { this.listeners[type] = fn; } }) };
+attempt = async (fn) => fn();
 let reply = null;
-const call = async (name, model) => reply;
+call = async (name, model) => reply;
 (async () => {
   for (const value of [true, false]) {
     reply = value;
-    await cancelQueued({ name: "large-v3" }, () => {})({ currentTarget: null });   // a click
+    await cancelQueued({ name: "large-v3" }, () => {}).listeners.click({ currentTarget: null });
   }
   console.log(JSON.stringify(said));
 })();
-"""
-        done = subprocess.run([node, "-"], input=source, capture_output=True, text=True,
-                              timeout=60, check=False)
-        self.assertEqual(done.returncode, 0, done.stderr)
+""")
         # The kind (#416): a removal is a success, nothing removed is information.
-        self.assertEqual(json.loads(done.stdout),
+        self.assertEqual(said,
                          [["Removed from the queue.", "success"],
                           ["It is no longer in the queue.", "info"]])
 

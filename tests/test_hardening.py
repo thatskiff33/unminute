@@ -225,11 +225,9 @@ class NavigationTests(unittest.TestCase):
         # "Copy and open" name and host until the new preview arrived (and
         # for good if it failed). openHandoff now lays the page out as before
         # #109 before it waits for anything; the preview fills it in.
-        import re
-        script = page_scripts.source()
-        body = re.search(r"\nasync function openHandoff\(\) \{\n(.*?)\n\}\n", script, re.S)
-        self.assertIsNotNone(body, "openHandoff not found")
-        self.assertIn("layoutHandoff(null);", body.group(1).split("await", 1)[0])
+        body = page_scripts.function_text("openHandoff")
+        self.assertTrue(body.startswith("async function openHandoff() {\n"), body[:40])
+        self.assertIn("layoutHandoff(null);", body.split("await", 1)[0])
 
     def test_the_hand_off_buttons_beneath_copy_and_open_stay_one_row(self):
         # #109 review: the three ways out beneath Copy and open are one flex
@@ -253,11 +251,10 @@ class NavigationTests(unittest.TestCase):
         # skip renderLists (the list and sidebar count would go stale), and
         # renderReminders must be a plain function, so a throw inside it
         # reaches refresh's catch rather than becoming an unhandled rejection.
-        import re
         script = page_scripts.source()
-        body = re.search(r"\nasync function refresh\(\) \{\n(.*?)\n\}\n", script, re.S)
-        self.assertIsNotNone(body, "refresh not found")
-        before_list = body.group(1).split("await renderLists(", 1)[0]
+        body = page_scripts.function_text("refresh")
+        self.assertTrue(body.startswith("async function refresh() {\n"), body[:40])
+        before_list = body.split("await renderLists(", 1)[0]
         own_catch = (r"try \{\s*reminders = await call\(\"reminders\"\);\s*"
                      r"pollOk\(\"reminders\"\);\s*\}\s*catch \(err\) \{")
         self.assertRegex(before_list, own_catch,
@@ -266,51 +263,32 @@ class NavigationTests(unittest.TestCase):
         self.assertRegex(script, r"\nfunction renderReminders\(r\) \{")
 
 
-def page_functions(*names):
-    """The source of each named top-level function in the page's scripts (one
-    line or a block that ends with a closing brace at the start of a line), for
-    a test that runs the page's own code in Node.js."""
-    import re
-    script = page_scripts.source()
-    parts = []
-    for name in names:
-        head = r"^(?:async )?function " + name + r"\("
-        found = (re.search(head + r".*\}$", script, re.M)
-                 or re.search(head + r".*?^\}$", script, re.M | re.S))
-        if found is None:
-            raise AssertionError(f"{name} not found at the top level of the page scripts")
-        parts.append(found.group(0))
-    return "\n".join(parts) + "\n"
-
-
 # A failed reminders call, or a reminders banner that cannot be drawn, must
 # still let refresh draw the meeting list and report the error once, with no
 # unhandled rejection (#111 C6 review round 2: run the page's own refresh and
 # renderReminders rather than checking the shape of the source). The same error
 # at the next poll is not reported again; a changed one is, and so is the same
-# one after a poll that succeeded (#404). Everything else refresh touches is a
-# stub. The cases run in order, one poll each.
+# one after a poll that succeeded (#404). The page's real scripts are loaded
+# (tests/page_scripts.py run); everything else refresh touches is replaced. The
+# cases run in order, one poll each.
 REFRESH_CASES = r"""
-const window = { pywebview: {} };
-const pollErrors = {};
-const LIST_REFRESH_POLLS = 6;
-let refreshing = false, refreshAgain = false, pollTimer = null, pollTimerDelay = 0;
-const pollDelay = () => 0;
-const schedulePoll = () => {};
-const state = { view: "meetings", changes: 0, listsSeen: 0, listsView: "meetings", sinceLists: 0 };
+window = { pywebview: {} };
+pollDelay = () => 0;
+schedulePoll = () => {};
+Object.assign(state, { view: "meetings", changes: 0, listsSeen: 0, listsView: "meetings",
+                       sinceLists: 0 });
 let said = [], listed = [], shown = {}, reply = null;
 const unhandled = [];
 process.on("unhandledRejection", (err) => unhandled.push(String((err && err.message) || err)));
-const say = (text) => { said.push(text); };
-const renderStatus = async () => {};
-const renderRecorder = async () => {};
-const renderLists = async (reminders) => { listed.push(reminders ? "reminders" : null); };
-const notice = (kind, text) => ({ kind, text });
-const button = () => ({});
-const linkButton = () => ({});
-const $ = () => ({ replaceChildren: (...lines) => { shown.lines = lines.length; },
-                   set hidden(value) { shown.hidden = value; } });
-const call = async (name) => {
+say = (text) => { said.push(text); };
+renderStatus = async () => {};
+renderRecorder = async () => {};
+renderLists = async (reminders) => { listed.push(reminders ? "reminders" : null); };
+notice = (kind, text) => ({ kind, text });
+document = { getElementById: () => ({
+  replaceChildren: (...lines) => { shown.lines = lines.length; },
+  set hidden(value) { shown.hidden = value; } }) };
+call = async (name) => {
   if (name !== "reminders") throw new Error("unexpected call " + name);
   return reply();
 };
@@ -342,19 +320,12 @@ const cases = {
 
 
 class ReminderFailureTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.source = page_functions("refresh", "renderReminders", "oneOrMany",
-                                    "retentionBanner", "pollError", "pollOk") + REFRESH_CASES
-        cls.node = shutil.which("node")
+    out = None
 
     def run_cases(self):
-        if not self.node:
-            self.skipTest("Node.js not installed")
-        done = subprocess.run([self.node, "-"], input=self.source, capture_output=True,
-                              text=True, timeout=60, check=False)
-        self.assertEqual(done.returncode, 0, done.stderr)
-        return json.loads(done.stdout)
+        if ReminderFailureTests.out is None:              # one run serves every test here
+            ReminderFailureTests.out = page_scripts.run(REFRESH_CASES)
+        return json.loads(json.dumps(ReminderFailureTests.out))
 
     def test_a_failed_reminders_call_still_draws_the_meeting_list(self):
         out = self.run_cases()["call_fails"]
@@ -404,12 +375,10 @@ let writes = 0, timers = 0, cleared = 0;
 const node = { _text: "", dataset: {}, classList: { toggle() {} },
                get textContent() { return this._text; },
                set textContent(v) { writes += 1; this._text = String(v); } };
-const $ = () => node;
-const state = { statusLine: "" };
-const MESSAGE_KINDS = ["success", "info", "error"];
-let toastTimer = null;
-const setTimeout = () => { timers += 1; return timers; };
-const clearTimeout = (id) => { if (id) cleared += 1; };
+document = { getElementById: () => node };
+state.statusLine = "";
+setTimeout = () => { timers += 1; return timers; };
+clearTimeout = (id) => { if (id) cleared += 1; };
 const step = (message, opts) => {
   writes = 0; timers = 0; cleared = 0;
   say(message, opts);
@@ -426,18 +395,12 @@ console.log(JSON.stringify({
 
 
 class ToastRepeatTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.source = page_functions("say", "putText") + SAY_CASES
-        cls.node = shutil.which("node")
+    out = None
 
     def run_cases(self):
-        if not self.node:
-            self.skipTest("Node.js not installed")
-        done = subprocess.run([self.node, "-"], input=self.source, capture_output=True,
-                              text=True, timeout=60, check=False)
-        self.assertEqual(done.returncode, 0, done.stderr)
-        return json.loads(done.stdout)
+        if ToastRepeatTests.out is None:                  # one run serves every test here
+            ToastRepeatTests.out = page_scripts.run(SAY_CASES)
+        return json.loads(json.dumps(ToastRepeatTests.out))
 
     def test_the_same_message_again_leaves_the_live_region_alone(self):
         out = self.run_cases()
@@ -460,7 +423,7 @@ class ToastRepeatTests(unittest.TestCase):
 # is a nudge, not a deadline, so "Review due" never claims a rule. The page's
 # own retentionBanner runs in Node.js (as tests/test_level_meter.py does).
 BANNER_CASES = r"""
-const notice = (kind, text) => ({ kind, text });
+notice = (kind, text) => ({ kind, text });
 const due = (n) => Array.from({ length: n }, () => ({ state: "due" }));
 const act = (n) => Array.from({ length: n }, () => ({ state: "action_required" }));
 // banner(meetings, recordings, review days, action days, [IT set review, IT set action])
@@ -482,19 +445,12 @@ console.log(JSON.stringify(out));
 
 class RetentionBannerTests(unittest.TestCase):
     RULE = "Your organisation asks"
-
-    @classmethod
-    def setUpClass(cls):
-        cls.source = page_functions("oneOrMany", "retentionBanner") + BANNER_CASES
-        cls.node = shutil.which("node")
+    out = None
 
     def banners(self):
-        if not self.node:
-            self.skipTest("Node.js not installed")
-        done = subprocess.run([self.node, "-"], input=self.source, capture_output=True,
-                              text=True, timeout=60, check=False)
-        self.assertEqual(done.returncode, 0, done.stderr)
-        return json.loads(done.stdout)
+        if RetentionBannerTests.out is None:              # one run serves every test here
+            RetentionBannerTests.out = page_scripts.run(BANNER_CASES)
+        return json.loads(json.dumps(RetentionBannerTests.out))
 
     def test_a_managed_review_threshold_claims_no_organisation_rule(self):
         out = self.banners()

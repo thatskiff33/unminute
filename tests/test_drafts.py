@@ -10,9 +10,6 @@ import json
 import math
 import os
 import queue
-import re
-import shutil
-import subprocess
 import sys
 import tempfile
 import threading
@@ -2054,24 +2051,9 @@ class PagePartTests(DraftWorkspaceCase):
 # fake DOM that records every change it is asked to make. renderDraft runs on
 # every clock tick (10 a second), so a tick with nothing new must change
 # nothing (#216's budget, #340's ratchets), and a fetch overtaken by Hide or
-# Show must be dropped (draft.shown). The code is taken from the page scripts by name,
-# as tests/test_level_meter.py does; the CI images have Node.js.
-PAGE_PARTS = ("$", "el", "REC_KIND", "DRAFT_KEEP", "DRAFT_EMPTY", "draft", "putText",
-              "putHidden", "draftLine", "draftEmpty", "clearDraft", "renderDraft",
-              "toggleDraft")
-
-
-def app_js_part(js, name):
-    """A top-level constant or function from the page scripts, as written there."""
-    word = re.escape(name)
-    found = (re.search(r"^const " + word + r" = .*?;$", js, re.M | re.S)
-             or re.search(r"^(?:async )?function " + word + r"\(.*\}$", js, re.M)
-             or re.search(r"^(?:async )?function " + word + r"\(.*?^\}$", js, re.M | re.S))
-    if found is None:
-        raise AssertionError(f"{name} not found at the top level of the page scripts")
-    return found.group(0)
-
-
+# Show must be dropped (draft.shown). The page's real scripts are loaded
+# (tests/page_scripts.py run) and the fake DOM replaces their document; the CI
+# images have Node.js.
 DRAFT_PAGE_SIM = r"""
 let writes = [];                       // every change made to the fake page
 class FakeClassList {
@@ -2129,13 +2111,13 @@ class FakeNode {
 const nodes = {};
 for (const id of ["rec-draft", "rec-draft-box", "rec-draft-status", "rec-draft-toggle"])
   nodes[id] = new FakeNode("div", id);
-const document = { hidden: false, getElementById: (id) => nodes[id] || null,
-                   createElement: (tag) => new FakeNode(tag) };
+document = { hidden: false, getElementById: (id) => nodes[id] || null,
+             createElement: (tag) => new FakeNode(tag) };
 const fetches = [];                    // recording_draft calls still on their way
-function call(name, since) {
+call = function (name, since) {
   return new Promise((resolve) => fetches.push({ name, since, resolve }));
-}
-function renderRecorder() { return Promise.resolve(); }
+};
+renderRecorder = function () { return Promise.resolve(); };
 const phrases = (since, n) => Array.from({ length: n }, (_, i) =>
   ({ kind: "phrase", text: `Synthetic line ${since + i}.`, start: i, end: i + 1 }));
 const lines = () => nodes["rec-draft-box"].querySelectorAll(".rec-draft-line").length;
@@ -2200,19 +2182,12 @@ const battery = { count: 2, state: "battery", note: "Draft text is paused." };
 class DraftPageTests(unittest.TestCase):
     """The page's draft area, run in Node.js with a fake DOM (no app, no deps)."""
 
-    @classmethod
-    def setUpClass(cls):
-        cls.node = shutil.which("node")
+    out = None
 
     def simulate(self):
-        if not self.node:
-            self.skipTest("Node.js not installed")
-        js = page_scripts.source()
-        script = "\n".join(app_js_part(js, n) for n in PAGE_PARTS) + "\n" + DRAFT_PAGE_SIM
-        done = subprocess.run([self.node, "-"], input=script, capture_output=True, text=True,
-                              encoding="utf-8", timeout=60, check=False)
-        self.assertEqual(done.returncode, 0, done.stderr)
-        return json.loads(done.stdout)
+        if DraftPageTests.out is None:                    # one run serves every test here
+            DraftPageTests.out = page_scripts.run(DRAFT_PAGE_SIM)
+        return json.loads(json.dumps(DraftPageTests.out))
 
     def test_a_tick_with_nothing_new_changes_nothing_on_the_page(self):
         result = self.simulate()

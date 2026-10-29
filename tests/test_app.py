@@ -1659,9 +1659,10 @@ class NativeConfirmationTests(unittest.TestCase):
 
 
 def js_function(source, name):
-    """The body of a top-level JavaScript function in source, by its braces
-    (the functions read here have none unbalanced in strings). The body
-    starts after the parameters (which may hold a destructuring default)."""
+    """The body of the JavaScript function name in source (its own text, from
+    tests/page_scripts.py function_text), by its braces (the functions read
+    here have none unbalanced in strings). The body starts after the
+    parameters (which may hold a destructuring default)."""
     start = source.index(") {", source.index(f"function {name}(")) + 2
     depth = 0
     for i in range(start, len(source)):
@@ -1682,7 +1683,8 @@ class PageSearchTests(unittest.TestCase):
     redrawn and shown with it, in the same task. With searches slower, two can
     overlap, so only the latest request's answer is shown (a sequence number),
     and the latest decides whether to jump to the first match. Read from the
-    page's source: the tests do not run JavaScript."""
+    page's own functions as Node.js loads them (tests/page_scripts.py): the
+    tests check how they are written, not what they do."""
 
     @classmethod
     def setUpClass(cls):
@@ -1690,8 +1692,7 @@ class PageSearchTests(unittest.TestCase):
 
     def function(self, name):
         """A function's body in the page; a failure (not an error) if missing."""
-        self.assertTrue(f"function {name}(" in self.page, f"the page has no {name}()")
-        return js_function(self.page, name)
+        return js_function(page_scripts.function_text(name), name)
 
     def assertInOrder(self, text, *parts):
         """Each part in text, after the one before it."""
@@ -1762,9 +1763,11 @@ class LockedPageTests(unittest.TestCase):
     screen: it asks for nothing else (no list, no meeting, no setup), calls
     only api.LOCKED_METHODS, never polls (only closing and opening Unminute
     can change the state) and shows fixed words and codes as text. Read from
-    the page's source: the tests do not run JavaScript. tools/ui_idle_check.py
-    runs the locked page headless (no bridge call or timer in a minute) and
-    tools/workspace_ui_check.py in the real window."""
+    the page's own functions, listeners and constants as Node.js loads them
+    (tests/page_scripts.py): the tests check how they are written, not what
+    they do. tools/ui_idle_check.py runs the locked page headless (no bridge
+    call or timer in a minute) and tools/workspace_ui_check.py in the real
+    window."""
 
     @classmethod
     def setUpClass(cls):
@@ -1777,14 +1780,15 @@ class LockedPageTests(unittest.TestCase):
 
     def function(self, name):
         """A function's body in the page; a failure (not an error) if missing."""
-        self.assertTrue(f"function {name}(" in self.page, f"the page has no {name}()")
-        return js_function(self.page, name)
+        return js_function(page_scripts.function_text(name), name)
 
     def boot(self):
         """The start-up handler: the last pywebviewready listener, which shows
-        the first view."""
-        marker = 'window.addEventListener("pywebviewready", async () => {'
-        return js_block(self.page, self.page.rindex(marker) + len(marker))
+        the first view (its body, inside its braces)."""
+        handler = page_scripts.listener_texts("window", "pywebviewready")[-1]
+        marker = "async () => {"
+        self.assertTrue(handler.startswith(marker), handler[:40])
+        return js_block(handler, len(marker))
 
     @staticmethod
     def calls(text):
@@ -1854,10 +1858,13 @@ class LockedPageTests(unittest.TestCase):
                              ("locked-close", "Close Unminute")):
             self.assertRegex(section, rf'<button type="button" id="{button}"[^>]*>{text}</button>')
 
+    def locked_words(self):
+        """The page's LOCKED_REASONS, LOCKED_OTHER and LOCKED_KEPT, as loaded."""
+        return page_scripts.run("console.log(JSON.stringify("
+                                "{ LOCKED_REASONS, LOCKED_OTHER, LOCKED_KEPT }));")
+
     def test_every_reason_has_its_own_wording(self):
-        start = self.page.index("const LOCKED_REASONS = {")
-        block = self.page[start:self.page.index("};", start)]
-        self.assertEqual(self.reasons, set(re.findall(r"^  (\w+):", block, re.MULTILINE)))
+        self.assertEqual(self.reasons, set(self.locked_words()["LOCKED_REASONS"]))
 
     def test_a_later_status_that_says_locked_still_shows_the_locked_screen(self):
         # Review of 7b28de1: when the first status() fails, the start goes on
@@ -1872,25 +1879,16 @@ class LockedPageTests(unittest.TestCase):
                          r"await renderStatus\(\);\s*if \(state\.locked\) return;",
                          "refresh goes on after the status said locked")
 
-    def strings(self, name):
-        """A page constant built from string literals joined by +."""
-        found = re.search(rf"const {name} = ((?:\"[^\"]*\"\s*\+?\s*)+);", self.page)
-        self.assertIsNotNone(found, f"the page has no string constant {name}")
-        return "".join(re.findall(r'"([^"]*)"', found.group(1)))
-
     def test_the_users_paragraph_is_two_short_sentences(self):
         # Owner, 22 Oct 2026 (#111): what happened, then that nothing is lost.
         # Signing out and copying the details for IT are in "How to recover"
-        # and IT's steps, not in the paragraph.
-        start = self.page.index("const LOCKED_REASONS = {")
-        block = self.page[start:self.page.index("};", start)]
-        firsts = {"LOCKED_OTHER": self.strings("LOCKED_OTHER")}
-        for name in set(re.findall(r"^  \w+: (LOCKED_\w+),", block, re.MULTILINE)):
-            firsts[name] = self.strings(name)
-        firsts.update(("reason " + k, v) for k, v in
-                      re.findall(r'^  (\w+): "([^"]*)",', block, re.MULTILINE))
+        # and IT's steps, not in the paragraph. Each reason's first sentence,
+        # whether written in LOCKED_REASONS or in a constant it names.
+        words = self.locked_words()
+        firsts = {"LOCKED_OTHER": words["LOCKED_OTHER"]}
+        firsts.update(("reason " + k, v) for k, v in words["LOCKED_REASONS"].items())
         self.assertGreaterEqual(len(firsts), 4)
-        kept = self.strings("LOCKED_KEPT")
+        kept = words["LOCKED_KEPT"]
         self.assertIn("nothing has been deleted", kept)
         for name, text in [*firsts.items(), ("LOCKED_KEPT", kept)]:
             with self.subTest(name=name):

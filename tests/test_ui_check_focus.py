@@ -24,7 +24,6 @@ import page_scripts
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = (ROOT / "tools" / "workspace_ui_check.py").read_text(encoding="utf-8")
-APP_JS = page_scripts.source()
 # The script the after_edit step ran before #308.
 OLD_END_EDIT = "g.span.blur(); await wait(1500);"
 
@@ -181,14 +180,13 @@ console.log(JSON.stringify(blurs));
 
     def test_the_page_listener_runs_once(self):
         # A second guard behind the helper's one-blur rule: a repeated blur
-        # cannot end the edit twice.
-        start = re.search(r"^function startEditing\(span\) \{.*?^\}$", APP_JS, re.M | re.S)
-        self.assertIsNotNone(start, "startEditing not found in the page scripts")
-        self.assertIn('span.addEventListener("blur", stopEditing, { once: true });',
-                      start.group(0))
-        stop = re.search(r"^function stopEditing\(\) \{.*?^\}$", APP_JS, re.M | re.S)
-        self.assertIsNotNone(stop, "stopEditing not found in the page scripts")
-        self.assertIn("if (!span) return;", stop.group(0))
+        # cannot end the edit twice. The page's own functions, as loaded.
+        start = page_scripts.function_text("startEditing")
+        self.assertTrue(start.startswith("function startEditing(span) {"), start[:40])
+        self.assertIn('span.addEventListener("blur", stopEditing, { once: true });', start)
+        stop = page_scripts.function_text("stopEditing")
+        self.assertTrue(stop.startswith("function stopEditing() {"), stop[:40])
+        self.assertIn("if (!span) return;", stop)
 
     def test_the_check_uses_the_helper_and_reports_focus(self):
         self.assertIn("first=GROW_END_EDIT", TOOL)
