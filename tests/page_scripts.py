@@ -12,12 +12,25 @@
 # so a script tag is found however it is written (<SCRIPT>, </script >, an
 # attribute on its own line), as the browser would find it (CodeQL
 # py/bad-tag-filter; #414 step 3a review).
+#
+# Tests that run the page's code use run(): tests/page_vm.js loads the real
+# scripts, in index.html's order, into one Node.js context and runs the test's
+# JavaScript after them, so it calls the functions the page ships rather than
+# copies cut out of the source (#414 step 3b). function_text() and
+# listener_texts() give a loaded function's own text as Node.js holds it, for
+# the checks on how a function is written.
 
+import functools
+import json
+import shutil
+import subprocess
+import unittest
 from html.parser import HTMLParser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 UI = ROOT / "workspace" / "ui"
+PAGE_VM = Path(__file__).resolve().parent / "page_vm.js"
 
 
 class _ScriptTags(HTMLParser):
@@ -80,3 +93,58 @@ def every_script():
 def every_source():
     """The text of every_script(), joined."""
     return "\n".join(path.read_text(encoding="utf-8") for path in every_script())
+
+
+def run(code, timeout=60):
+    """Run code (JavaScript) in Node.js after the page's scripts, and return
+    what it printed, read as JSON. The scripts are the real ones, loaded in
+    index.html's order (tests/page_vm.js says what code may replace). The test
+    is skipped without Node.js; anything Node.js reports as an error fails it."""
+    node = shutil.which("node")
+    if not node:
+        raise unittest.SkipTest("Node.js not installed")
+    done = subprocess.run([node, str(PAGE_VM), *map(str, paths())], input=code,
+                          capture_output=True, text=True, encoding="utf-8", timeout=timeout,
+                          check=False, cwd=ROOT)
+    if done.returncode != 0:
+        raise AssertionError(f"Node.js exited with {done.returncode}:\n{done.stderr}")
+    return json.loads(done.stdout)
+
+
+@functools.cache
+def _loaded_texts():
+    """Every function the page's scripts declare (function name() {...}), by
+    name, and every listener the page added to the document and the window as
+    it loaded, by event type in the order added: each as written, since Node.js
+    keeps a function's own text."""
+    return run(r"""
+const functions = {}, native = /\{\s*\[native code\]\s*\}$/;
+for (const name of Object.getOwnPropertyNames(globalThis)) {
+  const value = globalThis[name];
+  if (typeof value === "function" && !native.test(String(value))) functions[name] = String(value);
+}
+const texts = (target) => Object.fromEntries(Object.entries(target.listeners)
+  .map(([type, fns]) => [type, fns.map(String)]));
+console.log(JSON.stringify({ functions, document: texts(loaded.document),
+                             window: texts(loaded.window) }));
+""")
+
+
+def _lines(text):
+    # A Windows checkout may end the scripts' lines in a carriage return and a
+    # line feed, which Node.js keeps; source() reads them as a line feed.
+    return text.replace("\r\n", "\n")
+
+
+def function_text(name):
+    """The text of the page function declared as name, as the page ships it."""
+    texts = _loaded_texts()["functions"]
+    if name not in texts:
+        raise AssertionError(f"{name} is not a function declared by the page scripts")
+    return _lines(texts[name])
+
+
+def listener_texts(target, event):
+    """The text of each listener for event that the page added to target
+    ("document" or "window") as it loaded, in the order added."""
+    return [_lines(text) for text in _loaded_texts()[target].get(event, [])]

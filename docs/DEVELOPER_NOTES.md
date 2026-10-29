@@ -155,6 +155,20 @@ real time, and remove it when the cause is fixed.
   `py/bad-tag-filter`); `tools/design_check.py` `page_tags_found` does the same. The I3
   bridge-name guard and the T1 "opens no link" guard read `every_source()`, every `.js` file
   under `workspace/ui`, whether `index.html` loads it or not.
+- **Tests that run the page's code** call the real functions, never a copy cut out of the
+  source with a pattern (#414 step 3b). `page_scripts.run(code)` starts Node.js on
+  `tests/page_vm.js`, which loads every script in `index.html`'s order into one `vm` context
+  (top-level names shared, as in the browser; `main.js` wires stand-in elements and waits
+  for a `pywebviewready` that never comes), runs the test's code after them and returns what
+  it printed as JSON. The test replaces what the page reaches by assigning it:
+  `document = {...}`, `window = {...}`, `setTimeout = ...`, a page function
+  (`say = ...`) or a `let`. A page `const` (`$`, `button`, `state`) cannot be replaced:
+  replace the `document` that `$` reads, or change the object (`state.view = ...`).
+  Declaring a page or stand-in name again (`const document`) fails with "already declared",
+  so a test cannot quietly use its own copy while the page uses the real one. For a check on
+  how a function is written, `page_scripts.function_text(name)` and `listener_texts()` give
+  the loaded function's own text. Without Node.js these tests skip; CI has it, and
+  `--strict-skips` does not allow that skip.
 - **A page error's line names its script by number.** `report_ui_error` still takes a fixed
   kind, a line and a column, and no file name. For an error in one of the page's scripts, the
   page sends the script's place in `PAGE_SCRIPTS` (`core.js` is 1) times

@@ -2,36 +2,19 @@
 # second on whole display frames (every Nth frame, N = round(display rate / 60),
 # at least 1), and its easing is time-based so the motion does not depend on
 # how often it draws. About 60 a second is the owner's decision of 23 Oct 2026,
-# after a short spell at 30 (#315) that saved too little. The pure helpers are
-# taken from the page's scripts (workspace/ui) by name and run in Node.js (the CI images
-# have it, as the JS syntax job uses).
+# after a short spell at 30 (#315) that saved too little. The page's own pure
+# helpers (meterStep, meterFrame, easeShare, ease, meterDt, restartMeter) and
+# constants (METER_HZ, EASE_REF_HZ) run in Node.js with the page's real
+# scripts loaded (tests/page_scripts.py run; the CI images have Node.js, as
+# the JS syntax job uses).
 #   python tools/run_tests.py
 
 import json
 import re
-import shutil
-import subprocess
 import unittest
-from pathlib import Path
 import page_scripts
 
-ROOT = Path(__file__).resolve().parents[1]
 APP_JS = page_scripts.source()
-HELPERS = ("meterStep", "meterFrame", "easeShare", "ease", "meterDt", "restartMeter")
-CONSTANTS = ("METER_HZ", "EASE_REF_HZ")
-
-
-def source_of(name):
-    """A top-level function or constant from the page scripts, as written there."""
-    if name in CONSTANTS:
-        found = re.search(r"^const " + name + r" = [^;\n]+;$", APP_JS, re.M)
-    else:
-        found = (re.search(r"^function " + name + r"\(.*\}$", APP_JS, re.M)          # one line
-                 if re.search(r"^function " + name + r"\(.*\}$", APP_JS, re.M)
-                 else re.search(r"^function " + name + r"\(.*?^\}$", APP_JS, re.M | re.S))
-    if found is None:
-        raise AssertionError(f"{name} not found at the top level of the page scripts")
-    return found.group(0)
 
 
 # Each check runs in Node.js against the helpers and prints one JSON result.
@@ -115,18 +98,12 @@ console.log(JSON.stringify(result));
 
 
 class LevelMeterTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.node = shutil.which("node")
+    out = None
 
     def simulate(self):
-        if not self.node:
-            self.skipTest("Node.js not installed")
-        script = "\n".join(source_of(n) for n in CONSTANTS + HELPERS) + "\n" + SIMULATION
-        done = subprocess.run([self.node, "-"], input=script, capture_output=True, text=True,
-                              timeout=60, check=False)
-        self.assertEqual(done.returncode, 0, done.stderr)
-        return json.loads(done.stdout)
+        if LevelMeterTests.out is None:                   # one run serves every test here
+            LevelMeterTests.out = page_scripts.run(SIMULATION)
+        return json.loads(json.dumps(LevelMeterTests.out))
 
     def test_draws_on_every_nth_display_frame_and_never_unevenly(self):
         result = self.simulate()
@@ -201,15 +178,16 @@ class LevelMeterTests(unittest.TestCase):
         self.assertLess(result["share"], 0.6)
         self.assertEqual(result["step"], 2, "the measured display rate is kept")
         # The page restarts the meter when it stops and when the window is hidden.
-        stop = source_of("stopViz")
+        stop = page_scripts.function_text("stopViz")
         self.assertIn("restartMeter(viz, meterClock);", stop)
-        hidden = re.search(r'addEventListener\("visibilitychange", \(\) => \{\n'
-                           r'  if \(document\.hidden\) \{\n(.*?)\n  \} else', APP_JS, re.S)
+        [handler] = page_scripts.listener_texts("document", "visibilitychange")
+        hidden = re.search(r'^\(\) => \{\n'
+                           r'  if \(document\.hidden\) \{\n(.*?)\n  \} else', handler, re.S)
         self.assertIsNotNone(hidden, "the visibilitychange handler was not found")
         self.assertIn("restartMeter(viz, meterClock);", hidden.group(1))
 
     def test_the_meter_uses_the_helpers(self):
-        draw = source_of("drawViz")
+        draw = page_scripts.function_text("drawViz")
         self.assertIn("requestAnimationFrame(drawViz)", draw)
         # The next frame is asked for first, then frames not to be drawn end there.
         self.assertLess(draw.index("requestAnimationFrame(drawViz)"),

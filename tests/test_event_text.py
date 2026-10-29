@@ -4,16 +4,14 @@
 # happened and how long it lasted after it. The note's own full stop must not
 # come before " at": the card's line reads "...switched to it at 8:32." and
 # "...while the microphone switched at 8:32 (about 0.4 s).", and a report
-# joins its events with "; " and one full stop at the end. The helpers are
-# taken from the page's scripts (workspace/ui) by name and run in Node.js (the CI images
-# have it, as tests/test_level_meter.py uses). The notes are the recorder's
-# own fixed texts (workspace/recorder.py), which name no device (P3).
+# joins its events with "; " and one full stop at the end. The page's own
+# eventLine and eventText run in Node.js with the page's real scripts loaded
+# (tests/page_scripts.py run; the CI images have Node.js). The notes are the
+# recorder's own fixed texts (workspace/recorder.py), which name no device (P3).
 #   python tools/run_tests.py --only test_event_text
 
 import json
 import re
-import shutil
-import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -21,8 +19,6 @@ import page_scripts
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-APP_JS = page_scripts.source()
-HELPERS = ("fmtSeconds", "eventText", "eventLine")
 
 # The recorder's notes, read from its source so the test follows any rewording
 # without importing the recorder (numpy) here.
@@ -40,15 +36,6 @@ SLEEP = joined(re.search(r'self\._event\("sleep", note=((?:\s*"[^"]*")+)\)', REC
 MIXDOWN = (ROOT / "workspace" / "mixdown.py").read_text(encoding="utf-8")
 MIX_BY_START = joined(re.search(r'"kind": "mix_by_start".*?"note": ((?:\s*"[^"]*")+)\}',
                                 MIXDOWN, re.S))
-
-
-def source_of(name):
-    """A top-level function from the page scripts, as written there."""
-    found = (re.search(r"^function " + name + r"\(.*\}$", APP_JS, re.M)          # one line
-             or re.search(r"^function " + name + r"\(.*?^\}$", APP_JS, re.M | re.S))
-    if found is None:
-        raise AssertionError(f"{name} not found at the top level of the page scripts")
-    return found.group(0)
 
 
 # 8:32 is 512 seconds into the recording, as the design check's
@@ -78,19 +65,13 @@ console.log(JSON.stringify({
 
 
 class EventTextTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.node = shutil.which("node")
+    out = None
 
     def run_page(self):
-        if not self.node:
-            self.skipTest("Node.js not installed")
-        script = ("\n".join(source_of(n) for n in HELPERS) + "\n"
-                  + SCRIPT.replace("__EVENTS__", json.dumps(EVENTS)))
-        done = subprocess.run([self.node, "-"], input=script, capture_output=True, text=True,
-                              encoding="utf-8", timeout=60, check=False)
-        self.assertEqual(done.returncode, 0, done.stderr)
-        return json.loads(done.stdout)
+        if EventTextTests.out is None:                    # one run serves every test here
+            EventTextTests.out = page_scripts.run(SCRIPT.replace("__EVENTS__",
+                                                                 json.dumps(EVENTS)))
+        return json.loads(json.dumps(EventTextTests.out))
 
     def test_the_card_lines_read_as_the_owner_approved(self):
         lines = self.run_page()["lines"]
