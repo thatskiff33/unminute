@@ -36,6 +36,7 @@
   "workspace/keystore.py",
   "workspace/launch.py",
   "workspace/launchcheck.py",
+  "workspace/location.py",
   "workspace/loopback.py",
   "workspace/media.py",
   "workspace/mixdown.py",

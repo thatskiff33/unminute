@@ -1211,9 +1211,9 @@ class WorkspaceLocationTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows paths")
     def test_a_mapped_network_drive_is_refused(self):
-        from workspace import store
+        from workspace import location
         from workspace.store import StoreError
-        with mock.patch.object(store, "_remote_drive", return_value=True):
+        with mock.patch.object(location, "_remote_drive", return_value=True):
             with self.assertRaises(StoreError):
                 self.check({"LOCALAPPDATA": "C:\\Users\\a\\AppData\\Local"})
 
@@ -1395,9 +1395,9 @@ class RedirectedDataFolderTests(unittest.TestCase):
 
     def on_share(self):
         """_remote_drive as if self.share were a mapped network drive."""
-        from workspace import store
+        from workspace import location, store
         share = store._folder_key(os.path.realpath(self.share))
-        return mock.patch.object(store, "_remote_drive",
+        return mock.patch.object(location, "_remote_drive",
                                  lambda path: store._folder_key(path).startswith(share))
 
     def assert_path_free(self, message):
