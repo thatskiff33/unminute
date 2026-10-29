@@ -28,27 +28,32 @@ def one(pattern, text, what):
 
 
 class BridgeNameTests(unittest.TestCase):
-    """The page may call only methods the bridge allowlist exposes."""
+    """The page may call only methods the bridge allowlist exposes. Every .js
+    file under workspace/ui is read, whether index.html loads it or not (#414:
+    the page is several scripts, and a guard must not cover fewer of them)."""
 
     @classmethod
     def setUpClass(cls):
+        import page_scripts
         from workspace import api
         cls.allowed = api.API_METHODS
-        cls.page = read("workspace/ui/app.js")
+        cls.page = page_scripts.every_source()
 
     def test_page_calls_only_allowlisted_methods(self):
         called = set(re.findall(r'\bcall\(\s*"(\w+)"', self.page))
-        self.assertGreater(len(called), 20, "the call() pattern no longer matches app.js")
+        self.assertGreater(len(called), 20,
+                           "the call() pattern no longer matches the page scripts")
         self.assertEqual(set(), called - self.allowed,
-                         "app.js calls bridge methods missing from API_METHODS in workspace/api.py")
+                         "a page script calls bridge methods missing from API_METHODS in "
+                         "workspace/api.py")
 
     def test_call_is_the_only_dynamic_bridge_access(self):
         # Other than its own definition, every call() names its method with a
         # string literal, so the test above sees every method the page uses.
         dynamic = re.findall(r'(?<!function )(?<![\w.])call\((?!\s*")', self.page)
-        self.assertEqual([], dynamic, "app.js calls call() with a computed method name")
+        self.assertEqual([], dynamic, "a page script calls call() with a computed method name")
         self.assertEqual(1, self.page.count("pywebview.api"),
-                         "app.js reaches the bridge outside call()")
+                         "a page script reaches the bridge outside call()")
 
     def test_design_fixtures_serve_only_allowlisted_methods(self):
         fixtures = read("tools/design_check/fixtures.js")

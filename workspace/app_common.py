@@ -16,7 +16,7 @@ MANAGED_OFF = "{what} is turned off by your organisation. Ask your IT team if yo
 # went wrong or was refused) or "info" (nothing went wrong, such as a request
 # repeated too soon). The bridge passes it to the page as "kind", and the page
 # styles a message by it, never by its wording. Success messages are the
-# page's own. workspace/ui/app.js MESSAGE_KINDS lists the same kinds and
+# page's own. workspace/ui/core.js MESSAGE_KINDS lists the same kinds and
 # success (tests/test_message_kinds.py).
 ERROR_KINDS = ("error", "info")
 

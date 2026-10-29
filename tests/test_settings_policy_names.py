@@ -2,7 +2,7 @@
 # from #111 D2 finding 8): a mistyped name under the policy key grants and
 # withholds nothing, so the page names it for IT to fix. The names come from
 # Policy.summary() (printable ASCII, escapes for everything else) and reach the
-# page as text only. The page helpers are taken from workspace/ui/app.js by
+# page as text only. The page helpers are taken from the page's scripts (workspace/ui) by
 # name and run in Node.js with a stand-in for the two elements, as
 # tests/test_level_meter.py does.
 #   python tools/run_tests.py
@@ -20,9 +20,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 import keyprotect  # noqa: E402
+import page_scripts  # noqa: E402
 
 UI = ROOT / "workspace" / "ui"
-APP_JS = (UI / "app.js").read_text(encoding="utf-8")
+APP_JS = page_scripts.source()
 INDEX = (UI / "index.html").read_text(encoding="utf-8")
 HELPERS = ("unrecognisedNote", "renderUnrecognised")
 MANAGED_LINE = ('<p id="s-managed" class="set-text" hidden>Some settings are managed by your '
@@ -30,10 +31,10 @@ MANAGED_LINE = ('<p id="s-managed" class="set-text" hidden>Some settings are man
 
 
 def source_of(name):
-    """A top-level function from app.js, as written there."""
+    """A top-level function from the page scripts, as written there."""
     found = re.search(r"^function " + name + r"\(.*?^\}$", APP_JS, re.M | re.S)
     if found is None:
-        raise AssertionError(f"{name} not found at the top level of app.js")
+        raise AssertionError(f"{name} not found at the top level of the page scripts")
     return found.group(0)
 
 

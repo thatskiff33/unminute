@@ -5,7 +5,7 @@
 # come before " at": the card's line reads "...switched to it at 8:32." and
 # "...while the microphone switched at 8:32 (about 0.4 s).", and a report
 # joins its events with "; " and one full stop at the end. The helpers are
-# taken from workspace/ui/app.js by name and run in Node.js (the CI images
+# taken from the page's scripts (workspace/ui) by name and run in Node.js (the CI images
 # have it, as tests/test_level_meter.py uses). The notes are the recorder's
 # own fixed texts (workspace/recorder.py), which name no device (P3).
 #   python tools/run_tests.py --only test_event_text
@@ -17,10 +17,11 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+import page_scripts
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-APP_JS = (ROOT / "workspace" / "ui" / "app.js").read_text(encoding="utf-8")
+APP_JS = page_scripts.source()
 HELPERS = ("fmtSeconds", "eventText", "eventLine")
 
 # The recorder's notes, read from its source so the test follows any rewording
@@ -42,11 +43,11 @@ MIX_BY_START = joined(re.search(r'"kind": "mix_by_start".*?"note": ((?:\s*"[^"]*
 
 
 def source_of(name):
-    """A top-level function from app.js, as written there."""
+    """A top-level function from the page scripts, as written there."""
     found = (re.search(r"^function " + name + r"\(.*\}$", APP_JS, re.M)          # one line
              or re.search(r"^function " + name + r"\(.*?^\}$", APP_JS, re.M | re.S))
     if found is None:
-        raise AssertionError(f"{name} not found at the top level of app.js")
+        raise AssertionError(f"{name} not found at the top level of the page scripts")
     return found.group(0)
 
 

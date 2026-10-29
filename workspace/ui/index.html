@@ -604,7 +604,7 @@
           <!-- Copy and open (#109): the app copies, then opens the address
                policy sets (ChatGPT by default). The page never names it.
                Hidden until the preview says which assistant, if any, policy
-               allows; app.js layoutHandoff then makes it the main button and
+               allows; handoff.js layoutHandoff then makes it the main button and
                puts Copy prompt and transcript in the row of three beneath. -->
           <button type="button" id="ho-open" class="primary wide-btn" aria-describedby="ho-open-note" hidden>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a1 1 0 0 1 1-1h10"/></svg><span>Copy and open <span id="ho-open-name"></span></span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6"/><path d="M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>
@@ -688,7 +688,7 @@
 
   <!-- Locked (#111 C4b): Windows would not unlock the workspace key, so the
        app opened locked. Only this screen is shown, with no meeting, list or
-       setting; renderLocked (app.js) fills in the reason and codes as text. -->
+       setting; renderLocked (meetings.js) fills in the reason and codes as text. -->
   <section id="view-locked" class="view page locked-page" aria-labelledby="h-locked" hidden>
     <div class="locked-head">
       <span class="locked-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span>
@@ -781,6 +781,21 @@
   </form>
 </dialog>
 
-<script src="app.js"></script>
+<!-- The page's scripts, in order (#414): each only declares, and main.js,
+     the last, runs the page. No async or defer: they run one after another. -->
+<script src="core.js"></script>
+<script src="navigation.js"></script>
+<script src="meetings.js"></script>
+<script src="meeting.js"></script>
+<script src="speakers.js"></script>
+<script src="playback.js"></script>
+<script src="confirm.js"></script>
+<script src="handoff.js"></script>
+<script src="setup.js"></script>
+<script src="settings.js"></script>
+<script src="recording.js"></script>
+<script src="drafts.js"></script>
+<script src="polling.js"></script>
+<script src="main.js"></script>
 </body>
 </html>

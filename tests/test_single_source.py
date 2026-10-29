@@ -25,6 +25,7 @@ import keyprotect  # noqa: E402
 
 from workspace import asr_engines  # noqa: E402
 from workspace import gpu, setup  # noqa: E402
+import page_scripts  # noqa: E402
 
 # Junctions are made with cmd.exe from the system folder, never by name, and
 # with the minimal environment (#253). The helper is loaded from its file so
@@ -42,7 +43,7 @@ def mklink_junction(link, target, **kwargs):
                            str(link), str(target)],
                           env=windows_powershell.environment(), **kwargs)
 
-APP_JS = (ROOT / "workspace" / "ui" / "app.js").read_text(encoding="utf-8")
+APP_JS = page_scripts.source()
 # Shipped code a person could edit a fact into (tests and tools are not shipped).
 SHIPPED = [*sorted((ROOT / "workspace").glob("*.py")),
            *sorted((ROOT / "workspace" / "ui").glob("*.js")),

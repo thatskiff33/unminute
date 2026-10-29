@@ -573,9 +573,9 @@ class Harness:
                     html = CSP.sub(lambda m: m.group(1) + m.group(2).replace(
                         "script-src 'self'", "script-src 'self' 'unsafe-eval'").replace(
                         "connect-src 'none'", "connect-src 'self'") + m.group(3), html)
-                    html = html.replace('<script src="app.js"></script>',
+                    html = html.replace('<script src="core.js"></script>',
                                         '<script src="shim.js"></script>\n'
-                                        '<script src="app.js"></script>')
+                                        '<script src="core.js"></script>')
                     body = html.encode("utf-8")
                 ctype = {".html": "text/html", ".js": "text/javascript", ".css": "text/css",
                          ".woff2": "font/woff2", ".svg": "image/svg+xml",

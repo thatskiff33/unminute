@@ -113,7 +113,7 @@ RELEASE_WINDOW_S = evidence.PERF_RELEASE["window_s"]
 VISIBLE_STATES = evidence.PERF_VISIBLE_STATES
 # The level meter draws while recording with the window in view: on every
 # display frame up to METER_MAX_HZ, then on every Nth frame for about that rate
-# (#294; METER_HZ in workspace/ui/app.js, about 60 a second: the owner's
+# (#294; METER_HZ in workspace/ui/recording.js, about 60 a second: the owner's
 # decision of 23 Oct 2026, #216). Its draws are counted, not the page's frames,
 # and a window counts only if it drew at least half its expected rate
 # (min_meter_draws()) and was never undrawn for longer than MAX_UNDRAWN_S at a

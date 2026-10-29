@@ -572,7 +572,7 @@ class Workspace(RecordingMixin, SettingsMixin, HandoffMixin, WatchedFoldersMixin
 
     def _repair_offered(self, card):
         """Whether Downloads offers Download or Repair for this card, as the page
-        decides (downloadOff in app.js): the graphics card components by
+        decides (downloadOff in settings.js): the graphics card components by
         AllowModelDownloads and AllowGpuComponent (B7-5, DEC-068), the models
         by _model_downloads_allowed."""
         if card.get("role") == "gpu":

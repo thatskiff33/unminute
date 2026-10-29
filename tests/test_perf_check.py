@@ -14,6 +14,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 import perf_check  # noqa: E402
+import page_scripts  # noqa: E402
 
 
 class MedianTests(unittest.TestCase):
@@ -1134,7 +1135,7 @@ class DrawnWindowTests(unittest.TestCase):
         self.assertNotIn("setInterval", js)
         self.assertNotIn("setTimeout", js)
         # The level display's canvas is the one the app draws its meter on.
-        app = (ROOT / "workspace" / "ui" / "app.js").read_text(encoding="utf-8")
+        app = page_scripts.source()
         self.assertIn('$("rec-canvas")', app)
         self.assertIn("clearRect(", app)
 
@@ -1165,10 +1166,10 @@ class DrawnWindowTests(unittest.TestCase):
                           "expected)"], got["problems"])
 
     def test_the_expected_rate_is_the_meters_own(self):
-        # The tool's meter rate is the page's (METER_HZ in workspace/ui/app.js),
+        # The tool's meter rate is the page's (METER_HZ in workspace/ui/recording.js),
         # so a change to one without the other fails here. About 60 a second is
         # the owner's decision of 23 Oct 2026 (#216).
-        app = (ROOT / "workspace" / "ui" / "app.js").read_text(encoding="utf-8")
+        app = page_scripts.source()
         self.assertRegex(app, rf"(?m)^const METER_HZ = {perf_check.METER_MAX_HZ};$")
         self.assertEqual(60, perf_check.METER_MAX_HZ)
 
