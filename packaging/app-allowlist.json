@@ -28,6 +28,7 @@
   "workspace/engines.py",
   "workspace/gpu.py",
   "workspace/handoff.py",
+  "workspace/handoff_ws.py",
   "workspace/holds.py",
   "workspace/instance.py",
   "workspace/intake.py",
@@ -47,6 +48,7 @@
   "workspace/resources.py",
   "workspace/runner.py",
   "workspace/safe_paths.py",
+  "workspace/settings_ws.py",
   "workspace/setup.py",
   "workspace/shell.py",
   "workspace/speaker_load.py",
@@ -63,6 +65,7 @@
   "workspace/ui/tokens.css",
   "workspace/update.py",
   "workspace/vault.py",
+  "workspace/watched_ws.py",
   "workspace/worker.py"
  ]
 }

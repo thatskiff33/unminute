@@ -1,7 +1,8 @@
 # workspace/app_common.py
 # What workspace/app.py and the modules split out of it (#414) share: the
-# refused request (WorkspaceError, with its message kinds), and how an import's
-# failure is told to the user and logged. Moved here unchanged from app.py,
+# refused request (WorkspaceError, with its message kinds), how an import's
+# failure is told to the user and logged, and the check on an id the page
+# sends (_hold_id). Moved here unchanged from app.py,
 # which imports them back, so app.WorkspaceError, app.ERROR_KINDS and the rest
 # are the same objects as before (workspace/api.py imports them from app).
 
@@ -63,3 +64,9 @@ def _import_message(exc, code=None):
     if code:                              # unexpected: the code finds it in the log
         return f"That recording could not be imported (code {code})."
     return "That recording could not be imported (unsupported or damaged file)."
+
+
+def _hold_id(value):
+    if not isinstance(value, str) or len(value) != 32 or not value.isalnum():
+        raise WorkspaceError("Not found.")
+    return value
