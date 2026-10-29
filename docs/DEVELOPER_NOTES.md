@@ -144,9 +144,15 @@ real time, and remove it when the cause is fixed.
   `"use strict";` and declare only. `tests/test_page_scripts.py` fails if the three sets or
   the order differ, if a script other than `main.js` runs code at load, or if two scripts
   declare the same top-level name: a repeated `const`, `let` or `class` stops the later
-  script loading at all, and a repeated `function` silently replaces the earlier one.
+  script loading at all, and a repeated `function` silently replaces the earlier one. It
+  also fails if a script other than `main.js` reads, outside a function body, a name
+  declared in a later script (`const probe = wire();` in `polling.js`): declarations do not
+  hoist across scripts, so that would throw as the page loads.
 - **Tests that read the page's code** use `tests/page_scripts.py`: `source()` joins the
-  scripts in load order, so a function is found by name whichever file it is in. The I3
+  scripts in load order, so a function is found by name whichever file it is in. It reads
+  `index.html` with the standard library's HTML parser, never a pattern, so a script tag is
+  found however it is spelt (`<SCRIPT>`, `</script >`), as the browser finds it (CodeQL
+  `py/bad-tag-filter`); `tools/design_check.py` `page_tags_found` does the same. The I3
   bridge-name guard and the T1 "opens no link" guard read `every_source()`, every `.js` file
   under `workspace/ui`, whether `index.html` loads it or not.
 - **A page error's line names its script by number.** `report_ui_error` still takes a fixed
