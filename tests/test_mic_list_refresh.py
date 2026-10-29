@@ -44,7 +44,7 @@ LAPTOP = "Laptop microphone (sample)"
 HEADSET = "Headset (sample)"
 USB = "USB microphone (sample)"
 
-# Loaded after fixtures.js and before app.js: the fixture bridge, with the
+# Loaded after fixtures.js and before the page's scripts: the fixture bridge, with the
 # devices and the recording state under the test's control, every call counted
 # and the window's visibility settable. delay: how long the device list takes;
 # fail: the list cannot be read (the app's error when PortAudio cannot load);
@@ -95,7 +95,7 @@ BRIDGE = """
 })();
 """.replace("__LAPTOP__", json.dumps(LAPTOP))
 
-# Run after app.js: the steps of one run (?mic=meetings|recording|setup), then
+# Run after the page's scripts: the steps of one run (?mic=meetings|recording|setup), then
 # the observations as JSON in <pre id="mic-result">.
 STEPS = """
 (async () => {
@@ -348,8 +348,8 @@ RUNS = {"meetings": "home", "recording": "home", "choice": "home", "setup": "set
 
 
 class Handler(design_check.Handler):
-    """The design check's server, with the wrapper before app.js and the steps
-    after it (the page's content security policy allows scripts from the
+    """The design check's server, with the wrapper before the page's scripts and
+    the steps after them (the page's content security policy allows scripts from the
     page's own origin only)."""
 
     def do_GET(self):
@@ -363,7 +363,9 @@ class Handler(design_check.Handler):
             page = page.replace(design_check.APP_TAG,
                                 '<script src="/tools/design_check/fixtures.js"></script>\n'
                                 '<script src="mic-bridge.js"></script>\n'
-                                + design_check.APP_TAG + '\n<script src="mic-steps.js"></script>')
+                                + design_check.APP_TAG)
+            page = page.replace(design_check.MAIN_TAG,
+                                design_check.MAIN_TAG + '\n<script src="mic-steps.js"></script>')
             return self._send(page.encode("utf-8"), "text/html; charset=utf-8")
         return super().do_GET()
 

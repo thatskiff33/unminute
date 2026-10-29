@@ -43,6 +43,7 @@ FAKE = "test:fake_worker_engines:"
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "tools"))
 import decoder_runtime  # noqa: E402  (tools/decoder_runtime.py)
+import page_scripts  # noqa: E402
 
 
 def setUpModule():
@@ -2035,7 +2036,7 @@ class PagePartTests(DraftWorkspaceCase):
     def test_the_page_shows_draft_text_as_text_only_and_does_not_announce_it(self):
         ui = Path(__file__).resolve().parents[1] / "workspace" / "ui"
         html = (ui / "index.html").read_text(encoding="utf-8")
-        js = (ui / "app.js").read_text(encoding="utf-8")
+        js = page_scripts.source()
         import re
 
         def tag(element_id):
@@ -2049,26 +2050,25 @@ class PagePartTests(DraftWorkspaceCase):
         self.assertIn("user-select: none", (ui / "app.css").read_text(encoding="utf-8"))
 
 
-# The page's draft area (workspace/ui/app.js), run in Node.js against a small
+# The page's draft area (workspace/ui/drafts.js), run in Node.js against a small
 # fake DOM that records every change it is asked to make. renderDraft runs on
 # every clock tick (10 a second), so a tick with nothing new must change
 # nothing (#216's budget, #340's ratchets), and a fetch overtaken by Hide or
-# Show must be dropped (draft.shown). The code is taken from app.js by name,
+# Show must be dropped (draft.shown). The code is taken from the page scripts by name,
 # as tests/test_level_meter.py does; the CI images have Node.js.
-APP_JS = Path(__file__).resolve().parents[1] / "workspace" / "ui" / "app.js"
 PAGE_PARTS = ("$", "el", "REC_KIND", "DRAFT_KEEP", "DRAFT_EMPTY", "draft", "putText",
               "putHidden", "draftLine", "draftEmpty", "clearDraft", "renderDraft",
               "toggleDraft")
 
 
 def app_js_part(js, name):
-    """A top-level constant or function from app.js, as written there."""
+    """A top-level constant or function from the page scripts, as written there."""
     word = re.escape(name)
     found = (re.search(r"^const " + word + r" = .*?;$", js, re.M | re.S)
              or re.search(r"^(?:async )?function " + word + r"\(.*\}$", js, re.M)
              or re.search(r"^(?:async )?function " + word + r"\(.*?^\}$", js, re.M | re.S))
     if found is None:
-        raise AssertionError(f"{name} not found at the top level of app.js")
+        raise AssertionError(f"{name} not found at the top level of the page scripts")
     return found.group(0)
 
 
@@ -2207,7 +2207,7 @@ class DraftPageTests(unittest.TestCase):
     def simulate(self):
         if not self.node:
             self.skipTest("Node.js not installed")
-        js = APP_JS.read_text(encoding="utf-8")
+        js = page_scripts.source()
         script = "\n".join(app_js_part(js, n) for n in PAGE_PARTS) + "\n" + DRAFT_PAGE_SIM
         done = subprocess.run([self.node, "-"], input=script, capture_output=True, text=True,
                               encoding="utf-8", timeout=60, check=False)

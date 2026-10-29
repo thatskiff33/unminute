@@ -781,6 +781,21 @@
   </form>
 </dialog>
 
-<script src="app.js"></script>
+<!-- The page's scripts, in order (#414): each only declares, and main.js,
+     the last, runs the page. No async or defer: they run one after another. -->
+<script src="core.js"></script>
+<script src="navigation.js"></script>
+<script src="meetings.js"></script>
+<script src="meeting.js"></script>
+<script src="speakers.js"></script>
+<script src="playback.js"></script>
+<script src="confirm.js"></script>
+<script src="handoff.js"></script>
+<script src="setup.js"></script>
+<script src="settings.js"></script>
+<script src="recording.js"></script>
+<script src="drafts.js"></script>
+<script src="polling.js"></script>
+<script src="main.js"></script>
 </body>
 </html>

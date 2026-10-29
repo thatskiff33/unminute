@@ -20,6 +20,7 @@ from pathlib import Path
 
 from tests.test_hardening import page_functions
 from workspace import app
+import page_scripts
 
 try:
     from workspace import api
@@ -28,7 +29,7 @@ except ImportError:                       # api imports numpy for the clip WAV
     HAVE_NUMPY = False
 
 ROOT = Path(__file__).resolve().parents[1]
-APP_JS = (ROOT / "workspace" / "ui" / "app.js").read_text(encoding="utf-8")
+APP_JS = page_scripts.source()
 INDEX = (ROOT / "workspace" / "ui" / "index.html").read_text(encoding="utf-8")
 
 
@@ -63,7 +64,7 @@ class WorkspaceErrorKindTests(unittest.TestCase):
 
     def test_the_kinds_are_the_pages(self):
         found = re.search(r"^const MESSAGE_KINDS = \[([^\]]*)\];", APP_JS, re.M)
-        self.assertIsNotNone(found, "MESSAGE_KINDS not found in app.js")
+        self.assertIsNotNone(found, "MESSAGE_KINDS not found in the page scripts")
         page = set(re.findall(r'"(\w+)"', found.group(1)))
         self.assertEqual({"success"} | set(app.ERROR_KINDS), page)
 

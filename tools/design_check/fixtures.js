@@ -1,7 +1,7 @@
 // tools/design_check/fixtures.js
 // A fake pywebview bridge for tools/design_check.py: the real page (workspace/ui)
 // runs against fixed sample data, so each screen can be compared with its
-// design board. Loaded before app.js only by the check's local server; never
+// design board. Loaded before the page's scripts only by the check's local server; never
 // shipped. The scenario is chosen by the URL hash, e.g. index.html#meeting.
 // All names and text are the fictional sample meeting used on the boards.
 "use strict";
@@ -16,8 +16,8 @@
   // index.html?perf=visible|hidden&ms=60000 counts what the idle page does over
   // ms of page time: bridge calls per method, timers, animation frames,
   // meeting-list rebuilds and page errors. Timers are wrapped here, before
-  // app.js loads. "hidden" starts visible and then becomes hidden, with the same
-  // bubbling visibilitychange a minimised window gets.
+  // the page's scripts load. "hidden" starts visible and then becomes hidden,
+  // with the same bubbling visibilitychange a minimised window gets.
   // &display=120 (the recording run, #340) adds a simulated display: see below.
   const query = new URLSearchParams(location.search);
   const perfMode = query.get("perf");
@@ -60,7 +60,7 @@
   // index.html?early=1 throws twice before the bridge is ready, then makes it
   // ready. The page must keep the first error and report it once the bridge is
   // ready, as its kind, line and column only. This listener is added before
-  // app.js's, so it sees each error first.
+  // the page's (main.js), so it sees each error first.
   const early = query.get("early") === "1";
   const earlyLog = { thrown: [], thrown_after_ready: 0, reports: [], ready: false };
   if (early) {
@@ -1237,7 +1237,7 @@
   });
   window.pywebview = { api };
 
-  // Tell app.js the bridge is ready, then run the scenario's steps in order.
+  // Tell the page the bridge is ready, then run the scenario's steps in order.
   window.addEventListener("load", () => {
     if (early) {
       // Each thrown in its own task, so each reaches the page's error listener,

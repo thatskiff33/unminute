@@ -23,6 +23,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import keyprotect  # noqa: E402
+import page_scripts  # noqa: E402
 
 from workspace import credentials, shell  # noqa: E402
 
@@ -119,7 +120,7 @@ class NavigationTests(unittest.TestCase):
         self.assertTrue(shell._allowed(page))
         self.assertTrue(shell._allowed(page + "#meeting"))
         self.assertTrue(shell._allowed(page + "?x=1"))
-        for other in (shell.ui_url("other.html"), shell.ui_url("app.js"),
+        for other in (shell.ui_url("other.html"), shell.ui_url("main.js"),
                       shell.ui_url("img/logo.svg"), page + "%23/evil.html",
                       page + "%3F/../other.html"):
             self.assertFalse(shell._allowed(other), other)
@@ -163,10 +164,13 @@ class NavigationTests(unittest.TestCase):
         # #109: Copy and open asks the app to open the assistant; the page has
         # no link, window.open, location change or form that submits anywhere
         # (its forms are method="dialog"). Only its two stylesheets use href.
+        # Every .js file under workspace/ui is read, whether index.html loads it
+        # or not (#414: the page is several scripts, and this guard must not
+        # cover fewer of them).
         import re
         ui = ROOT / "workspace" / "ui"
         html = (ui / "index.html").read_text(encoding="utf-8")
-        script = (ui / "app.js").read_text(encoding="utf-8").replace(
+        script = page_scripts.every_source().replace(
             '"http://www.w3.org/2000/svg"', "SVG_NAMESPACE")            # a name, not an address
         self.assertEqual(re.findall(r"\bhref\s*=\s*\"([^\"]*)\"", html), ["tokens.css", "app.css"])
         for source in (html, script):
@@ -205,7 +209,7 @@ class NavigationTests(unittest.TestCase):
         # showed "Copy and open ChatGPT" even where IT had turned it off or
         # named another assistant. Copy and open and its note now start hidden
         # and empty, Copy prompt and transcript is the main button until then,
-        # and the preview's name and host fill them (app.js layoutHandoff).
+        # and the preview's name and host fill them (handoff.js layoutHandoff).
         import re
         html = (ROOT / "workspace" / "ui" / "index.html").read_text(encoding="utf-8")
         for tag_id in ("ho-open", "ho-open-note"):
@@ -222,7 +226,7 @@ class NavigationTests(unittest.TestCase):
         # for good if it failed). openHandoff now lays the page out as before
         # #109 before it waits for anything; the preview fills it in.
         import re
-        script = (ROOT / "workspace" / "ui" / "app.js").read_text(encoding="utf-8")
+        script = page_scripts.source()
         body = re.search(r"\nasync function openHandoff\(\) \{\n(.*?)\n\}\n", script, re.S)
         self.assertIsNotNone(body, "openHandoff not found")
         self.assertIn("layoutHandoff(null);", body.group(1).split("await", 1)[0])
@@ -250,7 +254,7 @@ class NavigationTests(unittest.TestCase):
         # renderReminders must be a plain function, so a throw inside it
         # reaches refresh's catch rather than becoming an unhandled rejection.
         import re
-        script = (ROOT / "workspace" / "ui" / "app.js").read_text(encoding="utf-8")
+        script = page_scripts.source()
         body = re.search(r"\nasync function refresh\(\) \{\n(.*?)\n\}\n", script, re.S)
         self.assertIsNotNone(body, "refresh not found")
         before_list = body.group(1).split("await renderLists(", 1)[0]
@@ -263,18 +267,18 @@ class NavigationTests(unittest.TestCase):
 
 
 def page_functions(*names):
-    """The source of each named top-level function in app.js (one line or a
-    block that ends with a closing brace at the start of a line), for a test
-    that runs the page's own code in Node.js."""
+    """The source of each named top-level function in the page's scripts (one
+    line or a block that ends with a closing brace at the start of a line), for
+    a test that runs the page's own code in Node.js."""
     import re
-    script = (ROOT / "workspace" / "ui" / "app.js").read_text(encoding="utf-8")
+    script = page_scripts.source()
     parts = []
     for name in names:
         head = r"^(?:async )?function " + name + r"\("
         found = (re.search(head + r".*\}$", script, re.M)
                  or re.search(head + r".*?^\}$", script, re.M | re.S))
         if found is None:
-            raise AssertionError(f"{name} not found at the top level of app.js")
+            raise AssertionError(f"{name} not found at the top level of the page scripts")
         parts.append(found.group(0))
     return "\n".join(parts) + "\n"
 

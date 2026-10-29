@@ -17,6 +17,7 @@ from workspace import policy  # noqa: E402
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "tools"))
 import decoder_runtime  # noqa: E402  (tools/decoder_runtime.py)
+import page_scripts  # noqa: E402
 
 
 def setUpModule():
@@ -931,7 +932,7 @@ class WorkspacePolicyTests(unittest.TestCase):
 
 class PageModelGateTests(unittest.TestCase):
     """#111 B7a: what Setup and Downloads offer for each card under policy.
-    The page helpers are taken from workspace/ui/app.js by name and run in
+    The page helpers are taken from the page's scripts (workspace/ui) by name and run in
     Node.js, as tests/test_settings_policy_names.py does."""
 
     HELPERS = ("allowed", "modelDownloadsOff", "downloadOff")
@@ -951,12 +952,11 @@ class PageModelGateTests(unittest.TestCase):
         node = shutil.which("node")
         if not node:
             self.skipTest("Node.js not installed")
-        app_js = (Path(__file__).resolve().parents[1] / "workspace" / "ui" / "app.js"
-                  ).read_text(encoding="utf-8")
+        app_js = page_scripts.source()
         parts = []
         for name in self.HELPERS:
             found = re.search(r"^function " + name + r"\(.*?^\}$", app_js, re.M | re.S)
-            self.assertIsNotNone(found, f"{name} not found at the top level of app.js")
+            self.assertIsNotNone(found, f"{name} not found at the top level of the page scripts")
             parts.append(found.group(0))
         script = "\n".join(parts) + "\nconst cases = " + json.dumps(self.CASES) + r""";
 const state = { managed: null };
@@ -988,8 +988,7 @@ console.log(JSON.stringify(result));
         self.assertEqual(r["user models and gpu off"], {**off, "gpu": True})
 
     def test_the_cards_and_the_token_field_use_the_helpers(self):
-        app_js = (Path(__file__).resolve().parents[1] / "workspace" / "ui" / "app.js"
-                  ).read_text(encoding="utf-8")
+        app_js = page_scripts.source()
         self.assertEqual(app_js.count("else if (downloadOff(c))\n    action = itManaged(c);"), 2)
         self.assertIn('$("s-token").disabled = modelDownloadsOff();', app_js)
         self.assertIn("|| isQueued(speaker) || modelDownloadsOff();", app_js)

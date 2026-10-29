@@ -136,7 +136,7 @@ class RecordingTests(unittest.TestCase):
 
     def test_the_meter_rate_follows_the_page(self):
         # At about 30 a second the same figures are wrong, so the check
-        # follows METER_HZ in app.js rather than a copy of it.
+        # follows METER_HZ in recording.js rather than a copy of it.
         self.assertEqual(60, ui_idle_check.meter_hz())
         self.assertEqual(1, len(self.problems(meter_hz=30)))
 

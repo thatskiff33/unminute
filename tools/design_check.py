@@ -23,6 +23,7 @@
 import argparse
 import http.server
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -35,7 +36,11 @@ UI = ROOT / "workspace" / "ui"
 SERVED = ("docs/design/", "docs/screenshots/", "tools/design_check/", "workspace/ui/")
 EDGE = [Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
         Path(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe")]
-APP_TAG = '<script src="app.js"></script>'   # the fake bridge is injected before it
+# The page's first and last scripts (index.html; #414 split app.js into ordered
+# scripts): the fake bridge is injected before the first, and a check that runs
+# steps once the page has started adds them after the last.
+APP_TAG = '<script src="core.js"></script>'
+MAIN_TAG = '<script src="main.js"></script>'
 VISIBLE = 40         # a channel difference above this counts as a visible change
 EDGE_LIMIT_S = 120   # this tool's own limit for one headless Edge screenshot
 NOT_MEASURED = 2     # exit code: headless Edge timed out, so nothing was measured
@@ -134,6 +139,14 @@ CASES = [
     {"name": "home-dark", "board": "Home-Dark.dc.html", "app": "home", "dark": True},
     {"name": "meeting-dark", "board": "Meeting-Dark.dc.html", "app": "meeting", "dark": True},
 ]
+
+
+def page_tags_found():
+    """Whether index.html loads APP_TAG first and MAIN_TAG last, each once."""
+    html = (UI / "index.html").read_text(encoding="utf-8")
+    tags = re.findall(r"<script\b[^>]*></script>", html)
+    return (bool(tags) and tags[0] == APP_TAG and tags[-1] == MAIN_TAG
+            and len(set(tags)) == len(tags))
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -253,8 +266,9 @@ def main():
     cases = [c for c in CASES if not args.cases or c["name"] in args.cases]
     if not cases:
         sys.exit("No such case. Known: " + ", ".join(c["name"] for c in CASES))
-    if APP_TAG not in (UI / "index.html").read_text(encoding="utf-8"):
-        sys.exit("index.html no longer loads app.js as expected; update APP_TAG.")
+    if not page_tags_found():
+        sys.exit("index.html no longer loads core.js and main.js as expected; "
+                 "update APP_TAG and MAIN_TAG.")
     args.out.mkdir(parents=True, exist_ok=True)
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)

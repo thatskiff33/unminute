@@ -32,6 +32,7 @@ if HAVE_DEPS:
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "tools"))
 import decoder_runtime  # noqa: E402  (tools/decoder_runtime.py)
+import page_scripts  # noqa: E402
 
 
 def setUpModule():
@@ -1685,8 +1686,7 @@ class PageSearchTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        page = (Path(__file__).resolve().parents[1] / "workspace" / "ui" / "app.js")
-        cls.page = page.read_text(encoding="utf-8")
+        cls.page = page_scripts.source()
 
     def function(self, name):
         """A function's body in the page; a failure (not an error) if missing."""
@@ -1770,7 +1770,7 @@ class LockedPageTests(unittest.TestCase):
     def setUpClass(cls):
         from workspace import api, diag
         ui = Path(__file__).resolve().parents[1] / "workspace" / "ui"
-        cls.page = (ui / "app.js").read_text(encoding="utf-8")
+        cls.page = page_scripts.source()
         cls.html = (ui / "index.html").read_text(encoding="utf-8")
         cls.locked_methods = api.LOCKED_METHODS
         cls.reasons = set(diag.KEY_REASONS)

@@ -37,11 +37,11 @@ body{margin:0}
 
   <main style="flex: 1; min-width: 0; box-sizing: border-box; padding: 32px 40px; display: flex; flex-direction: column; gap: 20px">
     <h1 style="margin: 0; font-size: 30px; font-weight: 800; letter-spacing: -0.02em">Settings</h1>
-    <!-- #109: IT set the Hand off assistant ("set"); also off, invalid or unreadable, worded in app.js renderAssistantSetting. -->
+    <!-- #109: IT set the Hand off assistant ("set"); also off, invalid or unreadable, worded in settings.js renderAssistantSetting. -->
     <sc-if value="{{assistantSet}}" hint-placeholder-val="{{ false }}">
       <p style="margin: 0; font-size: 14px; line-height: 1.5; color: #566591">Some settings are managed by your organisation. Ask your IT team if you need one changed.</p>
     </sc-if>
-    <!-- #300: policy value names Unminute does not recognise ("set"; one name here), worded in app.js unrecognisedNote. -->
+    <!-- #300: policy value names Unminute does not recognise ("set"; one name here), worded in settings.js unrecognisedNote. -->
     <sc-if value="{{unrecognisedSet}}" hint-placeholder-val="{{ false }}">
       <p style="margin: 0; font-size: 14px; line-height: 1.5; color: #566591; overflow-wrap: anywhere">Your organisation's policy has a value Unminute does not recognise: AllowModelDownloads\x20. Ask your IT team to check its name.</p>
     </sc-if>

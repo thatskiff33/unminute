@@ -157,7 +157,7 @@ def runner():
 
 
 class Handler(design_check.Handler):
-    """The design check's server, with the audit run after app.js (the page's
+    """The design check's server, with the audit run after the page's scripts (its
     content security policy allows scripts from the page's own origin only)."""
 
     def do_GET(self):
@@ -168,7 +168,9 @@ class Handler(design_check.Handler):
             page = (design_check.UI / "index.html").read_text(encoding="utf-8")
             page = page.replace(design_check.APP_TAG,
                                 '<script src="/tools/design_check/fixtures.js"></script>\n'
-                                + design_check.APP_TAG + '\n<script src="page-audit.js"></script>')
+                                + design_check.APP_TAG)
+            page = page.replace(design_check.MAIN_TAG,
+                                design_check.MAIN_TAG + '\n<script src="page-audit.js"></script>')
             return self._send(page.encode("utf-8"), "text/html; charset=utf-8")
         return super().do_GET()
 

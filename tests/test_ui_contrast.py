@@ -25,10 +25,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 import accessibility_check  # noqa: E402
+import page_scripts  # noqa: E402
 
 TOKENS = (ROOT / "workspace" / "ui" / "tokens.css").read_text(encoding="utf-8")
 APP_CSS = (ROOT / "workspace" / "ui" / "app.css").read_text(encoding="utf-8")
-APP_JS = (ROOT / "workspace" / "ui" / "app.js").read_text(encoding="utf-8")
+APP_JS = page_scripts.source()
 INDEX = (ROOT / "workspace" / "ui" / "index.html").read_text(encoding="utf-8")
 BOARDS = ROOT / "docs" / "design" / "boards"
 NON_TEXT = 3.0      # WCAG 2.2 1.4.11; no rounding up
@@ -198,7 +199,7 @@ class TextAndRingOnColourTests(unittest.TestCase):
         # writes no tick as text, and each done step's marker is aria-hidden.
         body = "".join(b for sel, b in rules(APP_CSS, ".done-tick::before"))
         self.assertRegex(body, r'\bcontent\s*:\s*"\\2713"\s*/\s*""')
-        for name, source in (("app.js", APP_JS), ("index.html", INDEX)):
+        for name, source in (("page scripts", APP_JS), ("index.html", INDEX)):
             with self.subTest(file=name):
                 self.assertNotIn("\u2713", source)
                 self.assertNotIn("&#10003;", source)

@@ -42,7 +42,7 @@ import design_check  # noqa: E402
 
 EDGE = next((p for p in design_check.EDGE if p.is_file()), None)
 
-# Loaded after fixtures.js and before app.js: speaker_panel answers from the
+# Loaded after fixtures.js and before the page's scripts: speaker_panel answers from the
 # test's names, suggesting SPEAKER_00 as the app would (a default name, and
 # no one called "You"), and rename_speaker changes them and is recorded.
 BRIDGE = """
@@ -76,7 +76,7 @@ BRIDGE = """
 })();
 """
 
-# Run after app.js, once the scenario has opened the panel: the steps, then
+# Run after the page's scripts, once the scenario has opened the panel: the steps, then
 # the observations as JSON in <pre id="you-result">.
 STEPS = """
 (async () => {
@@ -183,8 +183,8 @@ FOCUS_STEPS = """
 
 
 class Handler(design_check.Handler):
-    """The design check's server, with the wrapper before app.js and the steps
-    after it (the page's content security policy allows scripts from the
+    """The design check's server, with the wrapper before the page's scripts and
+    the steps after them (the page's content security policy allows scripts from the
     page's own origin only)."""
     steps = STEPS
 
@@ -199,7 +199,9 @@ class Handler(design_check.Handler):
             page = page.replace(design_check.APP_TAG,
                                 '<script src="/tools/design_check/fixtures.js"></script>\n'
                                 '<script src="you-bridge.js"></script>\n'
-                                + design_check.APP_TAG + '\n<script src="you-steps.js"></script>')
+                                + design_check.APP_TAG)
+            page = page.replace(design_check.MAIN_TAG,
+                                design_check.MAIN_TAG + '\n<script src="you-steps.js"></script>')
             return self._send(page.encode("utf-8"), "text/html; charset=utf-8")
         return super().do_GET()
 

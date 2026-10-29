@@ -130,6 +130,38 @@ real time, and remove it when the cause is fixed.
   channels were fine). Convert to an interleaved format (`flt`, not `fltp`) before reading
   samples, as `workspace/decode_child.py` does.
 
+## Page scripts
+
+- **The page is several ordered classic scripts, not one app.js** (#414 step 3, the owner's
+  decision DEC-082). `workspace/ui/index.html` lists them in order, each a plain
+  `<script src>` with no `async`, `defer` or `type="module"`: the window loads the page from
+  a `file://` URL, where Chromium refuses ES modules (origin `null`). They share one global
+  scope, as app.js's code did. Only the last, `main.js`, runs anything as the page loads
+  (wiring, start-up, the error listeners); the others only declare, so a function can live in
+  any of them as long as it loads before `main.js`.
+- **Adding a script.** List it in `index.html` before `main.js`, in `PAGE_SCRIPTS` in
+  `main.js` in the same order, and in `packaging/app-allowlist.json`. Start it with
+  `"use strict";` and declare only. `tests/test_page_scripts.py` fails if the three sets or
+  the order differ, if a script other than `main.js` runs code at load, or if two scripts
+  declare the same top-level name: a repeated `const`, `let` or `class` stops the later
+  script loading at all, and a repeated `function` silently replaces the earlier one.
+- **Tests that read the page's code** use `tests/page_scripts.py`: `source()` joins the
+  scripts in load order, so a function is found by name whichever file it is in. The I3
+  bridge-name guard and the T1 "opens no link" guard read `every_source()`, every `.js` file
+  under `workspace/ui`, whether `index.html` loads it or not.
+- **A page error's line names its script by number.** `report_ui_error` still takes a fixed
+  kind, a line and a column, and no file name. For an error in one of the page's scripts, the
+  page sends the script's place in `PAGE_SCRIPTS` (`core.js` is 1) times
+  100000 plus the line: 300120 is line 120 of the third script, `meetings.js`. A line from
+  any other script (none in the app; `fixtures.js` in the design check) is sent as it is.
+  The largest value fits the bridge's limit of 10,000,000 while there are fewer than 100
+  scripts of fewer than 100,000 lines each. In headless Edge with the page opened from
+  `file://`, as the app opens it, the browser hides the details of the page's own script
+  errors ("Script error.", no file, line 0), with one app.js as with the split (probe of
+  30 Oct 2026, #414), so the page sends 0 there; the numbers show where the page is served
+  over HTTP, as in the design check. Whether the real WebView2 window does the same is to
+  confirm.
+
 ## Windows, WebView2 and pythonnet
 
 - **WebView2 objects are usable only on the UI thread.** Marshal calls with `form.Invoke`.

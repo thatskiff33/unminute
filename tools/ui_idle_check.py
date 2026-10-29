@@ -15,7 +15,7 @@
 # open the Meetings page with a recording going (#340), visible and hidden, on a
 # simulated 120 Hz display (fixtures.js: headless Edge runs almost no animation
 # frames under virtual time), and count the clock and level polls and the level
-# meter's draws: about METER_HZ a second while visible (workspace/ui/app.js; the
+# meter's draws: about METER_HZ a second while visible (workspace/ui/recording.js; the
 # owner's decision of 23 Oct 2026, #216), none while hidden, and drawing again
 # within a second of being shown. The next shows the locked screen (#111 C4b)
 # and leaves it for a minute: it must ask for the status, call only what the
@@ -80,7 +80,7 @@ LIVE_MS = 20000
 DISPLAY_HZ = 120             # the simulated display: the meter draws every 2nd frame
 # The level meter's draws a second may be this share either side of METER_HZ.
 METER_TOLERANCE = 0.1
-APP_JS = design_check.UI / "app.js"
+METER_JS = design_check.UI / "recording.js"   # METER_HZ
 LOCKED_SCENARIO = "locked"   # the locked screen (#111 C4b)
 LOCKED_LATE_SCENARIO = "locked-after-error"   # ...after a failed first status()
 RESULT = re.compile(r'<pre id="perf-result">(.*?)</pre>', re.DOTALL)
@@ -324,10 +324,10 @@ def sanity(results):
 
 
 def meter_hz():
-    """METER_HZ in workspace/ui/app.js: the level meter's draws a second."""
-    found = re.search(r"^const METER_HZ = (\d+);", APP_JS.read_text(encoding="utf-8"), re.M)
+    """METER_HZ in workspace/ui/recording.js: the level meter's draws a second."""
+    found = re.search(r"^const METER_HZ = (\d+);", METER_JS.read_text(encoding="utf-8"), re.M)
     if not found:
-        raise RuntimeError("app.js no longer sets METER_HZ as expected; update meter_hz().")
+        raise RuntimeError("recording.js no longer sets METER_HZ as expected; update meter_hz().")
     return int(found.group(1))
 
 
@@ -375,8 +375,9 @@ def main():
     args = parser.parse_args()
     if args.page_ms <= 0:
         parser.error("--page-ms must be more than 0")
-    if design_check.APP_TAG not in (design_check.UI / "index.html").read_text(encoding="utf-8"):
-        sys.exit("index.html no longer loads app.js as expected; update design_check.APP_TAG.")
+    if not design_check.page_tags_found():
+        sys.exit("index.html no longer loads core.js and main.js as expected; "
+                 "update design_check.APP_TAG and MAIN_TAG.")
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), design_check.Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{server.server_address[1]}"

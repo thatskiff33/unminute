@@ -36,6 +36,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 import keyprotect  # noqa: E402
 
 from workspace import diag, instance, launch, launchcheck, update  # noqa: E402
+import page_scripts  # noqa: E402
 
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av", "cryptography"))
 
@@ -1568,7 +1569,7 @@ class FinishOnlyTests(unittest.TestCase):
 
     def test_the_page_shows_the_banner_and_hides_record_and_import(self):
         from workspace.app import FINISH_ONLY_BANNER
-        js = (ROOT / "workspace" / "ui" / "app.js").read_text(encoding="utf-8")
+        js = page_scripts.source()
         html = (ROOT / "workspace" / "ui" / "index.html").read_text(encoding="utf-8")
         css = (ROOT / "workspace" / "ui" / "app.css").read_text(encoding="utf-8")
         text = re.search(r'const FINISH_ONLY_TEXT = "([^"]*)" \+\s*"([^"]*)";', js)

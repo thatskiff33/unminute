@@ -3,7 +3,7 @@
 # at least 1), and its easing is time-based so the motion does not depend on
 # how often it draws. About 60 a second is the owner's decision of 23 Oct 2026,
 # after a short spell at 30 (#315) that saved too little. The pure helpers are
-# taken from workspace/ui/app.js by name and run in Node.js (the CI images
+# taken from the page's scripts (workspace/ui) by name and run in Node.js (the CI images
 # have it, as the JS syntax job uses).
 #   python tools/run_tests.py
 
@@ -13,15 +13,16 @@ import shutil
 import subprocess
 import unittest
 from pathlib import Path
+import page_scripts
 
 ROOT = Path(__file__).resolve().parents[1]
-APP_JS = (ROOT / "workspace" / "ui" / "app.js").read_text(encoding="utf-8")
+APP_JS = page_scripts.source()
 HELPERS = ("meterStep", "meterFrame", "easeShare", "ease", "meterDt", "restartMeter")
 CONSTANTS = ("METER_HZ", "EASE_REF_HZ")
 
 
 def source_of(name):
-    """A top-level function or constant from app.js, as written there."""
+    """A top-level function or constant from the page scripts, as written there."""
     if name in CONSTANTS:
         found = re.search(r"^const " + name + r" = [^;\n]+;$", APP_JS, re.M)
     else:
@@ -29,7 +30,7 @@ def source_of(name):
                  if re.search(r"^function " + name + r"\(.*\}$", APP_JS, re.M)
                  else re.search(r"^function " + name + r"\(.*?^\}$", APP_JS, re.M | re.S))
     if found is None:
-        raise AssertionError(f"{name} not found at the top level of app.js")
+        raise AssertionError(f"{name} not found at the top level of the page scripts")
     return found.group(0)
 
 

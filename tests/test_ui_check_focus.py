@@ -4,12 +4,12 @@
 # blur() whatever the window, but sends the focus and blur events only while
 # the page has focus, and a check started from a terminal often cannot bring
 # its window to the front. The page ends an edit on the span's blur event
-# (startEditing in workspace/ui/app.js), so a bare blur() in an unfocused
+# (startEditing in workspace/ui/speakers.js), so a bare blur() in an unfocused
 # window left the edit open and every poll skipped the transcript.
 #
 # The step's script is taken from the tool by ast (importing the tool opens
 # windows) and run in Node.js against a small stand-in for those Chromium
-# rules, with the page's listener wired as app.js wires it. The CI images
+# rules, with the page's listener wired as the page wires it. The CI images
 # have Node.js, as tests/test_level_meter.py notes.
 #   python tools/run_tests.py
 
@@ -20,10 +20,11 @@ import shutil
 import subprocess
 import unittest
 from pathlib import Path
+import page_scripts
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = (ROOT / "tools" / "workspace_ui_check.py").read_text(encoding="utf-8")
-APP_JS = (ROOT / "workspace" / "ui" / "app.js").read_text(encoding="utf-8")
+APP_JS = page_scripts.source()
 # The script the after_edit step ran before #308.
 OLD_END_EDIT = "g.span.blur(); await wait(1500);"
 
@@ -67,7 +68,7 @@ class Element extends EventTarget {
 const wait = () => Promise.resolve();      // the tool's waits do not matter here
 async function run(windowFocused, step) {
   globalThis.document = { activeElement: null, hasFocus: () => windowFocused };
-  // The page's edit, as startEditing and stopEditing in app.js wire it.
+  // The page's edit, as startEditing and stopEditing in the page wire it.
   const page = { editing: null, stops: 0 };
   const stopEditing = () => {
     if (!page.editing) return;
@@ -182,11 +183,11 @@ console.log(JSON.stringify(blurs));
         # A second guard behind the helper's one-blur rule: a repeated blur
         # cannot end the edit twice.
         start = re.search(r"^function startEditing\(span\) \{.*?^\}$", APP_JS, re.M | re.S)
-        self.assertIsNotNone(start, "startEditing not found in app.js")
+        self.assertIsNotNone(start, "startEditing not found in the page scripts")
         self.assertIn('span.addEventListener("blur", stopEditing, { once: true });',
                       start.group(0))
         stop = re.search(r"^function stopEditing\(\) \{.*?^\}$", APP_JS, re.M | re.S)
-        self.assertIsNotNone(stop, "stopEditing not found in app.js")
+        self.assertIsNotNone(stop, "stopEditing not found in the page scripts")
         self.assertIn("if (!span) return;", stop.group(0))
 
     def test_the_check_uses_the_helper_and_reports_focus(self):
