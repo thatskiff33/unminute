@@ -1240,8 +1240,14 @@ class RefusingProtector:
 def locked_workspace(root):
     """A workspace holding one synthetic meeting titled LOCKED_TITLE, made
     with the app's own protector under root, then opened locked: with the
-    refusing protector and on_unavailable="lock", as __main__ opens it."""
+    refusing protector and on_unavailable="lock", as __main__ opens it.
+    Both tools' --locked-only processes come here, so the decoder is set up
+    here: its AppContainer cannot read a development Python (#299, #494), and
+    the import decodes (nothing to do in a package's own runtime)."""
+    import decoder_runtime
+
     from workspace import media
+    decoder_runtime.use()
     ws = Workspace(root / "ws", root / "models", start=False, battery=False)
     try:
         media.import_recording(ws.store, ws.media, write_wav(root / "synthetic-locked.wav", 5),
