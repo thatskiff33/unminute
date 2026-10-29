@@ -167,4 +167,3 @@ const STAGES = {
   inbox: "Transcribing", review: "In review", handoff: "Reviewed: hand off",
   cleanup: "Cleanup",
 };
-
