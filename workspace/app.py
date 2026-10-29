@@ -33,16 +33,24 @@ from workspace.chunking import plan_chunks
 # Shared with the modules split out of this one (#414). ERROR_KINDS is
 # imported from here by workspace/api.py, and _computer_seconds by the tests.
 from workspace.app_common import (ERROR_KINDS, MANAGED_OFF, WorkspaceError,  # noqa: F401
-                                  _expected_import_error, _import_incident, _import_message)
+                                  _expected_import_error, _hold_id, _import_incident,
+                                  _import_message)
 # The workspace's own files and folders (#111 C7): named once, in diag (and
 # the lid's restore record in power).
-from workspace.diag import (AUDIT_FOLDER, DB_FILE, LOGS_FOLDER, SETTINGS_FILE,
-                            SETTINGS_UNREADABLE_FILE)
+from workspace.diag import AUDIT_FOLDER, DB_FILE, LOGS_FOLDER, SETTINGS_FILE
 from workspace.safe_paths import UnsafePathError, validate_input_file
 # Microphone recording and live drafts (#414): Workspace inherits them. The
 # names moved with them stay importable from here.
 from workspace.recording_ws import (COMPUTER_POLICY_STOP, SOURCES_CHANGED,  # noqa: F401
                                     RecordingMixin, _computer_seconds)
+# Settings, handoff and managing watched folders (#414): Workspace inherits
+# them too, and the names moved with them stay importable from here (the
+# tests import Settings, DEFAULT_SETTINGS and SETTINGS_VERSION from here).
+from workspace.handoff_ws import HandoffMixin
+from workspace.settings_ws import (DEFAULT_SETTINGS, DISPLAY_CACHE_S,  # noqa: F401
+                                   RECORDING_DISPLAYS, SETTINGS_MAX_BYTES, SETTINGS_VERSION,
+                                   SPEECH_MODELS, Settings, SettingsMixin, _model_note)
+from workspace.watched_ws import WatchedFoldersMixin
 from workspace.store import (DAMAGED_REFUSAL, DamagedContent, KeyMissing, Store, StoreError,
                              default_root, mark_compaction_owed, quick_check_file)
 from workspace.worker import GpuWhisperEngine, WorkerEngine, WorkerHandle, safe_message
@@ -67,10 +75,6 @@ AUDIO_UNREADABLE = "The meeting audio could not be read. It may be damaged."
 WATCH_MAX_WAIT_S = 60.0             # watched folders: a scan is at most this late
 POLICY_IDLE_WAIT_S = 30.0           # policy thread when not recording
 LID_RETRY_S = 60.0                  # a lid restore that failed is tried again this often
-# Settings and Setup are polled while open; what they show from disk (model
-# and component files) or Credential Manager is worked out at most this often,
-# and again at once after a download, removal, token or settings change (R7b).
-DISPLAY_CACHE_S = 60.0
 PAGE_ERRORS = 20                    # page script errors recorded per run (report_ui_error)
 # The "You" suggestion (#108): a speaker's default name (speaker_names), and
 # how many meetings' track-activity flags are kept in memory.
@@ -90,29 +94,6 @@ ASSISTANT_WITHHELD = {
     "unreadable": ("Your organisation's settings could not be read, so Copy and open is not "
                    "available. Use Copy prompt and transcript instead, and ask your IT team."),
 }
-SETTINGS_VERSION = 1                # settings.json format (R11): raise if a key's meaning changes
-SETTINGS_MAX_BYTES = 64 * 1024      # a larger settings.json is not one the app wrote
-
-# The speech models Settings offers, in the order it lists them.
-SPEECH_MODELS = (*asr_engines.PARAKEET_MODELS, *asr_engines.WHISPER_MODELS)
-
-DEFAULT_SETTINGS = {
-    "mode": resources.QUIET,                       # quiet | faster
-    "model": asr_engines.RECOMMENDED_PARAKEET,
-    "speakers": True,                              # separate speakers after transcription
-    "battery_override": False,                     # process automatically on battery
-    "onboarded": False,                            # guided setup finished or skipped (#19)
-    "microphone": False,                           # microphone recording (#30), off by default
-    "computer_audio": False,                       # computer audio as a second track (#108)
-    "gpu_speakers": False,                         # NVIDIA for speaker identification (Faster)
-    "recording_display": "flow",                   # flow | spectrum | wave, while recording
-    "lid_override": False,                         # lid "Do nothing" while recording (#172)
-    "live_drafts": False,                          # draft text while recording (#104), off
-    # What the draft follows with computer audio on (#104, the owner's
-    # decision of 22 Oct 2026): microphone | mix (both tracks, mixed live).
-    "live_drafts_audio": "microphone",
-}
-RECORDING_DISPLAYS = ("flow", "spectrum", "wave")
 
 
 DOWNLOADS_OFF = ("Downloads are turned off by your organisation. Ask your IT team to install "
@@ -162,33 +143,6 @@ def _key_line(locked, code):
     return f"Key: locked ({', '.join(parts)})"
 
 
-def _model_note(name, state, downloads_allowed=True, only_it_models=False):
-    """What Settings says beside the picker about a speech model that is not
-    ready, and why Transcribe again refuses it (#244); None when it is ready.
-    Manage downloads, which offers every speech model (#246), is named only
-    when managed policy allows downloads (K3). only_it_models: downloads are
-    allowed, but this machine install uses only IT's models (AllowUserModels
-    at 0, #111 B7a), so the note says that rather than that downloads are off
-    (#451)."""
-    if state == "ready":
-        return None
-    label = asr_engines.label(name)
-    what = "damaged" if state == "invalid" else "not downloaded"
-    if only_it_models and not downloads_allowed:
-        what = "damaged" if state == "invalid" else "not installed"
-        return (f"{label} is {what}, and your organisation uses only the models your IT team "
-                "installs on this computer. Choose another speech model, or ask your IT "
-                "team to install or repair it.")
-    if not downloads_allowed:
-        return (f"{label} is {what}, and downloads are turned off by your organisation. "
-                "Choose another speech model, or ask your IT team to install it.")
-    if state == "invalid":
-        return (f"{label} is damaged. Repair it in Settings > Manage downloads, or choose "
-                "another speech model.")
-    return (f"{label} is not downloaded. Download it in Settings > Manage downloads, or "
-            "choose another speech model.")
-
-
 _JOINERS = "\u200c\u200d"          # zero-width non-joiner and joiner (_plain_label)
 
 
@@ -215,153 +169,7 @@ def _clean_text(text, limit, label=False):
     return text
 
 
-class Settings:
-    """Configuration only (no content), kept beside the database.
-
-    Values read from settings.json pass the same checks as values set from
-    the page: the file is writable by anything running as the user, so an
-    invalid value falls back to its default instead of being trusted. Test
-    engines ("test:module:function") are accepted only when the tests ask for
-    them (allow_test_engines); they would otherwise let a settings value
-    import any module in the worker."""
-
-    def __init__(self, path, allow_test_engines=False):
-        self.path = Path(path)
-        self.allow_test_engines = allow_test_engines
-        self.values = dict(DEFAULT_SETTINGS)
-        self.unreadable = False            # the file exists but could not be read: all defaults
-        self._locked = False               # ...because it could not be opened (in use)
-        self._save_lock = threading.Lock()
-        self._load(self._read())
-
-    def _load(self, saved):
-        """Apply saved settings over the defaults."""
-        self.values = dict(DEFAULT_SETTINGS)
-        self.repaired = []                 # keys on their default: the saved value was refused
-        self.version = SETTINGS_VERSION
-        # Saved values this version does not use, written back unchanged (R11):
-        # settings only a newer version knows, and a newer version's value for
-        # a setting this one knows but cannot use. A rollback then loses none.
-        self._kept = {}
-        version = saved.pop("settings_version", 0)
-        newer = isinstance(version, int) and not isinstance(version, bool) \
-            and SETTINGS_VERSION < version < 10 ** 6
-        if newer:
-            self.version = version
-        for key, value in saved.items():
-            if key not in DEFAULT_SETTINGS:
-                self._kept[key] = value
-                continue
-            try:
-                self._check(key, value)
-                self.values[key] = value
-            except WorkspaceError:
-                self.repaired.append(key)
-                if newer:
-                    self._kept[key] = value
-
-    def _read(self):
-        """The saved settings as a dict ({} if there is no file yet). Sets
-        unreadable (and _locked, if the file could not even be opened)."""
-        self.unreadable = self._locked = False
-        data = None
-        for attempt in range(2):                # once more: an antivirus scan may hold it
-            try:
-                with open(self.path, "rb") as f:
-                    data = f.read(SETTINGS_MAX_BYTES + 1)
-                break
-            except FileNotFoundError:
-                return {}
-            except OSError:
-                time.sleep(0.2 * (1 - attempt))
-        if data is None:                        # in use: unknown, not damaged
-            self.unreadable = self._locked = True
-            return {}
-        try:
-            saved = json.loads(data.decode("utf-8-sig")) \
-                if len(data) <= SETTINGS_MAX_BYTES else None
-            json.dumps(saved, indent=2)         # too deeply nested to write back: unreadable
-        except (ValueError, RecursionError):
-            saved = None
-        if not isinstance(saved, dict):
-            self.unreadable = True
-            return {}
-        return saved
-
-    def __getitem__(self, key):
-        return self.values[key]
-
-    def _check(self, key, value):
-        if key not in DEFAULT_SETTINGS:
-            raise WorkspaceError("Unknown setting.")
-        if key == "mode" and value not in (resources.QUIET, resources.FASTER):
-            raise WorkspaceError("Choose Quiet or Faster.")
-        if key == "recording_display" and value not in RECORDING_DISPLAYS:
-            raise WorkspaceError("Choose Flowing wave, Spectrum or Sound wave.")
-        if key == "live_drafts_audio" and value not in drafts.AUDIO_CHOICES:
-            raise WorkspaceError("Choose the microphone, or the microphone and computer audio.")
-        if key == "model" and not (isinstance(value, str) and (
-                asr_engines.is_parakeet(value) or asr_engines.is_whisper(value)
-                or (self.allow_test_engines and value.startswith(engines.TEST_PREFIX)))):
-            raise WorkspaceError("Unknown speech model.")
-        if (key in ("speakers", "battery_override", "onboarded", "microphone",
-                    "computer_audio", "gpu_speakers", "lid_override", "live_drafts")
-                and not isinstance(value, bool)):
-            raise WorkspaceError("Expected on or off.")
-
-    def update(self, **changes):
-        for key, value in changes.items():
-            self._check(key, value)
-        with self._save_lock:                      # page calls run on their own threads
-            if self._locked:
-                # It could not be opened at start: read it now, rather than
-                # replace settings that may be good with the defaults.
-                self._load(self._read())
-                if self._locked:
-                    raise WorkspaceError("Unminute cannot open its settings file just now. "
-                                         "Try again in a moment.")
-            values = {**self.values, **changes}
-            kept = {k: v for k, v in self._kept.items() if k not in changes}
-            # settings_version is the newest version that wrote the file. A key's
-            # meaning never changes between versions: a new meaning takes a new key.
-            saved = {"settings_version": self.version, **values, **kept}
-            text = json.dumps(saved, indent=2)
-            if len(text.encode("utf-8")) > SETTINGS_MAX_BYTES:
-                text = json.dumps(saved, separators=(",", ":"))
-            if len(text.encode("utf-8")) > SETTINGS_MAX_BYTES:
-                kept = {}                          # not a file the app wrote: drop the extras
-                text = json.dumps({"settings_version": self.version, **values})
-            if self.unreadable and self.path.exists():
-                # Copied once, aside, before it is replaced: it may hold values
-                # a newer version wrote, or the read failed only for a moment.
-                # A copy, so a write that fails next still leaves it in place.
-                import shutil
-                try:
-                    shutil.copyfile(self.path, self.path.with_name(SETTINGS_UNREADABLE_FILE))
-                except OSError:
-                    pass
-            # Written in full or not at all: flushed to disk before the swap,
-            # so a power cut leaves the old file or the new one, never a part.
-            tmp = self.path.with_suffix(".tmp")
-            with open(tmp, "w", encoding="utf-8") as f:
-                f.write(text)
-                f.flush()
-                os.fsync(f.fileno())
-            for attempt in range(3):
-                try:
-                    tmp.replace(self.path)
-                    break
-                except PermissionError:            # held open for a moment (an antivirus scan)
-                    if attempt == 2:
-                        raise
-                    time.sleep(0.05)
-            # Only once the file is saved does the app use the new values.
-            self.values, self._kept = values, kept
-            self.repaired = [k for k in self.repaired if k not in changes]
-            self.unreadable = False
-
-
-class Workspace(RecordingMixin):
+class Workspace(RecordingMixin, SettingsMixin, HandoffMixin, WatchedFoldersMixin):
     def __init__(self, root=None, cache_dir=None, *, speaker_model="pyannote",
                  idle_unload_s=None, battery=None, start=True, allow_test_engines=False,
                  policy_reader=None, check_integrity=False, lid_switch=None, protector=None,
@@ -739,33 +547,6 @@ class Workspace(RecordingMixin):
             raise StoreError("Unminute could not use its workspace's lock file, so it "
                              "did not open the workspace. Ask your IT team.") from None
 
-    # -- Settings and Setup data (R7b) -------------------------------------------------
-
-    def _after_download(self):
-        """A download or check ended: what Setup shows is read again, and
-        processing that waited carries on."""
-        self._forget_display()
-        self._wake.set()
-
-    def _display_value(self, key, compute, version=None):
-        """A value Settings or Setup shows, worked out again only after
-        DISPLAY_CACHE_S, when `version` changes, or after _forget_display()."""
-        now = self._clock()
-        with self._display_lock:
-            hit, gen = self._display.get(key), self._display_gen
-        if hit and hit[0] > now and hit[1] == version:
-            return hit[2]
-        value = compute()
-        with self._display_lock:
-            if self._display_gen == gen:     # not forgotten meanwhile: still current
-                self._display[key] = (now + DISPLAY_CACHE_S, version, value)
-        return value
-
-    def _forget_display(self):
-        with self._display_lock:
-            self._display.clear()
-            self._display_gen += 1
-
     # -- managed policy (#111 A5) ---------------------------------------------------
 
     def _allowed(self, name):
@@ -1142,7 +923,7 @@ class Workspace(RecordingMixin):
             model=model, model_revision=spec.revision if spec else "test",
             precision="int8", config={"chunking": "v1"}, chunk_plan=plan)
 
-    # -- watched folders (#23) -------------------------------------------------------
+    # -- watched folders (#23; managing them is in workspace/watched_ws.py, #414) ------
 
     def _watch_loop(self):
         """Reconcile watched folders LAUNCH_SCAN_DELAY_S after launch (so
@@ -1186,67 +967,6 @@ class Workspace(RecordingMixin):
                     self.last_scan = {"managed_off": True}  # turned off part-way
         except Exception as exc:             # a scan problem must not stop watching
             self.last_scan = {"error": safe_message(exc)}
-
-    def watched_folders(self):
-        return {"folders": intake.summary(self.store), "last_scan": self.last_scan,
-                "interval_minutes": intake.SCAN_INTERVAL_S // 60}
-
-    def add_watched_folder(self, path, include_existing):
-        if not self._allowed("AllowWatchedFolders"):
-            raise WorkspaceError(MANAGED_OFF.format(what="Watched folders"))
-        if not isinstance(include_existing, bool):
-            raise WorkspaceError("Expected yes or no.")
-        try:
-            fid = intake.add_folder(self.store, path, include_existing)
-        except intake.IntakeError as exc:
-            raise WorkspaceError(str(exc)) from exc
-        self.audit.record("folder_added", folder=fid, existing=include_existing)
-        self._scan_wake.set()   # not scan_now: finish-only still saves it (B5b)
-        return fid
-
-    def set_folder_active(self, fid, active):
-        if not isinstance(active, bool):
-            raise WorkspaceError("Expected on or off.")
-        intake.set_active(self.store, _hold_id(fid), active)
-        if active:
-            self._scan_wake.set()
-
-    def set_folder_authority(self, fid, delete_originals=None, fetch_cloud=None,
-                             confirmed=False):
-        """confirmed: the person said Yes in the Windows question (the bridge
-        asks); granting deletion is refused without it (#111 A6)."""
-        fid = _hold_id(fid)
-        for v in (delete_originals, fetch_cloud):
-            if v is not None and not isinstance(v, bool):
-                raise WorkspaceError("Expected on or off.")
-        if delete_originals and not self._allowed("AllowDeleteOriginals"):
-            raise WorkspaceError(MANAGED_OFF.format(what="Deleting original recordings"))
-        if delete_originals and confirmed is not True:
-            raise WorkspaceError("Allowing the app to delete originals needs your confirmation "
-                                 "in Windows.")
-        if delete_originals is not None:
-            before = intake.authority_for(self.store, fid)
-            intake.set_delete_originals(self.store, fid, delete_originals)
-            after = intake.authority_for(self.store, fid)
-            if after != before:                   # changed: granted (confirmed) or withdrawn
-                self.audit.record("delete_authority", folder=fid, granted=after)
-        if fetch_cloud is not None:
-            intake.set_fetch_cloud(self.store, fid, fetch_cloud)
-            self._scan_wake.set()
-
-    def remove_folder(self, fid):
-        fid = _hold_id(fid)
-        row = self.store._one("SELECT delete_originals FROM watched_folders WHERE id = ?",
-                              (fid,))
-        intake.remove_folder(self.store, fid)
-        if row is not None and audit.HEX32.fullmatch(fid):
-            self.audit.record("folder_removed", folder=fid,
-                              had_authority=bool(row["delete_originals"]))
-
-    def scan_now(self):
-        self._not_locked()
-        self._not_finish_only()
-        self._scan_wake.set()
 
     # -- processing thread ------------------------------------------------------------
 
@@ -2536,13 +2256,7 @@ class Workspace(RecordingMixin):
                  "completed_at": r["completed_at"], "result": r["result"]}
                 for r in holds.receipts(self.store)]
 
-    def _speech_states(self):
-        """Each speech model's state ("ready", "missing" or "invalid"), worked
-        out as the Downloads page does (setup.status) and kept as long as its
-        cards (DISPLAY_CACHE_S, or until a download, removal or check ends).
-        Every speech model has a card there (#246; a test keeps it so)."""
-        cards = self._display_value("cards", lambda: setup.cards(self.cache_dir))
-        return {c["name"]: c["state"] for c in cards if c["role"] == "speech"}
+    # -- settings (the rest is in workspace/settings_ws.py, #414) ----------------------
 
     def get_settings(self):
         self.policy.refresh()             # re-read on each poll while Settings or Downloads is open
@@ -2660,157 +2374,7 @@ class Workspace(RecordingMixin):
         self._policy_wake.set()           # live drafts follow the switch at once (#104)
         return self.get_settings()
 
-    # -- handoff (#22) ------------------------------------------------------------------
-
-    def _handoff(self, fn, *args):
-        try:
-            return fn(*args)
-        except (handoff.HandoffError, clipboard.ClipboardError) as exc:
-            raise WorkspaceError(str(exc)) from exc
-        except DamagedContent:
-            # Part of the meeting cannot be read (#111 C2b-2): no preview, so
-            # nothing is copied or saved either (_checked builds it first).
-            raise WorkspaceError(DAMAGED_REFUSAL) from None
-
-    @property
-    def templates(self):
-        """The handoff templates (templates.sealed, sealed under the workspace
-        key; #111 C2c), built at their first use in a session, when a plain
-        templates.json from an earlier version is converted. While the store
-        is locked nothing is built, read, converted or logged: its
-        KeyUnavailable is raised (C4a's bridge gate refuses first)."""
-        with self._templates_lock:
-            if self._templates is None:
-                if self.store.locked is not None:
-                    raise self.store.locked
-                sealer = self.store.file_sealer(handoff.TEMPLATES_FILE)
-                templates = handoff.open_templates(self.root, sealer)
-                if templates.unreadable:
-                    self.log.write("templates_unreadable")      # content-free (P3)
-                self._templates = templates
-            return self._templates
-
-    def handoff_templates(self):
-        return self.templates.all()
-
-    def save_template(self, tid, title, prompt):
-        if tid is not None and (not isinstance(tid, str) or len(tid) > 40):
-            raise WorkspaceError("That template no longer exists.")
-        if not isinstance(title, str) or not isinstance(prompt, str):
-            raise WorkspaceError("Expected text.")
-        return self._handoff(self.templates.save, tid, title, prompt)
-
-    def reset_template(self, tid):
-        if not isinstance(tid, str):
-            raise WorkspaceError("That template no longer exists.")
-        self._handoff(self.templates.reset, tid)
-
-    def handoff_preview(self, mid, tid, anonymise=False):
-        """Exactly what Copy and Save will produce, plus the options in use.
-        anonymise (this handoff only, not stored) replaces speaker names with
-        Speaker 1, Speaker 2."""
-        self._meeting(mid)
-        if not isinstance(anonymise, bool):
-            raise WorkspaceError("Expected yes or no.")
-        template = self._handoff(self.templates.get, tid)
-        out = self._handoff(handoff.build, self.store, mid, template, anonymise)
-        if self._allowed("HandoffFilenameIncludesTitle") and not anonymise:
-            out = {**out, "filename": handoff.title_filename(self.store.meeting(mid)["title"],
-                                                             out["filename"])}
-        return {**out, "options": handoff.options(self.store, mid),
-                "assistant": self._assistant_shown(self._assistant())}
-
-    def set_handoff_options(self, mid, omitted, redactions):
-        m = self._meeting(mid)
-        if not m["reviewed_at"]:
-            raise WorkspaceError("Confirm the transcript review first.")
-        self._handoff(handoff.set_options, self.store, mid, omitted, redactions)
-
-    def _checked(self, mid, tid, kind, expected, anonymise=False):
-        """The handoff text, refused unless it is exactly what was previewed."""
-        out = self.handoff_preview(mid, tid, anonymise)
-        if not isinstance(expected, str) or out["digests"][kind] != expected:
-            raise WorkspaceError("The handoff changed since the preview. Check the preview "
-                                 "again, then copy or save.")
-        return out
-
-    def copy_handoff(self, mid, tid, kind, expected, anonymise=False):
-        if kind not in ("combined", "prompt_only"):
-            raise WorkspaceError("Choose what to copy.")
-        out = self._checked(mid, tid, kind, expected, anonymise)
-        sequence = self._handoff(clipboard.copy_text, out[kind])
-        self._record_handoff("handoff_copied", mid, out, what=kind)
-        minutes = self.policy.current().get("ClipboardClearMinutes")
-        if minutes:
-            self._schedule_clipboard_clear(sequence, minutes * 60)
-        return {"chars": len(out[kind]), "long": out["long"] and kind == "combined",
-                "clears_in_minutes": minutes or None}
-
-    def _record_handoff(self, kind, mid, out, **extra):
-        """The audit record of a handoff that left the app: the meeting,
-        whether the template is a built-in one (possibly edited) or the
-        user's own, and counts. Never the template's text or anything copied
-        (#111 C5). A handoff whose details cannot be read for the record is
-        logged as an incident and still goes ahead."""
-        try:
-            fields = {"meeting": mid,
-                      "template": ("built_in" if out["template"]["id"] in handoff.BUILTIN
-                                   else "custom"),
-                      "names_replaced": bool(out["anonymised"]), "omitted": out["omitted"],
-                      "redactions": out["redactions"], **extra}
-        except (KeyError, TypeError) as exc:
-            self.log.incident("audit", exc)
-            return
-        self.audit.record(kind, **fields)
-
-    # -- copy and open the assistant (#109) ---------------------------------------------
-
-    def _assistant(self, p=None):
-        """(name, address) of the assistant Copy and open uses, or None when
-        policy turns it off or sets it badly. IT sets the name and address
-        together: one without the other, or either one invalid, withholds the
-        button rather than falling back to the default, so the app never opens
-        ChatGPT where IT meant something else. An unreadable policy withholds
-        it too (AllowHandoffAssistant is a permission)."""
-        p = p or self.policy.current()
-        if not p.get("AllowHandoffAssistant"):
-            return None
-        keys = ("HandoffAssistantName", "HandoffAssistantUrl")
-        if any(k in p.invalid for k in keys):
-            return None
-        name, url = (p.get(k) for k in keys)
-        if name is None and url is None:
-            return handoff.DEFAULT_ASSISTANT
-        if name is None or url is None:
-            return None
-        return name, url
-
-    @staticmethod
-    def _assistant_shown(assistant):
-        """What the page may show: the name and the host, never a path or query."""
-        if assistant is None:
-            return None
-        from urllib.parse import urlsplit
-        return {"name": assistant[0], "host": urlsplit(assistant[1]).hostname}
-
-    def _assistant_setting(self, p):
-        """For Settings: whether IT set the assistant, and what is in force."""
-        keys = ("AllowHandoffAssistant", "HandoffAssistantName", "HandoffAssistantUrl")
-        if not any(p.managed(k) for k in keys):
-            return None
-        assistant = self._assistant(p)
-        if assistant is not None:
-            return {"state": "set", **self._assistant_shown(assistant)}
-        return {"state": self._assistant_withheld(p)}
-
-    @staticmethod
-    def _assistant_withheld(p):
-        """Why policy withholds Copy and open: "unreadable" (the key exists
-        but could not be read), "off" (IT turned it off) or "invalid" (a value
-        is not valid, or only one of the name and address is set)."""
-        if p.unreadable:
-            return "unreadable"
-        return "off" if p.values.get("AllowHandoffAssistant") is False else "invalid"
+    # -- copy and open (#109; the rest of handoff is in workspace/handoff_ws.py, #414) --
 
     def _open_address(self, url):
         """Ask Windows to open a validated https address in the user's default
@@ -2856,31 +2420,6 @@ class Workspace(RecordingMixin):
                               assistant=("default" if assistant == handoff.DEFAULT_ASSISTANT
                                          else "policy"))
         return {**copied, "opened": opened, **self._assistant_shown(assistant)}
-
-    def _schedule_clipboard_clear(self, sequence, delay_s):
-        """Clear the app's own copy later (policy), unless something else was
-        copied since. The policy thread waits until it is due, checking at
-        least every POLICY_IDLE_WAIT_S against the monotonic clock, which
-        counts time asleep (a plain timer's wait does not, so it would clear
-        late after sleep). Pending clears also run when the app closes."""
-        with self._clipboard_lock:
-            self._clipboard_clears.append((self._clock() + delay_s, sequence))
-        self._policy_wake.set()
-
-    def _run_clipboard_clears(self, everything=False):
-        now = self._clock()
-        with self._clipboard_lock:
-            due = [s for t, s in self._clipboard_clears if everything or t <= now]
-            self._clipboard_clears = [] if everything else [
-                (t, s) for t, s in self._clipboard_clears if t > now]
-        for sequence in due:
-            try:
-                clipboard.clear_if_unchanged(sequence)
-            except clipboard.ClipboardError:
-                pass                    # busy: the copy stays, as without the policy
-
-    def _flush_clipboard_clears(self):
-        self._run_clipboard_clears(everything=True)
 
     def _policy_loop(self):
         """Its own thread, so a long folder scan never delays a clear or a stop."""
@@ -2951,37 +2490,6 @@ class Workspace(RecordingMixin):
             self._draft_tick(p)
         except Exception as exc:          # drafts never affect the recording
             self.log.incident("drafts", exc)
-
-    def handoff_folder(self):
-        """Where the handoff Save dialog starts: the organisation's folder if
-        policy sets one that exists, else the dialog's own default."""
-        folder = self.policy.current().get("HandoffDefaultFolder")
-        return folder if folder and Path(folder).is_dir() else ""
-
-    def save_handoff_to(self, mid, tid, path, expected, anonymise=False):
-        """Write the Markdown to a file the user chose in the save dialog. The
-        app keeps no record of it; the user files or deletes it. ".md" is
-        appended (never substituted) when missing, and a file the dialog did
-        not ask about is never overwritten."""
-        from workspace.safe_paths import check_raw
-        out = self._checked(mid, tid, "markdown", expected, anonymise)
-        try:
-            check_raw(path)
-        except UnsafePathError as exc:
-            raise WorkspaceError(str(exc)) from exc
-        target = Path(path)
-        if target.suffix.lower() != ".md":
-            target = target.with_name(target.name + ".md")
-            if target.exists():
-                raise WorkspaceError(f"{target.name} already exists. Choose another name.")
-        try:
-            with open(target, "w", encoding="utf-8", newline="\n") as f:
-                f.write(out["markdown"])
-        except OSError as exc:
-            reason = exc.strerror or "file error"
-            raise WorkspaceError(f"Could not save the file: {reason}.") from exc
-        self._record_handoff("handoff_saved", mid, out)
-        return {"chars": len(out["markdown"]), "name": target.name}
 
     # -- setup (#19) ----------------------------------------------------------------------
 
@@ -3377,12 +2885,6 @@ class Workspace(RecordingMixin):
             self.audit.record("cleanup_retry", meeting=row["meeting_id"], phase=row["phase"],
                               job=jid)
         self._wake.set()
-
-
-def _hold_id(value):
-    if not isinstance(value, str) or len(value) != 32 or not value.isalnum():
-        raise WorkspaceError("Not found.")
-    return value
 
 
 def _group(rows, key):

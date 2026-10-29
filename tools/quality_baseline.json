@@ -334,9 +334,6 @@
   "workspace/app.py::set_settings": [
    21
   ],
-  "workspace/app.py::update": [
-   11
-  ],
   "workspace/appcontainer.py::start": [
    11
   ],
@@ -438,6 +435,9 @@
   ],
   "workspace/safe_paths.py::validate_input_file": [
    14
+  ],
+  "workspace/settings_ws.py::update": [
+   11
   ],
   "workspace/setup.py::_run": [
    18
