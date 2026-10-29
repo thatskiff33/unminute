@@ -3,6 +3,9 @@
 // main.js, the last, runs the page.
 "use strict";
 
+// While files are dragged over the window, show where to let go. The drop
+// itself is handled natively; dragover repeats while over the window, so the
+// overlay hides shortly after it stops (dragged away, dropped or cancelled).
 let dragTimer = null;
 function wireDrop() {
   const overlay = $("drop-overlay");

@@ -23,11 +23,11 @@
 import argparse
 import http.server
 import json
-import re
 import subprocess
 import sys
 import tempfile
 import threading
+from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
 
@@ -141,12 +141,35 @@ CASES = [
 ]
 
 
-def page_tags_found():
-    """Whether index.html loads APP_TAG first and MAIN_TAG last, each once."""
-    html = (UI / "index.html").read_text(encoding="utf-8")
-    tags = re.findall(r"<script\b[^>]*></script>", html)
-    return (bool(tags) and tags[0] == APP_TAG and tags[-1] == MAIN_TAG
-            and len(set(tags)) == len(tags))
+class _ScriptStarts(HTMLParser):
+    """The start tag of each <script> element, as written. The standard
+    library's HTML parser finds a tag however it is spelt (<SCRIPT>,
+    </script >), as the browser does, where a pattern would not (CodeQL
+    py/bad-tag-filter)."""
+
+    def __init__(self):
+        super().__init__()
+        self.starts = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "script":
+            self.starts.append(self.get_starttag_text())
+
+    handle_startendtag = handle_starttag
+
+
+def page_tags_found(html=None):
+    """Whether index.html loads APP_TAG first and MAIN_TAG last, each once and
+    written exactly so (the checks insert their scripts beside them)."""
+    if html is None:
+        html = (UI / "index.html").read_text(encoding="utf-8")
+    parser = _ScriptStarts()
+    parser.feed(html)
+    parser.close()
+    starts = parser.starts
+    return (bool(starts) and len(set(starts)) == len(starts)
+            and starts[0] + "</script>" == APP_TAG and starts[-1] + "</script>" == MAIN_TAG
+            and html.count(APP_TAG) == 1 and html.count(MAIN_TAG) == 1)
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):

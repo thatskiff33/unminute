@@ -104,5 +104,24 @@ class CanvasLayoutTests(unittest.TestCase):
             self.assertEqual(max(ends), row["maxW"], row["text"])
 
 
+
+class PageTagTests(unittest.TestCase):
+    """page_tags_found reads index.html's script tags however they are written
+    (CodeQL py/bad-tag-filter; #414 step 3a review)."""
+
+    def test_the_page_tags_are_found(self):
+        self.assertTrue(design_check.page_tags_found())
+
+    def test_a_tag_spelt_differently_is_seen(self):
+        html = (design_check.UI / "index.html").read_text(encoding="utf-8")
+        main = design_check.MAIN_TAG
+        for extra in ('<SCRIPT src="stray.js"></SCRIPT>', '<script src="stray.js"></script >',
+                      '<Script\n src="stray.js"/>'):
+            with self.subTest(extra=extra):
+                self.assertFalse(design_check.page_tags_found(html.replace(main, main + extra)))
+        self.assertFalse(design_check.page_tags_found(html.replace(main, main.upper())))
+        self.assertFalse(design_check.page_tags_found(html.replace(main, main + main)))
+
+
 if __name__ == "__main__":
     unittest.main()

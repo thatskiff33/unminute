@@ -205,33 +205,117 @@ def problems_at_load(src):
     return found
 
 
+
+def _group_end(toks, i):
+    """The index just past the bracket that closes the one at toks[i]."""
+    depth = toks[i][2]
+    return next(j for j in range(i + 1, len(toks))
+                if toks[j][0] == "punct" and toks[j][2] == depth and toks[j][1] in ")]}") + 1
+
+
+def names_read_at_load(statement):
+    """The names a top-level declaration reads as its script loads: in a
+    const, let or var initializer, or a class's extends clause, outside any
+    function, arrow function or method body, and not as a property (.name) or
+    an object key (name:). A class's static members are not read."""
+    head = statement[0][1]
+    if head in ("function", "async"):
+        return set()
+    toks = statement[1:]
+    if head == "class":
+        toks = toks[1:next(i for i, t in enumerate(toks) if t[1] == "{" and t[0] == "punct")]
+    read, i, prev = set(), 0, None
+    while i < len(toks):
+        kind, text, depth, _ = toks[i]
+        if kind == "punct" and text == "{" and prev is not None and prev[1] in (")", "=>"):
+            i, prev = _group_end(toks, i), None        # a function or method body
+            continue
+        if kind == "punct" and text == "=>" and i + 1 < len(toks) and toks[i + 1][1] != "{":
+            i += 1                                     # an arrow function's expression body
+            while i < len(toks) and not (toks[i][2] < depth or (
+                    toks[i][2] == depth and toks[i][1] in (",", ";"))):
+                i += 1
+            prev = None
+            continue
+        if (kind == "name" and not (prev and prev[1] in (".", "?."))
+                and not (prev and prev[1] in ("{", ",") and i + 1 < len(toks)
+                         and toks[i + 1][1] == ":")):
+            read.add(text)
+        prev, i = toks[i], i + 1
+    return read
+
+
 def allowlisted_scripts():
     allowlist = json.loads((ROOT / "packaging" / "app-allowlist.json").read_text(encoding="utf-8"))
     return {p[len("workspace/ui/"):] for p in allowlist["app"]
             if p.startswith("workspace/ui/") and p.endswith(".js")}
 
 
+def tag_problems(html, in_folder, allowlisted):
+    """What is wrong with a page's script tags, as a list of messages: the
+    scripts it loads, the .js files in the folder and the allowlist's entries
+    must be the same set, and each tag a plain <script src="x.js"></script>
+    (no inline, async, defer or module script: each runs in turn, in the
+    order listed) with main.js last."""
+    found, ends = page_scripts.script_tags(html)
+    loaded = page_scripts.names(html)
+    problems = []
+    if len(loaded) != len(set(loaded)):
+        problems.append("index.html loads a script twice")
+    if set(loaded) != in_folder:
+        problems.append(f"index.html and the .js files in workspace/ui differ: "
+                        f"{sorted(map(str, set(loaded) ^ in_folder))}")
+    if set(loaded) != allowlisted:
+        problems.append(f"index.html and packaging/app-allowlist.json name different scripts: "
+                        f"{sorted(map(str, set(loaded) ^ allowlisted))}")
+    if ends != len(found):
+        problems.append(f"{len(found)} script tags but {ends} end tags")
+    for element, name in zip(found, loaded, strict=True):
+        if (element["attrs"] != [("src", name)] or element["tag"] != f'<script src="{name}">'
+                or element["text"]):
+            problems.append(f"not a plain script tag: {element['tag']}")
+    if not loaded or loaded[-1] != MAIN:
+        problems.append("main.js is not the last script")
+    return problems
+
+
 class PageScriptSetTests(unittest.TestCase):
     """index.html, the folder and the package allowlist name the same scripts."""
 
-    def test_index_html_loads_every_script_in_the_folder_and_the_allowlist(self):
-        loaded = page_scripts.names()
-        in_folder = {p.relative_to(UI).as_posix() for p in page_scripts.every_script()}
-        self.assertEqual(len(loaded), len(set(loaded)), "index.html loads a script twice")
-        self.assertGreaterEqual(len(loaded), 10, "the script pattern no longer matches index.html")
-        self.assertEqual(set(loaded), in_folder,
-                         "index.html and the .js files in workspace/ui differ")
-        self.assertEqual(set(loaded), allowlisted_scripts(),
-                         "index.html and packaging/app-allowlist.json name different scripts")
+    @classmethod
+    def setUpClass(cls):
+        cls.html = (UI / "index.html").read_text(encoding="utf-8")
+        cls.in_folder = {p.relative_to(UI).as_posix() for p in page_scripts.every_script()}
+        cls.allowlisted = allowlisted_scripts()
 
-    def test_every_script_tag_is_a_plain_ordered_one_and_main_js_is_last(self):
-        # No inline script (the CSP allows none), and no async, defer or module
-        # script: each runs in turn, in the order listed.
-        html = (UI / "index.html").read_text(encoding="utf-8")
-        tags = re.findall(r"<script\b[^>]*>", html)
-        self.assertEqual(len(tags), html.count("</script>"))
-        self.assertEqual(tags, [f'<script src="{name}">' for name in page_scripts.names()])
-        self.assertEqual(MAIN, page_scripts.names()[-1])
+    def test_index_html_loads_every_script_in_the_folder_and_the_allowlist(self):
+        self.assertGreaterEqual(len(page_scripts.names()), 10,
+                                "the reading of index.html no longer finds its scripts")
+        self.assertEqual([], tag_problems(self.html, self.in_folder, self.allowlisted))
+
+    def test_a_script_tag_is_found_however_it_is_written(self):
+        # Tag names are case-insensitive and an end tag may hold spaces, so a
+        # pattern for one spelling misses a script the browser still loads
+        # (CodeQL py/bad-tag-filter; #414 step 3a review). Each of these is
+        # added before main.js and must be refused.
+        main_tag = '<script src="main.js"></script>'
+        self.assertEqual(1, self.html.count(main_tag))
+        for extra in ('<SCRIPT src="../../tools/stray.js"></SCRIPT>',
+                      '<script src="../../tools/stray.js"></script >',
+                      '<Script\n  src="../../tools/stray.js"></sCrIpT\t>',
+                      '<script src=../../tools/stray.js></script>',
+                      '<script src="../../tools/stray.js"/>',
+                      '<script>window.x = 1;</script>',
+                      '<script src="core.js" defer></script>',
+                      '<SCRIPT src="core.js"></SCRIPT>',
+                      '<script src="core.js" type="module"></script>'):
+            with self.subTest(extra=extra):
+                html = self.html.replace(main_tag, extra + "\n" + main_tag)
+                self.assertTrue(tag_problems(html, self.in_folder, self.allowlisted))
+        moved = self.html.replace(main_tag, "").replace(
+            '<script src="core.js"></script>', main_tag + '\n<script src="core.js"></script>')
+        self.assertIn("main.js is not the last script",
+                      tag_problems(moved, self.in_folder, self.allowlisted))
 
     def test_main_js_numbers_the_scripts_in_index_html_order(self):
         # PAGE_SCRIPTS numbers a page error's file (docs/DEVELOPER_NOTES.md,
@@ -262,6 +346,24 @@ class PageScriptRuleTests(unittest.TestCase):
                 self.assertEqual([], problems_at_load(src),
                                  f"{name} runs code as it loads: only main.js may")
         self.assertTrue(problems_at_load(self.sources[MAIN]), "main.js no longer starts the page")
+
+    def test_no_script_reads_a_later_scripts_name_as_it_loads(self):
+        # Declarations hoist within a script but not across scripts, so an
+        # initializer outside a function body that names something declared
+        # in a later script would throw as the page loads (#414 step 3a
+        # review: "const probeAtLoad = wire();" in polling.js).
+        order = [(name, statements(src)) for name, src in self.sources.items()]
+        for k, (name, parsed) in enumerate(order):
+            if name == MAIN:
+                continue
+            later = {word for _, rest in order[k + 1:] for st in rest
+                     if st[0][1] in DECLARES for word in declared(st)}
+            for statement in parsed:
+                if statement[0][1] not in DECLARES:
+                    continue
+                with self.subTest(script=name, statement=" ".join(t[1] for t in statement[:3])):
+                    self.assertEqual(set(), names_read_at_load(statement) & later,
+                                     f"{name} reads a later script's name as it loads")
 
     def test_no_two_scripts_declare_the_same_name(self):
         where = {}
@@ -306,6 +408,25 @@ class TokeniserTests(unittest.TestCase):
                     'const a = 1;\n"use strict";\n'):
             with self.subTest(src=src):
                 self.assertTrue(problems_at_load(src), src)
+
+    def test_it_finds_a_name_read_at_load(self):
+        def read(src):
+            return set().union(*(names_read_at_load(st) for st in statements(src)
+                                 if st[0][1] in DECLARES))
+        for src in ("const probeAtLoad = wire();\n", "let x = 1, y = wire;\n",
+                    "const o = { a: wire() };\n", "const t = `${wire()}`;\n",
+                    "class K extends wire {}\n", "const v = new wire();\n",
+                    "var f = (a) => a, g = wire;\n", "const s = [() => 1, wire];\n"):
+            with self.subTest(src=src):
+                self.assertIn("wire", read(src))
+        for src in ("const f = () => wire();\n", "const f = () => { wire(); };\n",
+                    "const f = function () { wire(); };\n", "const o = { m() { wire(); } };\n",
+                    "const o = x.wire;\n", "const o = x?.wire;\n", "const o = { wire: 1 };\n",
+                    "function f() { wire(); }\n", "async function f() { await wire(); }\n",
+                    "class K { m() { wire(); } }\n", "const s = \"wire()\";\n",
+                    "const f = (a) => wire(a), b = 1;\n"):
+            with self.subTest(src=src):
+                self.assertNotIn("wire", read(src))
 
     def test_it_finds_a_name_declared_twice(self):
         names = [n for st in statements("const a = 1;\nfunction a() {}\nlet b, a;\n")
