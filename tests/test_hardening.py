@@ -251,7 +251,6 @@ class NavigationTests(unittest.TestCase):
         # skip renderLists (the list and sidebar count would go stale), and
         # renderReminders must be a plain function, so a throw inside it
         # reaches refresh's catch rather than becoming an unhandled rejection.
-        script = page_scripts.source()
         body = page_scripts.function_text("refresh")
         self.assertTrue(body.startswith("async function refresh() {\n"), body[:40])
         before_list = body.split("await renderLists(", 1)[0]
@@ -259,8 +258,9 @@ class NavigationTests(unittest.TestCase):
                      r"pollOk\(\"reminders\"\);\s*\}\s*catch \(err\) \{")
         self.assertRegex(before_list, own_catch,
                          "the reminders call must have its own catch before renderLists")
-        self.assertNotRegex(script, r"async function renderReminders\(")
-        self.assertRegex(script, r"\nfunction renderReminders\(r\) \{")
+        reminders = page_scripts.function_text("renderReminders")
+        self.assertTrue(reminders.startswith("function renderReminders(r) {\n"),
+                        reminders[:40])
 
 
 # A failed reminders call, or a reminders banner that cannot be drawn, must

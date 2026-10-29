@@ -943,8 +943,11 @@ class PageModelGateTests(unittest.TestCase):
         "gpu off": {"AllowGpuComponent": False},
         "user models and gpu off": {"AllowUserModels": False, "AllowGpuComponent": False},
     }
+    out = None
 
     def simulate(self):
+        if PageModelGateTests.out is not None:      # one Node.js run serves every test that asks
+            return PageModelGateTests.out
         import json
         script = "const cases = " + json.dumps(self.CASES) + r""";
 state.managed = null;
@@ -958,7 +961,8 @@ for (const [k, allow] of Object.entries(cases)) {
 }
 console.log(JSON.stringify(result));
 """
-        return page_scripts.run(script)
+        PageModelGateTests.out = page_scripts.run(script)
+        return PageModelGateTests.out
 
     def test_user_models_off_stops_model_downloads_but_not_the_gpu_components(self):
         r = self.simulate()

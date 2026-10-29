@@ -473,6 +473,31 @@ console.log(JSON.stringify({ el: $("status"), seen }));
                 with self.assertRaisesRegex(AssertionError, "has already been declared"):
                     page_scripts.run(code)
 
+    def test_a_stub_of_a_name_the_page_does_not_declare_fails_loudly(self):
+        # #495: a stub of a page function that has since been renamed or
+        # removed would create a new global the page never calls, and the test
+        # would pass on the real function. It fails instead: at the top level
+        # or later, a function or not, in the test's code or in a callback
+        # that runs after it (Node.js's vm lets a function through strict
+        # mode, so tests/page_vm.js also looks for the globals it added).
+        out = "console.log(JSON.stringify(typeof sayDone));"
+        for code in ("renamedAway = () => 0;", "renamedAway = function () {};",
+                     "renamedAway = 1;", "renamedAway = {};",
+                     "const later = () => { renamedAway = () => 0; };\nlater();",
+                     "const later = () => { renamedAway = 1; };\nlater();",
+                     "setTimeout(() => { renamedAway = () => 0; }, 0);",
+                     "Promise.resolve().then(() => { renamedAway = () => 0; });"):
+            with self.subTest(code=code):
+                with self.assertRaisesRegex(AssertionError, "renamedAway is not defined"):
+                    page_scripts.run(code + "\n" + out)
+        # What a test may still do: replace a page function or let, and assign
+        # its own let, var and function, declared anywhere in its code.
+        self.assertEqual(page_scripts.run(
+            "let mine = 0;\nmine = 1;\nsay = () => 2;\npollTimer = 3;\nown = () => 4;\n"
+            "ownVar = 5;\nsetTimeout(() => { mine = 6; }, 0);\n"
+            "console.log(JSON.stringify([mine, say(), pollTimer, own(), ownVar]));\n"
+            "function own() { return 0; }\nvar ownVar;"), [1, 2, 3, 4, 5])
+
     def test_function_text_is_the_loaded_function(self):
         text = page_scripts.function_text("scriptLine")
         self.assertTrue(text.startswith("function scriptLine(url, line) {\n"), text)

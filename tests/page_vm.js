@@ -27,6 +27,15 @@
 //   * a page const cannot be replaced (declaring it again stops the test, as
 //     it would stop a page script): change what it reaches instead (document,
 //     for $), or the object it holds (state.view = ...).
+// Assigning a name that neither the page, this file nor the test declares (a
+// stub of a function the page has since renamed or removed) fails the test
+// with "is not defined", rather than creating a new global the page never
+// calls while the test passes on the real function (#495). The test's code
+// runs in strict mode, which stops most such assignments where they happen;
+// Node.js's vm lets one that assigns a function through even then (it cannot
+// tell it from a function declaration: Node.js 24, 30 Oct 2026), so a global
+// the test's code added also fails the run, once that code has run and again
+// as Node.js exits (for a callback or a timer).
 "use strict";
 
 const fs = require("fs");
@@ -99,14 +108,38 @@ const window = {
 // seen by the page's functions (a property of the context's global object is
 // read before a later script's own declaration of the same name). loaded
 // keeps the stand-ins the page loaded with, whatever a test puts in their place.
+// pageVmTestStarts marks the start of the test's code (below).
+let declared = null;              // the context's globals when the test's code starts
 const context = vm.createContext({
   console, process, queueMicrotask, URL, Event, EventTarget,
-  host: { document, window, setTimeout, clearTimeout, setInterval, clearInterval },
+  host: { document, window, setTimeout, clearTimeout, setInterval, clearInterval,
+          testStarts: () => { declared = new Set(globals()); } },
 });
 const run = (file, text) => vm.runInContext(text, context, { filename: file });
+const globals = () => run("page_vm.js", "Object.getOwnPropertyNames(globalThis)");
 run("page_vm.js", `let { document, window, setTimeout, clearTimeout, setInterval,
                          clearInterval } = host;
                    const loaded = Object.freeze({ document, window });
+                   const pageVmTestStarts = host.testStarts;
                    delete globalThis.host;`);
 for (const file of process.argv.slice(2)) run(file, fs.readFileSync(file, "utf8"));
-run("test.js", fs.readFileSync(0, "utf8"));
+
+// -- the test ------------------------------------------------------------------
+// A script's own function and var declarations are made before its first
+// statement runs, so the globals at pageVmTestStarts() are the page's, this
+// file's and the test's own: a global added after that was made by assigning
+// an undeclared name (or by globalThis.name = ..., which a test has no need of).
+const failOnUndeclared = () => {
+  if (declared === null) return;                // the test's code did not start
+  const added = globals().filter((name) => !declared.has(name));
+  for (const name of added) {
+    console.error(`${name} is not defined: the test assigned a name that neither the `
+                  + "page nor the test declares, so the page never sees it");
+    declared.add(name);                         // reported once
+  }
+  if (added.length > 0) process.exitCode = 1;
+};
+process.on("exit", failOnUndeclared);           // an assignment in a callback or a timer
+// Strict mode, and the mark, on the test's first line, so its line numbers stay its own.
+run("test.js", '"use strict"; pageVmTestStarts();' + fs.readFileSync(0, "utf8"));
+failOnUndeclared();
