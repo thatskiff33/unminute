@@ -531,5 +531,172 @@ class ScriptLineTests(unittest.TestCase):
         self.assertLess(len(page_scripts.names()) * 100000 + 99999, 10 ** 7)   # api._int's limit
 
 
+BASE = "file:///C:/Program%20Files/Unminute/app/workspace/ui/"
+
+
+def frames(*lines):
+    """Stack frames as V8 writes them, after the error's own first line."""
+    return json.dumps("".join("\n    at " + line for line in lines))
+
+
+class PageErrorPlaceTests(unittest.TestCase):
+    """#491: the window opens the page from file://, where WebView2 gives an
+    uncaught error in the page's own scripts as "Script error." with line 0
+    (real window, 30 Oct 2026). The page guards the callbacks the browser
+    calls, reads the place from the caught error's stack (numbers only) and
+    sends it with the error event."""
+
+    def run_page(self, code):
+        return page_scripts.run("document = { baseURI: " + json.dumps(BASE + "index.html")
+                                + " };\n" + code)
+
+    def number(self, name):
+        return page_scripts.names().index(name) + 1
+
+    def test_stack_place_reads_frames_only(self):
+        out = self.run_page(
+            "const made = (message, frames) => {\n"
+            "  const err = new Error(message);\n"
+            "  err.stack = String(err) + frames;\n"
+            "  return err;\n"
+            "};\n"
+            "console.log(JSON.stringify([\n"
+            # A named frame in a page script, after a built-in's frame.
+            "  stackPlace(made('hidden', " + frames(
+                "JSON.parse (<anonymous>)", f"groupOf ({BASE}meetings.js:38:9)",
+                f"{BASE}main.js:5:1") + ")),\n"
+            # An anonymous frame (no brackets), and an async one.
+            "  stackPlace(made('hidden', " + frames(f"{BASE}core.js:7:3") + ")),\n"
+            "  stackPlace(made('hidden', " + frames(f"async refresh ({BASE}polling.js:9:2)")
+            + ")),\n"
+            # A message that looks like frames is cut off unread.
+            "  stackPlace(made(" + json.dumps(f"x\n    at f ({BASE}core.js:1:1)") + ", "
+            + frames(f"g ({BASE}polling.js:120:4)") + ")),\n"
+            # Frames only in other files, and errors with no usable stack.
+            "  stackPlace(made('hidden', " + frames("f (file:///C:/elsewhere/meetings.js:38:9)")
+            + ")),\n"
+            "  stackPlace(Object.assign(new Error('hidden'), { stack: 'rewritten' })),\n"
+            "  stackPlace('a string'), stackPlace(null), stackPlace(undefined), stackPlace({}),\n"
+            "  stackPlace({ get stack() { throw new Error('no'); } }),\n"
+            "]));\n")
+        self.assertEqual(out, [
+            [self.number("meetings.js") * 100000 + 38, 9],
+            [self.number("core.js") * 100000 + 7, 3],
+            [self.number("polling.js") * 100000 + 9, 2],
+            [self.number("polling.js") * 100000 + 120, 4],
+            None, None, None, None, None, None, None])
+
+    def test_guard_notes_the_place_and_throws_the_same_error(self):
+        out = self.run_page(
+            "const err = new Error('hidden');\n"
+            "err.stack = String(err) + " + frames(f"f ({BASE}speakers.js:12:5)") + ";\n"
+            "const thrower = () => { throw err; };\n"
+            "let same = false;\n"
+            "try { guarded(thrower)(); } catch (e) { same = e === err; }\n"
+            "const place = caughtAt;\n"
+            "const self = { k: 2 };\n"
+            "const value = guarded(function (a, b) { return this.k + a + b; }).call(self, 3, 4);\n"
+            "const f = () => 0;\n"
+            "const listener = { handleEvent() {} };\n"
+            "console.log(JSON.stringify([same, place, value, guarded(f) === guarded(f),\n"
+            "  guarded(listener) === listener, guarded('text'), guarded(null)]));\n")
+        self.assertEqual(out, [True, [self.number("speakers.js") * 100000 + 12, 5], 9, True,
+                               True, "text", None])
+
+    def test_guard_sends_an_async_callbacks_rejection_once(self):
+        # From file:// the browser sends no unhandledrejection event for the
+        # page's own errors (#491), so the guard sends it, and rejects on with
+        # the same reason; the page's own listener then skips that reason.
+        meetings = self.number("meetings.js") * 100000
+        out = self.run_page(
+            "const sent = [], unhandled = [];\n"
+            "reportUiError = (...args) => sent.push(args);\n"
+            "process.on('unhandledRejection', (reason) => unhandled.push(reason));\n"
+            "const [onRejection] = loaded.window.listeners.unhandledrejection;\n"
+            "const err = new Error('hidden');\n"
+            "err.stack = String(err) + " + frames(f"f ({BASE}meetings.js:40:3)") + ";\n"
+            "const value = guarded(async () => { throw err; })();\n"
+            "const fine = guarded(async () => 5)();\n"
+            "setTimeout(async () => {\n"
+            "  let same = false;\n"
+            "  try { await value; } catch (e) { same = e === err; }\n"
+            "  const rejectedOn = unhandled.length === 1 && unhandled[0] === err;\n"
+            "  onRejection({ reason: err });          // the event for it: not sent again\n"
+            "  console.log(JSON.stringify([sent, same, rejectedOn, await fine]));\n"
+            "}, 20);\n")
+        self.assertEqual(out, [[["rejection", meetings + 40, 3]], True, True, 5])
+
+    def test_guard_callbacks_wraps_listeners_and_timers(self):
+        out = self.run_page(
+            "const added = [], removed = [], timed = [];\n"
+            "class Target {}\n"
+            "Target.prototype.addEventListener = function (type, fn, opts) {\n"
+            "  added.push([this.name, type, fn, opts]); };\n"
+            "Target.prototype.removeEventListener = function (type, fn, opts) {\n"
+            "  removed.push([type, fn, opts]); };\n"
+            "const win = { EventTarget: Target,\n"
+            "  setTimeout(fn, ms, arg) { timed.push([this === win, fn, ms, arg]); return 7; } };\n"
+            "guardCallbacks(win);\n"
+            "const t = new Target();\n"
+            "t.name = 'el';\n"
+            "const fn = () => 0, other = () => 1, obj = { handleEvent() {} };\n"
+            "t.addEventListener('click', fn, { once: true });\n"
+            "t.addEventListener('click', obj);\n"
+            "t.removeEventListener('click', fn, true);\n"
+            "t.removeEventListener('click', other);\n"
+            "const id = win.setTimeout(fn, 5, 'x');\n"
+            "console.log(JSON.stringify([\n"
+            "  added[0][0], added[0][1], added[0][2] === guarded(fn), added[0][2] !== fn,\n"
+            "  added[0][3], added[1][2] === obj,\n"
+            "  removed[0][1] === guarded(fn), removed[0][2], removed[1][1] === other,\n"
+            "  id, timed[0][0], timed[0][1] === guarded(fn), timed[0][2], timed[0][3],\n"
+            "  'requestAnimationFrame' in win]));\n")
+        self.assertEqual(out, ["el", "click", True, True, {"once": True}, True,
+                               True, True, True,
+                               7, True, True, 5, "x", False])
+
+    def test_error_event_sends_the_guarded_place(self):
+        meetings = self.number("meetings.js") * 100000
+        out = self.run_page(
+            "const sent = [];\n"
+            "reportUiError = (...args) => sent.push(args);\n"
+            "const [onError] = loaded.window.listeners.error;\n"
+            "const [onRejection] = loaded.window.listeners.unhandledrejection;\n"
+            # From file://: no file, line 0; the guard's place is sent, once.
+            f"caughtAt = [{meetings + 38}, 9];\n"
+            "onError({ filename: '', lineno: 0, colno: 0 });\n"
+            "const cleared = caughtAt;\n"
+            "onError({ filename: '', lineno: 0, colno: 0 });\n"
+            # Served over HTTP: the browser's own file and line win.
+            "caughtAt = [1, 1];\n"
+            "onError({ filename: " + json.dumps(BASE + "core.js") + ", lineno: 4, colno: 2 });\n"
+            # A rejection: its reason's stack, or 0 for a reason that is not an Error.
+            "const err = new Error('hidden');\n"
+            "err.stack = String(err) + " + frames(f"f ({BASE}meetings.js:40:3)") + ";\n"
+            "onRejection({ reason: err });\n"
+            "onRejection({ reason: 'text' });\n"
+            "console.log(JSON.stringify([sent, cleared]));\n")
+        self.assertEqual(out, [[["error", meetings + 38, 9], ["error", 0, 0],
+                                ["error", self.number("core.js") * 100000 + 4, 2],
+                                ["rejection", meetings + 40, 3], ["rejection", 0, 0]], None])
+
+    def test_callbacks_are_guarded_before_any_listener_is_added(self):
+        # main.js guards the browser's ways to call the page before its first
+        # listener, and wire() runs inside a guard.
+        text = (UI / MAIN).read_text(encoding="utf-8")
+        start = text.index("\nguardCallbacks(window);\n")
+        self.assertNotIn("addEventListener(", text[text.index("\n// -- start-up"):start])
+        self.assertIn("\nguarded(wire)();", text[start:])
+        self.assertNotRegex(text[start:], r"\nwire\(\);")
+        # The page's on... handlers run inside a guard too, or inside attempt(),
+        # which catches everything.
+        for name in page_scripts.names():
+            source = (UI / name).read_text(encoding="utf-8")
+            for m in re.finditer(r"\.on[a-z]+ = (.*)", source):
+                with self.subTest(script=name, handler=m.group(0)):
+                    self.assertTrue(m.group(1).startswith(("guarded(", "() => attempt(")),
+                                    m.group(0))
+
+
 if __name__ == "__main__":
     unittest.main()

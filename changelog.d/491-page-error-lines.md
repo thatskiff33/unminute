@@ -1,0 +1,1 @@
+- **Page errors in diagnostics give their line.** When something goes wrong in the Unminute window itself, the incident recorded for Copy diagnostics now says which page script and line it came from, instead of line 0, and errors in the window's background work, which were missed before, are recorded too. As before, an incident holds two numbers only, never any text.
