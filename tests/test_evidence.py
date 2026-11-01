@@ -158,6 +158,8 @@ def report(kind, sha=SHA, **change):
           "folder_differences": 0, "tools_commit": COMMIT, "tools_clean": True,
           "check_passed": True, "pass": True}
     body = {"evidence": ev}
+    if kind in evidence.SESSION_KINDS:      # unlocked at every reading (#507)
+        body["session"] = dict(UNLOCKED)
     if kind == "accessibility":
         body["colour_mode"] = "both"
         body["views"] = both_modes()
@@ -168,6 +170,12 @@ def report(kind, sha=SHA, **change):
         body["store"] = dict(STORE)
     ev.update(change)
     return body
+
+
+# A window check's session block (tools/session_state.py) with the session
+# unlocked at each of its readings, all by the WTS flag (#507).
+UNLOCKED = {"record": evidence.SESSION_RECORD, "readings": 6, "wts": 6, "input_desktop": 0,
+            "unread": 0, "locked": False, "locked_at": None}
 
 
 # Every view tools/accessibility_check.py audits; its report names each one
@@ -551,6 +559,27 @@ class CheckTests(TempDir):
                 problems = evidence.check(SHA, self.complete(perf=bad))
                 self.assertEqual(1, len(problems), problems)
                 self.assertIn(words, problems[0])
+
+    def test_a_window_check_that_ran_on_a_locked_session_is_refused(self):
+        # #507: preview.6's packaged and accessibility reports passed on a
+        # locked session, with no record of it. Each window check's report
+        # must record the session unlocked at every reading; the crash check
+        # opens no window and records none.
+        self.assertEqual(set(evidence.KINDS) - {"crash"}, set(evidence.SESSION_KINDS))
+        for kind in evidence.SESSION_KINDS:
+            with self.subTest(kind=kind):
+                old = report(kind)
+                del old["session"]
+                self.assertEqual([f"{kind}.json: {kind} has no record of the session's state "
+                                  "(made before the lock test of #507: run the check again)"],
+                                 evidence.check(SHA, self.complete(**{kind: old})))
+                locked = report(kind)
+                locked["session"].update(locked=True, locked_at="after the handoff")
+                problems = evidence.check(SHA, self.complete(**{kind: locked}))
+                self.assertEqual(1, len(problems), problems)
+                self.assertIn("records the session locked during the run (after the handoff)",
+                              problems[0])
+        self.assertNotIn("session", report("crash"))
 
     def test_the_commit_given_must_be_the_packages(self):
         problems = evidence.check(SHA, self.complete(), commit="d" * 40)

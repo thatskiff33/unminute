@@ -9,6 +9,12 @@
 # window is minimised and restored once during it.
 # Then raises three deliberate page errors (a timer's, a listener's and an
 # async callback's) and needs each to reach report_ui_error with its line (#491).
+# It needs an unlocked session (#507): the session's lock state is read
+# (tools/session_state.py) as the check starts, before and after each window
+# step and after each window closes. If it is locked, or cannot be read, the
+# check stops with exit 2 ("the session locked"), never a pass or a failure,
+# and the report's "session" block records where; release evidence refuses a
+# report whose block shows a lock, or that has none (tools/evidence.py).
 #
 #   python tools/workspace_ui_check.py <report.json>
 #
@@ -39,6 +45,7 @@ sys.path.append(str(TOOLS))
 sys.path.append(str(TOOLS.parent / "tests"))
 import evidence  # noqa: E402
 import residue  # noqa: E402
+import session_state  # noqa: E402
 
 # The app checked: this checkout, or a package's app folder with --app.
 APP = evidence.app_folder(TOOLS.parent)
@@ -94,15 +101,51 @@ def write_wav(path, seconds):
     return path
 
 
+# The session's lock state at each window step (#507): main() puts a
+# session_state.Watch here, and each step reads it before and after
+# (session_check). None, as in the unit tests that drive the steps on
+# stand-in windows, reads nothing. SESSION.step names the step for the report.
+SESSION = None
+
+
+def session_step(name):
+    """Name the window steps from here on, for where a lock was seen."""
+    if SESSION is not None:
+        SESSION.step = name
+
+
+def session_check(phase):
+    """Stop the check (session_state.SessionLocked) unless the session is
+    unlocked now and has been at every reading before."""
+    if SESSION is not None:
+        SESSION.check(f"{phase} {SESSION.step}")
+
+
+def session_stopped(out, report):
+    """The session locked: write the report with its session block and say
+    so. Exit 2: the run is neither a pass nor a failure, and nothing is
+    stamped as release evidence."""
+    report["session"] = SESSION.record()
+    written = residue.write_guarded(out, report)
+    print(json.dumps(written, indent=2))
+    print(session_state.stopped_message(SESSION))
+    return 2
+
+
 def evaluate(window, js, timeout=60):
-    """Run an async JS expression and wait for its value."""
+    """Run an async JS expression and wait for its value. The session is
+    read before and after (session_check): a step that timed out on a
+    locked session stops as a lock, not as a timeout."""
+    session_check("before")
     done, box = threading.Event(), {}
 
     def cb(value):
         box["v"] = value
         done.set()
     window.evaluate_js(f"(async () => {{ {js} }})()", cb)
-    if not done.wait(timeout):
+    answered = done.wait(timeout)
+    session_check("after")
+    if not answered:
         raise TimeoutError(js[:60])
     return box.get("v")
 
@@ -389,6 +432,7 @@ def native_checks(window, ws, mid):
     out = {}
 
     def run_with(script, title, call, seen=None):
+        session_check("before")
         done = {}
 
         def click():
@@ -408,6 +452,7 @@ def native_checks(window, ws, mid):
         clicker.start()
         result = call()
         clicker.join(STUCK_DIALOG_S + 15)
+        session_check("after")
         return result, done.get("ok", False)
 
     title = "Workspace UI check: confirm"
@@ -570,6 +615,7 @@ def native_problems(nv):
 
 def checks(window, ws, mid, long_mid, grow_mid, fail_mid, report):
     try:
+        session_step("the main window's page steps")
         window.events.loaded.wait(30)
         while not window.evaluate_js("!!(window.workspace && window.pywebview && "
                                      "window.pywebview.api && window.pywebview.api.meetings)"):
@@ -814,10 +860,15 @@ def checks(window, ws, mid, long_mid, grow_mid, fail_mid, report):
                     render_ms: Math.round(render_ms),
                     hit: document.getElementById('m-hits').textContent}};""", timeout=120)
         report["long_transcript"]["wall_s"] = round(time.perf_counter() - t0, 1)
+        session_step("the growing transcript")
         report["growing"] = growing_checks(window, ws, grow_mid)
+        session_step("the app's confirmations")
         report["native"] = native_checks(window, ws, long_mid)
+        session_step("the failed meeting")
         report["failed_meeting"] = failed_meeting_checks(window, ws, fail_mid)
+        session_step("the draft text")
         report["drafts"] = draft_area_checks(window, ws)
+        session_step("the page errors")
         PAGE_ERRORS.clear()                 # only the deliberate errors from here (#491)
         evaluate(window, PAGE_ERROR_JS)
         report["page_errors"] = list(PAGE_ERRORS)
@@ -1370,6 +1421,7 @@ def locked_checks(window, ws, calls, report):
     and codes, no meeting title, only LOCKED_METHODS called, nothing called
     while it sits there, and its buttons work (help opens no browser here)."""
     try:
+        session_step("the locked screen")
         window.events.loaded.wait(30)
         while not window.evaluate_js("!!(window.workspace && window.pywebview && "
                                      "window.pywebview.api && window.pywebview.api.status)"):
@@ -1424,14 +1476,18 @@ def locked_checks(window, ws, calls, report):
 
 
 def locked_main(out):
-    """The locked scenario's own process: writes its report to out."""
+    """The locked scenario's own process: writes its report to out, with
+    its own session block (the parent adds it to its own)."""
     import webbrowser
+    global SESSION
+    SESSION = session_state.Watch()
     webbrowser.open = lambda url, *a, **k: OPENED.append(url) or True   # no browser starts
     report, calls = {}, []
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         try:
             ws = locked_workspace(root)
+            session_check("before")
         except Exception as exc:
             report["error"] = error_text(exc)
         else:
@@ -1443,6 +1499,8 @@ def locked_main(out):
             shell.run(locked_checks, (window, ws, calls, report),
                       storage_path=shell.storage_folder(ws.root))
             ws.close()
+    SESSION.reading("after the locked screen's window closed")
+    report["session"] = SESSION.record()
     residue.write_guarded(out, report)
     return 0
 
@@ -1491,13 +1549,18 @@ def main():
     if args.locked_only:                  # the locked scenario's own process (#111 C4b)
         return locked_main(args.locked_only)
     before = evidence.prepare(ap, args, APP if args.app else None)
+    global SESSION
+    SESSION = session_state.Watch()
+    out = Path(args.report)
+    report = {}
+    SESSION.reading("as the check started")
+    if SESSION.stopped:                   # stop now, not after the set-up
+        return session_stopped(out, report)
     # The decoder runs in an AppContainer that cannot read a development
     # Python (#299): decode in a scratch copy it can read (nothing to do in a
     # package's own runtime, whose install it reads).
     import decoder_runtime
     decoder_runtime.use()
-    out = Path(args.report)
-    report = {}
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         ws = Workspace(root / "ws", root / "models", start=False,
@@ -1541,8 +1604,17 @@ def main():
         report["webview_profile_removed_on_close"] = not storage.exists()
         ws.close()
     report["handoff_opened"] = OPENED
-    # The locked screen (#111 C4b), in a window and process of its own.
+    SESSION.reading("after the main window closed")
+    if SESSION.stopped:
+        return session_stopped(out, report)
+    # The locked screen (#111 C4b), in a window and process of its own, which
+    # records the session's state too.
     report["locked_screen"] = run_locked_child(args, "--locked-only")
+    SESSION.merge(report["locked_screen"].pop("session", None))
+    SESSION.reading("after the locked screen's process ended")
+    if SESSION.stopped:
+        return session_stopped(out, report)
+    report["session"] = SESSION.record()
     report["growing_problems"] = growing_problems(report.get("growing") or {})
     report["failed_meeting_problems"] = failed_meeting_problems(
         report.get("failed_meeting") or {})

@@ -16,7 +16,12 @@
 #     (PERF_VISIBLE_STATES; #292);
 #   - for accessibility, that the run audited every view the tool defines
 #     (ACCESSIBILITY_VIEWS) in both light and dark mode (ACCESSIBILITY_MODES;
-#     the owner's decision of 22 Oct 2026, #111).
+#     the owner's decision of 22 Oct 2026, #111);
+#   - for every check that drives a real window (SESSION_KINDS), that the
+#     session stayed unlocked: its "session" block (tools/session_state.py,
+#     SESSION_RECORD; #507) read the lock state at each window step and never
+#     found it locked or unreadable. A report with no such block, made by an
+#     earlier tool whose lock test missed a lock on Windows 11, is refused.
 # The Release workflow refuses to publish unless one passing report of each kind
 # is attached, each naming the zip it publishes and made by a clean checkout of
 # the commit the zip was built from:
@@ -69,6 +74,12 @@ ACCESSIBILITY_VIEWS = (
 # window measured in one counts only if it was drawn (its "drawing" block; #292),
 # recording with live drafts on included (#104).
 PERF_VISIBLE_STATES = ("meetings", "settings", "recording", "recording-drafts")
+# The checks that drive a real window, and so record the session's lock state
+# at each window step in a "session" block (tools/session_state.py; #507). Its
+# version, kept equal to session_state.RECORD by a test: this file runs under
+# -I, so it cannot import tools/session_state.py.
+SESSION_KINDS = ("perf", "packaged", "ui", "accessibility")
+SESSION_RECORD = 1
 # The sealed store's figures (tools/perf_check.py, "store"; #111 C7): a release's
 # performance evidence measures each one; each has a budget (#430).
 PERF_STORE_FIGURES = ("open_0_meetings_s", "open_500_meetings_s", "listing_500_meetings_s",
@@ -418,6 +429,29 @@ def accessibility_views_missing(body):
     return [name for name in ACCESSIBILITY_VIEWS if name not in named]
 
 
+def session_problem(body):
+    """Why a window check's report does not show the session unlocked
+    throughout (None when it does): its "session" block of SESSION_RECORD,
+    with every reading made (by the WTS flag or the input desktop's name),
+    none unread, and no lock."""
+    record = body.get("session") if isinstance(body, dict) else None
+    counts = ("readings", "wts", "input_desktop", "unread")
+    if not (isinstance(record, dict) and record.get("record") == SESSION_RECORD
+            and all(type(record.get(k)) is int and record[k] >= 0 for k in counts)
+            and isinstance(record.get("locked"), bool)):
+        return ("has no record of the session's state (made before the lock test of #507: "
+                "run the check again)")
+    if record["locked"] or record.get("locked_at") is not None:
+        where = record.get("locked_at")
+        return (f"records the session locked during the run"
+                f"{f' ({where})' if isinstance(where, str) else ''}: keep it unlocked and run "
+                "the check again")
+    if (record["readings"] < 1 or record["unread"] != 0
+            or record["wts"] + record["input_desktop"] != record["readings"]):
+        return "records readings of the session's state that were not made"
+    return None
+
+
 def listed(items):
     """Up to MAX_LISTED items, then how many more there are."""
     more = len(items) - MAX_LISTED
@@ -554,6 +588,10 @@ def check(expected_sha256, paths, commit=None):
         if (ev.get("check_passed") is not True or ev.get("pass") is not True
                 or body.get("pass", True) is not True or body.get("failed")):
             found.append("did not pass")
+        if kind in SESSION_KINDS:
+            unlocked = session_problem(body)
+            if unlocked:
+                found.append(unlocked)
         if kind == "perf":
             if not perf_release_run(ev.get("run")):
                 found.append(f"was not a full release run (at least {PERF_RELEASE}, "

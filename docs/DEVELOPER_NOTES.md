@@ -334,13 +334,13 @@ real time, and remove it when the cause is fixed.
   longer runs, the profile stays until the next start's `storage_folder` clean-up). A Windows
   shutdown or sign-out is left alone (`CloseReason.WindowsShutDown`): Windows Forms raises
   FormClosing at `WM_QUERYENDSESSION` but closes the form only at `WM_ENDSESSION`, so a
-  cancelled shutdown would otherwise leave the window open without its browser. With the fix the browser and its children were
-  gone within 0.1 s of the close, the profile folder was removed, no crash report was written,
-  and the real start closed with exit code 0. The internal feature names come from the runtime's
-  `msedge.dll` and are not documented: do not ship them as switches. To look again, the probe
-  scripts watched the tree's loaded modules (Toolhelp snapshots every 50 ms, names only) and
-  the files by name, in a throwaway `USERPROFILE`; never list or read the real profile's
-  `IdentityCache` (it holds the user's tokens).
+  cancelled shutdown would otherwise leave the window open without its browser. With the fix the
+  browser and its children were gone within 0.1 s of the close, the profile folder was removed,
+  no crash report was written, and the real start closed with exit code 0. The internal feature
+  names come from the runtime's `msedge.dll` and are not documented: do not ship them as
+  switches. To look again, the probe scripts watched the tree's loaded modules (Toolhelp
+  snapshots every 50 ms, names only) and the files by name, in a throwaway `USERPROFILE`; never
+  list or read the real profile's `IdentityCache` (it holds the user's tokens).
 - **Power requests do not survive a closed lid.** `PowerSetRequest` keeps a computer awake only
   against the idle timer: Windows ends it when the user closes the lid (action Sleep), presses
   the power button or chooses Sleep, and on Modern Standby on battery five minutes after the
@@ -613,9 +613,14 @@ real time, and remove it when the cause is fixed.
   With `--app` they check a package instead of the checkout. Run them with that package's
   `runtime\python.exe` and the app's flags (`-I -B -X disable-remote-debug`); with any other
   Python, without those flags, or with app modules from elsewhere, they stop (`tools/evidence.py`).
-  They need an unlocked screen: on a locked one the app's confirmation windows cannot be
-  answered, so `workspace_ui_check.py` closes them after 20 s and fails ("is the screen
-  locked?").
+  They need an unlocked session: on a locked one the app's confirmation windows cannot be
+  answered and the clipboard cannot be opened (`OpenClipboard`: access denied). They read the
+  session's lock flag (`tools/session_state.py`) before and after each window step, as
+  `tools/packaged_check.py` and `tools/perf_check.py` do, and stop with exit 2, "the session
+  locked", never a pass or a failure (#507). Do not test for a lock by the input desktop's name
+  alone: on Windows 11 26H2 `OpenInputDesktop` still returned "Default" while the session was
+  locked. A confirmation left open for 20 s on an unlocked session is still closed, and fails
+  ("is the screen locked?").
 - **`PrivacyDraftTests`** in `tests/test_consistency.py` fails on any Markdown file (all but
   `CHANGELOG.md` and `changelog.d/`; `docs/history/` included) that uses a word in
   `LEGAL_WORDS`: words that take a position on the law or name an outside review step, which

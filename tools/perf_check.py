@@ -57,6 +57,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT / "tools"))
 import evidence  # noqa: E402
 import residue  # noqa: E402
+import session_state  # noqa: E402
 import windows_powershell  # noqa: E402
 
 BUDGETS = ROOT / "docs" / "perf-budgets.json"
@@ -234,7 +235,11 @@ Keeping the display on does not stop a screen saver or an inactivity lock set
 by Intune or other policy (a laptop whose policy locks after about 60 minutes
 without input locks part-way through a release run). An unattended release
 run must account for that, or the run stops with exit 2 when the session
-locks or the screen saver starts.
+locks or the screen saver starts. Whether the session is locked is read from
+its own lock flag (tools/session_state.py; #507): on Windows 11 the input
+desktop can still be "Default" while it is locked. The report's "session"
+block records each reading (counts, and where a lock was seen), and release
+evidence refuses a report whose block shows a lock, or that has none.
 
 Output: a JSON report with the machine's specification ("machine": processor,
 cores and logical processors, memory, Windows build, power plan, mains or
@@ -1068,6 +1073,7 @@ class WindowsDisplay(DisplayEvents):
         super().__init__()
         self._handle = self._keep = None
         self.kept_awake = False
+        self.watch = session_state.Watch()      # every reading of the session (#507)
 
     def start(self):
         """{"kept_awake", "power_state_known"} once Windows has answered (5 s at most)."""
@@ -1141,31 +1147,20 @@ class WindowsDisplay(DisplayEvents):
         except (OSError, AttributeError):
             pass
 
-    def session(self):
-        """{"locked": the input desktop is not the user's, "screensaver": running}."""
+    def session(self, where="a visible state"):
+        """{"locked": tools/session_state.py's test, "screensaver": running},
+        or None when either cannot be read. Each reading goes in the
+        session record (self.watch)."""
+        state = self.watch.reading(where)
+        if state["locked"] is None:
+            return None
         try:
             ctypes, wintypes = _win()
             user32 = ctypes.WinDLL("user32")
-            user32.OpenInputDesktop.restype = wintypes.HANDLE
-            user32.OpenInputDesktop.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-            user32.CloseDesktop.argtypes = [wintypes.HANDLE]
-            user32.GetUserObjectInformationW.argtypes = [
-                wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
-                ctypes.POINTER(wintypes.DWORD)]
-            locked = True              # the lock screen's desktop cannot be opened
-            desktop = user32.OpenInputDesktop(0, False, 0x0001)      # DESKTOP_READOBJECTS
-            if desktop:
-                try:
-                    name = ctypes.create_unicode_buffer(64)
-                    if user32.GetUserObjectInformationW(desktop, 2, name, ctypes.sizeof(name),
-                                                        ctypes.byref(wintypes.DWORD())):
-                        locked = name.value.lower() != "default"      # UOI_NAME
-                finally:
-                    user32.CloseDesktop(desktop)
             running = wintypes.BOOL()
             if not user32.SystemParametersInfoW(0x0072, 0, ctypes.byref(running), 0):
                 return None                                  # SPI_GETSCREENSAVERRUNNING
-            return {"locked": locked, "screensaver": bool(running.value)}
+            return {"locked": state["locked"], "screensaver": bool(running.value)}
         except (OSError, AttributeError):
             return None
 
@@ -1173,6 +1168,14 @@ class WindowsDisplay(DisplayEvents):
 def display_watch():
     """The run's display (tests put a fake in its place)."""
     return WindowsDisplay()
+
+
+def session_record(display):
+    """The report's "session" block: every reading of the session's lock
+    state during the run (tools/session_state.py; #507), or None when the
+    display was never watched."""
+    watch = getattr(display, "watch", None)
+    return watch.record() if watch is not None else None
 
 
 def refresh_now():
@@ -1508,10 +1511,10 @@ def one_run(args, settle, window, leak_minutes=0, display=None, refresh_hz=None,
             out["private_growth_mb"] = round(growth, 1)
         return out
 
-    def look():                      # the session and the page's frames, now (#292)
+    def look(where):                 # the session and the page's frames, now (#292)
         say("probe")
         page = read(STEP_TIMEOUT_S).get("page")
-        return {"session": display.session() if display else None, "page": page}
+        return {"session": display.session(where) if display else None, "page": page}
 
     result = {}
     try:
@@ -1564,10 +1567,10 @@ def one_run(args, settle, window, leak_minutes=0, display=None, refresh_hz=None,
                 drafting = read(STEP_TIMEOUT_S).get("recording")
                 draft_now(state, drafting, "as the window began in")
             if visible:                      # read just before the window, outside it
-                start, at0 = look(), time.monotonic()
+                start, at0 = look(f"before {state}"), time.monotonic()
             result[state] = measure(job, proc.pid, 0, window)
             if visible:                      # and just after it
-                at1, end = time.monotonic(), look()
+                at1, end = time.monotonic(), look(f"after {state}")
                 drawing = drawing_report(
                     state, display.states(at0, at1) if display else None,
                     [start["session"], end["session"]], start["page"], end["page"],
@@ -1653,7 +1656,7 @@ def parent(args):
             raise RuntimeError(f"the display was {at_start or 'in an unknown state'} as the run "
                                "started, so the visible states could not be drawn: turn the "
                                "display on and start again")
-        problems = session_problems(display.session())
+        problems = session_problems(display.session("as the run started"))
         if problems:
             raise RuntimeError(f"{'; '.join(problems)} as the run started, so the visible "
                                "states could not be drawn: unlock the session and start again")
@@ -1690,6 +1693,7 @@ def parent(args):
     except Exception as exc:          # anything that stops a run means "not measured"
         # Without the home folder or the user name; then the name guard (P3).
         report["each_run"], report["error"] = results, residue.redact(str(exc))
+        report["session"] = session_record(display)
         residue.write_guarded(args.report, report)
         print(f"COULD NOT MEASURE: {exc}")
         return 2
@@ -1699,6 +1703,7 @@ def parent(args):
         if speech_dir is not None:
             remove_folder(speech_dir)
     report["each_run"] = results
+    report["session"] = session_record(display)
     # Managed policy: recording states it turned off (in any run), and how the
     # recordings were confirmed. Neither is a figure, so neither has a median.
     policy_off = list(dict.fromkeys(s for r in results for s in r.pop(

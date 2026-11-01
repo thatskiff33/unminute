@@ -105,7 +105,7 @@ class EndBrowserTests(unittest.TestCase):
 
 
 # System.Windows.Forms.CloseReason, with its .NET values.
-CLOSE_REASON = types.SimpleNamespace(WindowsShutDown=1, UserClosing=3, TaskManagerClosing=5)
+CLOSE_REASON = types.SimpleNamespace(WindowsShutDown=1, UserClosing=3, TaskManagerClosing=4)
 
 
 def fake_forms():
