@@ -19,8 +19,11 @@
 # A changed file that nothing maps runs everything, and so does an unusual path
 # or a test module that is gone: the selection only ever narrows towards the
 # full suite, never away from it. tests/test_select_tests.py fails when a
-# tracked file or a test module is not mapped, or when a test module imports a
-# repository module the map does not tie to it.
+# tracked file or a test module is not mapped, when a test module imports or
+# names a repository file the map does not tie to it (an import, a
+# ROOT / "docs" / "X.md" join, or a path in a string such as a page's
+# "/tools/design_check/fixtures.js"), or when a shared Python file under
+# workspace/ imports one that is not shared too.
 #
 # In CI (.github/workflows/ci.yml, job "Select tests") this file, its map and
 # the duration table run from the base commit, not the pull request's, so a
@@ -154,6 +157,14 @@ def resolve_name(root, name):
     return name
 
 
+def code(text):
+    """text as one Markdown code span, whatever backticks it holds, so a path
+    from a pull request renders as itself in the job summary."""
+    fence = "`" * (max((len(run) for run in re.findall(r"`+", text)), default=0) + 1)
+    pad = " " if text.startswith("`") or text.endswith("`") else ""
+    return f"{fence}{pad}{text}{pad}{fence}"
+
+
 def select(paths, test_map, root):
     """The tests a change to paths needs, for the checkout at root (the merged
     result being tested)."""
@@ -164,27 +175,27 @@ def select(paths, test_map, root):
     reasons = []
     for path in paths:
         if not PLAIN_PATH.fullmatch(path):
-            return Selection("all", reasons=[f"an unusual path: {path!r}"])
+            return Selection("all", reasons=[f"an unusual path: {code(repr(path))}"])
         if matches(test_map["run_everything"], path):
-            return Selection("all", reasons=[f"{path} is shared: everything runs"])
+            return Selection("all", reasons=[f"{code(path)} is shared: everything runs"])
         hit = []
         module = TEST_MODULE.fullmatch(path)
         if module:
             if not module_exists(root, module[1]):
-                return Selection("all", reasons=[f"{path} was removed or renamed"])
+                return Selection("all", reasons=[f"{code(path)} was removed or renamed"])
             hit.append(module[1])
         hit += [test for test, globs in test_map["tests"].items() if matches(globs, path)]
         if not hit and not matches(test_map["only_always"], path):
-            return Selection("all", reasons=[f"{path} is not in the test map"])
+            return Selection("all", reasons=[f"{code(path)} is not in the test map"])
         chosen.update(hit)
-        reasons.append(f"{path}: {', '.join(sorted(hit)) or 'the always set'}")
+        reasons.append(f"{code(path)}: {', '.join(sorted(hit)) or 'the always set'}")
     chosen.update(test_map["always"])
     names = set()
     for name in chosen:
         resolved = resolve_name(root, name)
         if resolved is None:
-            return Selection("all", reasons=[f"tests/{name.partition('.')[0]}.py is mapped "
-                                             "but missing"])
+            missing = f"tests/{name.partition('.')[0]}.py"
+            return Selection("all", reasons=[f"{code(missing)} is mapped but missing"])
         names.add(resolved)
     # A class whose module runs anyway adds nothing.
     names = {n for n in names if "." not in n or n.partition(".")[0] not in names}
@@ -293,6 +304,41 @@ def direct_imports(root, path, files):
     return out
 
 
+# A run of path characters with at least one slash, as a string names a file.
+PATH_TOKEN = re.compile(r"[\w.\-]+(?:/[\w.\-]+)+")
+
+
+def named_files(root, path, files):
+    """The tracked files that the file at path names other than by an import:
+    a join of string literals onto a base, as ROOT / "docs" / "RELEASING.md",
+    or a path inside a string, as a page's "/tools/design_check/fixtures.js".
+    Docstrings do not count: they explain, they do not read."""
+    tracked = set(files)
+    tree = ast.parse((Path(root) / path).read_text(encoding="utf-8"))
+    docstrings = {id(node.value) for node in ast.walk(tree)
+                  if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)}
+    out = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            parts = []
+            while isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+                parts.append(node.right)
+                node = node.left
+            joined = []
+            for part in reversed(parts):
+                if not (isinstance(part, ast.Constant) and isinstance(part.value, str)):
+                    break
+                joined.append(part.value)
+            if "/".join(joined) in tracked:
+                out.add("/".join(joined))
+        elif (isinstance(node, ast.Constant) and isinstance(node.value, str)
+              and id(node) not in docstrings):
+            out.update(t for t in (m.lstrip("/") for m in PATH_TOKEN.findall(node.value))
+                       if t in tracked)
+    out.discard(path)
+    return out
+
+
 def problems(root, test_map, files=None):
     """What the map gets wrong for the checkout at root, as readable lines."""
     files = tracked_files(root) if files is None else files
@@ -322,16 +368,26 @@ def problems(root, test_map, files=None):
     for pattern in sorted(set(globs)):
         if not any(glob_regex(pattern).fullmatch(p) for p in files):
             found.append(f"the map's glob {pattern} matches no tracked file")
-    # What a test module imports maps to it.
+    # What a test module imports or names maps to it.
     for module in modules:
         path = f"tests/{module}.py"
         if path not in files or module in always_modules:
             continue
-        for dep in sorted(direct_imports(root, path, files)):
+        imported = direct_imports(root, path, files)
+        for dep in sorted(imported | named_files(root, path, files)):
             if TEST_MODULE.fullmatch(dep) or matches(test_map["run_everything"], dep):
                 continue
             if not matches(test_map["tests"].get(module, []), dep):
-                found.append(f"{path} imports {dep}, which the map does not tie to {module}")
+                how = "imports" if dep in imported else "names"
+                found.append(f"{path} {how} {dep}, which the map does not tie to {module}")
+    # A shared workspace file's own imports are shared too: a change to one
+    # changes the core every test runs on.
+    for path in files:
+        if (path.startswith("workspace/") and path.endswith(".py")
+                and matches(test_map["run_everything"], path)):
+            for dep in sorted(direct_imports(root, path, files)):
+                if not matches(test_map["run_everything"], dep):
+                    found.append(f"{path} is shared and imports {dep}, which is not")
     return found
 
 

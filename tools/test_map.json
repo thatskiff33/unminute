@@ -20,8 +20,12 @@
   "tests/profile_elsewhere.py",
   "tests/schema_v1.py",
   "tests/worker_exit.py",
+  "tools/design_check/**",
   "workspace/__init__.py",
   "workspace/store.py",
+  "workspace/diag.py",
+  "workspace/location.py",
+  "workspace/update.py",
   "workspace/vault.py",
   "workspace/keystore.py",
   "workspace/dpapi.py",
@@ -129,7 +133,6 @@
    "workspace/app.py",
    "workspace/app_common.py",
    "workspace/asr_engines.py",
-   "workspace/diag.py",
    "workspace/handoff_ws.py",
    "workspace/media.py",
    "workspace/mixdown.py",
@@ -163,7 +166,6 @@
    "workspace/cleanup.py",
    "workspace/clipboard.py",
    "workspace/consent.py",
-   "workspace/diag.py",
    "workspace/engines.py",
    "workspace/gpu.py",
    "workspace/handoff.py",
@@ -177,7 +179,6 @@
    "workspace/shell.py",
    "workspace/speakers.py",
    "workspace/ui/**",
-   "workspace/update.py",
    "workspace/watched_ws.py"
   ],
   "test_asr_engines": [
@@ -196,7 +197,6 @@
    "workspace/audit.py",
    "workspace/cleanup.py",
    "workspace/consent.py",
-   "workspace/diag.py",
    "workspace/handoff.py",
    "workspace/handoff_ws.py",
    "workspace/holds.py",
@@ -272,7 +272,6 @@
    "workspace/app_common.py",
    "workspace/asr_engines.py",
    "workspace/clipboard.py",
-   "workspace/diag.py",
    "workspace/engines.py",
    "workspace/gpu.py",
    "workspace/handoff_ws.py",
@@ -281,7 +280,6 @@
    "workspace/settings_ws.py",
    "workspace/setup.py",
    "workspace/speaker_names.py",
-   "workspace/update.py",
    "workspace/watched_ws.py",
    "workspace/worker.py"
   ],
@@ -324,7 +322,6 @@
   "test_dpapi": [],
   "test_draft_scenario": [
    "tools/accessibility_check.py",
-   "tools/design_check/**",
    "tools/draft_scenario.py",
    "tools/evidence.py",
    "tools/residue.py",
@@ -352,7 +349,6 @@
    "workspace/app_common.py",
    "workspace/asr_engines.py",
    "workspace/consent.py",
-   "workspace/diag.py",
    "workspace/drafts.py",
    "workspace/engines.py",
    "workspace/handoff_ws.py",
@@ -396,7 +392,6 @@
    "workspace/audit.py",
    "workspace/consent.py",
    "workspace/credentials.py",
-   "workspace/diag.py",
    "workspace/drafts.py",
    "workspace/gpu.py",
    "workspace/handoff.py",
@@ -455,17 +450,14 @@
    "workspace/app_common.py",
    "workspace/asr_engines.py",
    "workspace/credentials.py",
-   "workspace/diag.py",
    "workspace/engines.py",
    "workspace/gpu.py",
    "workspace/handoff_ws.py",
-   "workspace/location.py",
    "workspace/media.py",
    "workspace/recording_ws.py",
    "workspace/settings_ws.py",
    "workspace/shell.py",
    "workspace/ui/**",
-   "workspace/update.py",
    "workspace/watched_ws.py"
   ],
   "test_holds": [
@@ -499,7 +491,6 @@
    "workspace/__main__.py",
    "workspace/app.py",
    "workspace/app_common.py",
-   "workspace/diag.py",
    "workspace/handoff_ws.py",
    "workspace/jobs.py",
    "workspace/media.py",
@@ -515,7 +506,6 @@
    "workspace/app.py",
    "workspace/app_common.py",
    "workspace/cleanup.py",
-   "workspace/diag.py",
    "workspace/gpu.py",
    "workspace/handoff_ws.py",
    "workspace/media.py",
@@ -532,7 +522,6 @@
    "workspace/api.py",
    "workspace/app.py",
    "workspace/app_common.py",
-   "workspace/diag.py",
    "workspace/gpu.py",
    "workspace/handoff_ws.py",
    "workspace/instance.py",
@@ -544,7 +533,6 @@
    "workspace/shell.py",
    "workspace/speaker_load.py",
    "workspace/ui/**",
-   "workspace/update.py",
    "workspace/watched_ws.py",
    "workspace/worker.py"
   ],
@@ -577,13 +565,11 @@
    "workspace/app.py",
    "workspace/app_common.py",
    "workspace/cleanup.py",
-   "workspace/diag.py",
    "workspace/handoff_ws.py",
    "workspace/holds.py",
    "workspace/media.py",
    "workspace/recording_ws.py",
    "workspace/settings_ws.py",
-   "workspace/update.py",
    "workspace/watched_ws.py"
   ],
   "test_locked_check": [
@@ -618,13 +604,11 @@
    "workspace/asr_engines.py",
    "workspace/drafts.py",
    "workspace/engines.py",
-   "workspace/setup.py",
-   "workspace/update.py"
+   "workspace/setup.py"
   ],
   "test_media_crypto": [
    "tools/windows_powershell.py",
    "workspace/asr_engines.py",
-   "workspace/diag.py",
    "workspace/media.py",
    "workspace/runner.py",
    "workspace/speakers.py",
@@ -664,7 +648,6 @@
    "tools/compare_engines.py",
    "tools/gpu_trial.py",
    "workspace/asr_engines.py",
-   "workspace/diag.py",
    "workspace/engines.py",
    "workspace/speaker_load.py",
    "workspace/speakers.py",
@@ -688,7 +671,6 @@
    "workspace/__main__.py",
    "workspace/audit.py",
    "workspace/credentials.py",
-   "workspace/diag.py",
    "workspace/instance.py",
    "workspace/offboard.py"
   ],
@@ -719,6 +701,7 @@
    "workspace/ui/**"
   ],
   "test_perf_check": [
+   "docs/RELEASING.md",
    "docs/perf-budgets.json",
    "tests/budgets.json",
    "tools/audit.py",
@@ -735,7 +718,6 @@
    "workspace/cleanup.py",
    "workspace/consent.py",
    "workspace/credentials.py",
-   "workspace/diag.py",
    "workspace/drafts.py",
    "workspace/echo.py",
    "workspace/handoff.py",
@@ -810,7 +792,6 @@
    "workspace/settings_ws.py",
    "workspace/setup.py",
    "workspace/speaker_names.py",
-   "workspace/update.py",
    "workspace/watched_ws.py"
   ],
   "test_recorder": [
@@ -826,7 +807,6 @@
    "workspace/recorder.py",
    "workspace/recording_ws.py",
    "workspace/settings_ws.py",
-   "workspace/update.py",
    "workspace/watched_ws.py"
   ],
   "test_release_workflow": [
@@ -861,7 +841,6 @@
    "workspace/app_common.py",
    "workspace/asr_engines.py",
    "workspace/audit.py",
-   "workspace/diag.py",
    "workspace/drafts.py",
    "workspace/handoff.py",
    "workspace/handoff_ws.py",
@@ -888,7 +867,6 @@
    "workspace/app_common.py",
    "workspace/asr_engines.py",
    "workspace/cleanup.py",
-   "workspace/diag.py",
    "workspace/handoff.py",
    "workspace/handoff_ws.py",
    "workspace/holds.py",
@@ -897,7 +875,6 @@
    "workspace/runner.py",
    "workspace/settings_ws.py",
    "workspace/speaker_names.py",
-   "workspace/update.py",
    "workspace/watched_ws.py"
   ],
   "test_security_lint": [
@@ -1055,8 +1032,7 @@
    "tools/lock.py",
    "workspace/handoff.py",
    "workspace/holds.py",
-   "workspace/intake.py",
-   "workspace/update.py"
+   "workspace/intake.py"
   ],
   "test_vault": [],
   "test_windows_powershell": [
@@ -1077,7 +1053,6 @@
    "workspace/asr_engines.py",
    "workspace/consent.py",
    "workspace/credentials.py",
-   "workspace/diag.py",
    "workspace/drafts.py",
    "workspace/handoff_ws.py",
    "workspace/media.py",
@@ -1090,12 +1065,10 @@
   ],
   "test_workers": [
    "workspace/asr_engines.py",
-   "workspace/diag.py",
    "workspace/engines.py",
    "workspace/media.py",
    "workspace/resources.py",
    "workspace/runner.py",
-   "workspace/update.py",
    "workspace/worker.py"
   ],
   "test_workspace_core": [

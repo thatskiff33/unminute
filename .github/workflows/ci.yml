@@ -88,20 +88,36 @@ jobs:
           fi
           selector="$RUNNER_TEMP/selector"
           mkdir -p "$selector"
+          # Every test, in FULL_CHUNKS parts.
+          everything() {
+            { echo "mode=all"; echo "names="; echo "chunks=[1, 2, 3, 4, 5, 6, 7, 8]"; } >> "$GITHUB_OUTPUT"
+          }
           if ! git cat-file -e "$trusted:tools/select_tests.py" 2> /dev/null; then
             # A base without the selector (only the pull request that added it,
-            # #500): everything runs, in FULL_CHUNKS parts, and no code from the
-            # pull request decides that.
+            # #500): everything runs, and no code from the pull request decides that.
             echo "The base commit has no test selector: every test runs."
-            { echo "mode=all"; echo "names="; echo "chunks=[1, 2, 3, 4, 5, 6, 7, 8]"; } >> "$GITHUB_OUTPUT"
+            everything
             exit 0
           fi
           for file in select_tests.py test_map.json test_durations.json; do
             git show "$trusted:tools/$file" > "$selector/$file"
           done
           if [ "$EVENT" = pull_request ]; then
-            python3 -I "$selector/select_tests.py" --root . --changed 'HEAD^1' HEAD \
-              --github-output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY"
+            # The selection goes to scratch files first. If the base's selector
+            # fails, every test runs instead, and nothing it wrote is used: a
+            # broken selector on main must not fail every pull request, its own
+            # fix included (#503 review). That is never narrower. A push to main
+            # or the nightly run below still fails loudly.
+            picked="$RUNNER_TEMP/selection.out"
+            notes="$RUNNER_TEMP/selection.md"
+            if python3 -I "$selector/select_tests.py" --root . --changed 'HEAD^1' HEAD \
+                --github-output "$picked" --summary "$notes"; then
+              cat "$picked" >> "$GITHUB_OUTPUT"
+              cat "$notes" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::warning::The base commit's test selector failed: every test runs."
+              everything
+            fi
           else
             python3 -I "$selector/select_tests.py" --root . --all \
               --github-output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY"

@@ -102,6 +102,15 @@ class SelectTests(unittest.TestCase):
             root = stand_in(tmp, b_classes=("B1",))
             self.assertEqual(st.select(["docs/x.md"], MAP, root).names, ["test_always", "test_b"])
 
+    def test_reasons_show_paths_as_code(self):
+        # The job summary is Markdown, and the paths come from the pull request.
+        self.assertEqual(self.select("docs/a`b.md").reasons, ["``docs/a`b.md``: the always set"])
+        self.assertEqual(self.select("src/zq.py").reasons, ["`src/zq.py` is not in the test map"])
+        self.assertEqual(self.select("docs\\x.md").reasons,
+                         ["an unusual path: `'docs\\\\x.md'`"])
+        self.assertEqual(st.code("`x"), "`` `x ``")
+        self.assertEqual(st.code("a``b"), "```a``b```")
+
     def test_a_malformed_map_is_an_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             bad = Path(tmp) / "map.json"
@@ -190,19 +199,33 @@ class MapTests(unittest.TestCase):
         self.assertEqual(st.problems(ROOT, self.map), [])
 
     def test_a_gap_in_a_map_is_reported(self):
-        # A new test module, a new source file and a new import, none mapped.
+        # A new test module, a new source file, a new import, files a test
+        # names (a join, a page's script path; not a docstring), and a shared
+        # workspace file that imports one that is not shared, none mapped.
         with tempfile.TemporaryDirectory() as tmp:
             root = stand_in(tmp)
             (root / "src").mkdir()
-            for name in ("a.py", "b.py", "c.py", "new.py"):
+            (root / "workspace").mkdir()
+            for name in ("a.py", "b.py", "c.py", "d.js", "e.py", "new.py"):
                 (root / "src" / name).write_text("")
-            (root / "tests" / "test_a.py").write_text("from src import a, c\n")
+            (root / "workspace" / "core.py").write_text("from workspace import helper\n")
+            (root / "workspace" / "helper.py").write_text("")
+            (root / "tests" / "test_a.py").write_text(
+                '"""Not a read: src/e.py."""\n'
+                "from src import a, c\n"
+                'X = ROOT / "src" / "b.py"\n'
+                'Y = ROOT / "docs" / "build.json"\n'
+                "PAGE = '<script src=\"/src/d.js?v=1\"></script>'\n")
             (root / "tests" / "test_new.py").write_text("")
-            files = ["src/a.py", "src/b.py", "src/c.py", "src/new.py", "core/x.py", "tools/run.py",
-                     "docs/build.json", "README.md", "ui/x.js", "tests/test_a.py",
+            files = ["src/a.py", "src/b.py", "src/c.py", "src/d.js", "src/e.py", "src/new.py",
+                     "core/x.py", "tools/run.py", "docs/build.json", "README.md", "ui/x.js",
+                     "workspace/core.py", "workspace/helper.py", "tests/test_a.py",
                      "tests/test_b.py", "tests/test_always.py", "tests/test_new.py"]
-            found = st.problems(root, dict(MAP, only_always=MAP["only_always"] + ["docs/zq/*"]),
-                                files)
+            test_map = dict(MAP, only_always=MAP["only_always"] + ["docs/zq/*"],
+                            run_everything=MAP["run_everything"] + ["workspace/core.py"],
+                            tests=dict(MAP["tests"], test_b=["src/b.py", "src/d.js", "src/e.py",
+                                                             "workspace/helper.py"]))
+            found = st.problems(root, test_map, files)
         self.assertEqual(sorted(found), sorted([
             "tests/test_new.py is not in the map's tests (or always)",
             "the map names test_gone, which is not in tests/",
@@ -211,6 +234,9 @@ class MapTests(unittest.TestCase):
             "the map's glob docs/zq/* matches no tracked file",
             "the map's glob src/g.py matches no tracked file",
             "tests/test_a.py imports src/c.py, which the map does not tie to test_a",
+            "tests/test_a.py names src/b.py, which the map does not tie to test_a",
+            "tests/test_a.py names src/d.js, which the map does not tie to test_a",
+            "workspace/core.py is shared and imports workspace/helper.py, which is not",
         ]))
 
     def test_the_always_set_stays_quick(self):
@@ -226,6 +252,11 @@ class MapTests(unittest.TestCase):
         for path in ("tools/run_tests.py", "tools/select_tests.py", "tools/test_map.json",
                      "tools/test_durations.json", "tests/page_scripts.py", "tests/page_vm.js",
                      "tests/download_guard.py", "requirements.txt", "requirements.in",
+                     # The page tests' fake bridge and frames, a test helper (#503 review).
+                     "tools/design_check/fixtures.js", "tools/design_check/frame.html",
+                     "tools/design_check/render.html", "tools/design_check/render.js",
+                     # What the shared store imports (#503 review).
+                     "workspace/location.py", "workspace/diag.py", "workspace/update.py",
                      "requirements/ci.txt", ".github/workflows/ci.yml",
                      ".github/workflows/quality.yml", "workspace/store.py",
                      "workspace/__init__.py"):
@@ -246,6 +277,12 @@ class MapTests(unittest.TestCase):
                 selection = st.select([f"tests/{path.name}"], self.map, ROOT)
                 self.assertEqual(selection.mode, "some")
                 self.assertIn(path.stem, selection.names)
+
+    def test_a_doc_change_runs_the_tests_that_read_it(self):
+        # tests/test_perf_check.py reads docs/RELEASING.md (#503 review).
+        selection = st.select(["docs/RELEASING.md"], self.map, ROOT)
+        self.assertEqual(selection.mode, "some")
+        self.assertIn("test_perf_check", selection.names)
 
     def test_a_module_change_runs_the_tests_that_import_it(self):
         selection = st.select(["workspace/echo.py"], self.map, ROOT)
@@ -370,6 +407,20 @@ class WorkflowTests(unittest.TestCase):
         chunks = json.dumps(list(range(1, st.FULL_CHUNKS + 1)))
         self.assertIn(f'{{ echo "mode=all"; echo "names="; echo "chunks={chunks}"; }} '
                       '>> "$GITHUB_OUTPUT"', job)
+
+    def test_a_failing_base_selector_runs_everything_on_a_pull_request(self):
+        # A broken selector on main would otherwise fail every pull request,
+        # its own fix included (#503 review). Running everything is never
+        # narrower, and the failed run's partial outputs are never used.
+        job = self.jobs["select-tests"]
+        self.assertIn('--github-output "$picked" --summary "$notes"; then', job)
+        self.assertIn('cat "$picked" >> "$GITHUB_OUTPUT"', job)
+        warning = "::warning::The base commit's test selector failed: every test runs."
+        self.assertIn(warning, job)
+        self.assertRegex(job[job.index(warning):], r"\A[^\n]*\n\s*everything\n")
+        # A push to main or the nightly run still fails loudly.
+        self.assertIn('python3 -I "$selector/select_tests.py" --root . --all \\\n'
+                      '              --github-output "$GITHUB_OUTPUT"', job)
 
     def test_the_syntax_check_follows_the_selection_and_always_reports(self):
         job = self.jobs["check"]
