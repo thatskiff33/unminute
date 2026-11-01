@@ -305,6 +305,36 @@ real time, and remove it when the cause is fixed.
   One question at a time is a unit test (`tests/test_app.py`). `tests/test_evidence.py` checks
   the Esc, Invoke and "until enabled" steps on an off-screen stand-in form, and
   `tests/test_accessors.py` the verdict (`native_problems`), which names each rule that failed.
+- **WebView2 and the user's account (#509).** On an Entra ID joined laptop with the user signed
+  in, the WebView2 Runtime's browser process (`msedgewebview2.exe`, the direct child of the app)
+  sometimes loaded `oneauth.dll`, `wininet.dll`, `Windows.Security.Authentication.Web.Core.dll`
+  and an in-process account extension (`AadWamExtension.dll` or
+  `MicrosoftAccountWAMExtension.dll`) within half a second of the window starting to close,
+  and wrote `AppData\Local\Microsoft\IdentityCache\...\Accounts`, `AT` and `ID` files and
+  WinINet's `INetCache\IE\container.dat` and `INetCookies\ESE\container.dat` (with an
+  unlistable `INetCache\Content.IE5`) under the profile its known folders resolve to. A
+  blank window from the packaged runtime with the app's switches reproduced it (runtime
+  156.0.4314.50 and .58, pywebview 6.2.1, 2 Nov 2026): 6 of 29 closes after a UI
+  Automation client had read the window (all in one 20-minute spell), none of 12 without one,
+  and never while a window was open; Windows Forms alone, and an app ended with `taskkill`,
+  never did. The files are dated at the close, and no process held them open a moment later.
+  What was tried, by the runtime's behaviour: `--force-renderer-accessibility` (Microsoft's
+  list of WebView2 browser flags) did not bring it on; disabling the runtime's internal feature
+  `msLazyLoadOneAuthInWebView` loads OneAuth at start-up instead, every time (so the runtime
+  defers it, and the close is what we saw set it off); disabling `msOneAuthWAM` makes the runtime
+  load the Web Account Manager client at every start instead. Microsoft documents no setting
+  that turns the lookup off (single sign-on with the OS account,
+  `AllowSingleSignOnUsingOSPrimaryAccount`, is already off), so the app ends the browser
+  process itself once a close goes ahead (`shell.end_browser_on_close`), and the shutdown
+  never runs. Ending it makes pywebview's own private-mode clean-up fail at its first step
+  (it asks the ended process for its id), so `shell._clear_after_end` disposes the control and
+  removes the same folder without that step. With the fix the browser and its children were
+  gone within 0.1 s of the close, the profile folder was removed, no crash report was written,
+  and the real start closed with exit code 0. The internal feature names come from the runtime's
+  `msedge.dll` and are not documented: do not ship them as switches. To look again, the probe
+  scripts watched the tree's loaded modules (Toolhelp snapshots every 50 ms, names only) and
+  the files by name, in a throwaway `USERPROFILE`; never list or read the real profile's
+  `IdentityCache` (it holds the user's tokens).
 - **Power requests do not survive a closed lid.** `PowerSetRequest` keeps a computer awake only
   against the idle timer: Windows ends it when the user closes the lid (action Sleep), presses
   the power button or chooses Sleep, and on Modern Standby on battery five minutes after the

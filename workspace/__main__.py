@@ -741,6 +741,16 @@ def main():
             pass
     window.events.shown += never_block_shutdown
 
+    def end_browser_on_close():
+        # After never_block_shutdown, so its FormClosing handler runs last
+        # (#509): WebView2's browser process is ended once a close is going
+        # ahead, before its own shutdown can ask Windows for the user's account.
+        try:
+            shell.end_browser_on_close(window)
+        except Exception:
+            pass
+    window.events.shown += end_browser_on_close
+
     def quiet_when_minimised():
         # Minimised: WebView2 stops rendering; with nothing recording the page
         # is suspended, and while recording it runs at low memory

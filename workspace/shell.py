@@ -561,6 +561,150 @@ def _close_now(window):
         os._exit(3)              # cannot even close it: end the process, never run unlocked
 
 
+# -- ending WebView2's browser process when the window closes (#509) -------------
+# On a PC signed in with a work (Entra ID) or Microsoft account, the WebView2
+# Runtime's browser process can load Microsoft's account library (oneauth.dll)
+# while it shuts down: it then asks the Web Account Manager for the user's
+# accounts and tokens (in its own process, through Windows' in-process account
+# extensions) and starts WinINet, which writes an account and token cache
+# (%LOCALAPPDATA%\Microsoft\IdentityCache) and WinINet's cache and cookie
+# stores in the user's profile, outside Chromium's network stack and its
+# host-resolver block. The window never needs any of it, and no documented
+# WebView2 setting turns it off (docs/SECURITY_MODEL.md T1; docs/DEVELOPER_NOTES.md
+# "WebView2 and the user's account"). The runtime loads the library lazily and,
+# in our reproduction, only during that shutdown, so once a close is going
+# ahead the app ends the browser process itself and the shutdown never runs.
+# The window's WebView2 profile is in private mode and is removed anyway.
+BROWSER_EXE = "msedgewebview2.exe"
+BROWSER_EXIT_WAIT_MS = 3000
+
+
+def end_browser_on_close(window):
+    """Once a close of the window is going ahead (no handler cancelled it),
+    end WebView2's browser process before the window disposes the control,
+    which would start the browser's own shutdown. Call once the window is
+    shown, after every other FormClosing handler has been added: this one
+    must run last, as an earlier one may still cancel or allow the close."""
+    if getattr(window, "_browser_end_hooked", False):
+        return
+    window._browser_end_hooked = True
+    import sys
+    from System.Windows.Forms import FormClosingEventHandler
+    _clear_after_end(getattr(sys.modules.get("webview.platforms.edgechromium"), "EdgeChrome", None))
+    form = window.native
+
+    def on_form_closing(sender, args):     # WinForms raises this on the UI thread
+        if args.Cancel:
+            return
+        _guarded(end_browser, form.browser)
+    form.FormClosing += FormClosingEventHandler(on_form_closing)
+
+
+def end_browser(browser):
+    """End the browser process of pywebview's WebView2 view `browser` (its
+    id from the control itself, CoreWebView2.BrowserProcessId), and mark the
+    view so its private-mode clean-up need not ask the ended process. True
+    if it was ended."""
+    core = browser.webview.CoreWebView2
+    if core is None:
+        return False
+    ended = terminate_browser(int(core.BrowserProcessId))
+    if ended:
+        browser.unminute_browser_ended = True
+    return ended
+
+
+def _clear_after_end(view):
+    """pywebview's private-mode clean-up at close (EdgeChrome.clear_user_data)
+    first asks the control for its browser process, which fails once that
+    process has been ended, and then skips removing the profile folder. For a
+    view whose browser end_browser() ended, do the same clean-up without that
+    step: dispose the control, then remove the same folder (a folder still
+    there is removed at the next start, storage_folder). Installed once."""
+    if view is None or getattr(view.clear_user_data, "unminute_after_end", False):
+        return
+    original = view.clear_user_data
+
+    def clear_user_data(self):
+        if not getattr(self, "unminute_browser_ended", False):
+            return original(self)
+        import shutil
+
+        from webview import _state
+        if not _state["private_mode"]:
+            return None
+        try:
+            self.webview.Dispose()
+        except Exception:
+            pass
+        try:
+            shutil.rmtree(self.user_data_folder)
+        except Exception:
+            pass                       # removed at the next start (storage_folder)
+        return None
+    clear_user_data.unminute_after_end = True
+    view.clear_user_data = clear_user_data
+
+
+def terminate_browser(pid, api=None):
+    """End process `pid` only if it is WebView2's browser (BROWSER_EXE), held
+    by a handle from the check to the end, so a reused id can never end
+    another program; then wait for it to exit (WebView2's other processes
+    follow their browser). True if it was ended. `api` is for tests."""
+    api = api or _ProcessApi()
+    handle = api.open(pid)
+    if not handle:
+        return False
+    try:
+        name = api.image_name(handle)
+        if not name or os.path.basename(name).lower() != BROWSER_EXE:
+            return False
+        if not api.terminate(handle):
+            return False
+        api.wait(handle, BROWSER_EXIT_WAIT_MS)
+        return True
+    finally:
+        api.close(handle)
+
+
+class _ProcessApi:
+    """The few kernel32 calls terminate_browser() needs."""
+    ACCESS = 0x0001 | 0x1000 | 0x00100000   # TERMINATE, QUERY_LIMITED_INFORMATION, SYNCHRONIZE
+
+    def __init__(self):
+        import ctypes
+        from ctypes import wintypes
+        self._ctypes, self._wintypes = ctypes, wintypes
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.OpenProcess.restype = wintypes.HANDLE
+        k.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        k.QueryFullProcessImageNameW.argtypes = (wintypes.HANDLE, wintypes.DWORD,
+                                                 wintypes.LPWSTR, wintypes.PDWORD)
+        k.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
+        k.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        k.CloseHandle.argtypes = (wintypes.HANDLE,)
+        self._k = k
+
+    def open(self, pid):
+        return self._k.OpenProcess(self.ACCESS, False, pid)
+
+    def image_name(self, handle):
+        buf = self._ctypes.create_unicode_buffer(32768)
+        size = self._wintypes.DWORD(len(buf))
+        if not self._k.QueryFullProcessImageNameW(handle, 0, buf, self._ctypes.byref(size)):
+            return None
+        return buf.value
+
+    def terminate(self, handle):
+        return bool(self._k.TerminateProcess(handle, 0))
+
+    def wait(self, handle, ms):
+        self._k.WaitForSingleObject(handle, ms)
+
+    def close(self, handle):
+        self._k.CloseHandle(handle)
+
+
 # -- loading the window's backend early (#339) ----------------------------------
 # Loading pywebview's WebView2 backend (.NET through pythonnet, Windows Forms
 # and the WebView2 control's assemblies) is about half a second of the
