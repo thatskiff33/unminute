@@ -209,8 +209,24 @@ real time, and remove it when the cause is fixed.
   `then` with no rejection handler, and a `finally`, pass a watched promise's rejection on
   to the promise they return, so the guard watches that one too, and the rejection is sent
   once, from wherever it ends up unhandled (#505 review). A promise is watched once, however
-  many callbacks return it. An `await` does not call `then`, so a returned promise handled
-  only by an `await` elsewhere is still sent. `stackPlace` cuts off the
+  many callbacks return it. Over HTTP the guard's watch is a native handler on each promise
+  it watches, so the browser sends no `unhandledrejection` event for a promise `then` or
+  `finally` returns either; the guard's own reject-on takes its place, and the rejection is
+  still sent once. Known limits from `file://` (Node probe of the real page functions, 2 Nov
+  2026, #506): an `await` does not call `then`, so a returned promise handled only by an
+  `await` elsewhere is still sent; and the guard follows only `then` without a rejection
+  handler and `finally`, so a rejection passed on any other way is not sent at all: through
+  `Promise.all`, `race` or `any`, by an async function that returns the promise or a
+  `new Promise` resolved with it, or by a rejection handler that throws it again
+  (`catch((e) => { throw e; })`). Served over HTTP the browser's event still sends these.
+  `Promise.allSettled` handles the rejection, so nothing is sent, as in the browser. No page
+  script passes a promise a callback returns on in these ways (#506): the page's rethrowing
+  handlers are on promises made inside a callback, whose rejection reaches the callback's
+  own promise by `await`. Following them would mean patching `Promise.all`, `race` and
+  `any`, and an async function's return still could not be reached; #488 makes the guard
+  unnecessary. A `then` called after the guard has sent a rejection sends it again, as the
+  browser does for a new unhandled promise; the bridge records at most one a second.
+  `stackPlace` cuts off the
   error's name and message unread (they could quote meeting text), takes the first frame
   whose URL is one of `PAGE_SCRIPTS` and returns two numbers: no message, file name or path
   reaches the bridge. Not covered: an error while a script first loads (before `main.js`
