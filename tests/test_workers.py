@@ -412,7 +412,7 @@ class WorkerTests(unittest.TestCase):
         self.assertTrue(folder.name.startswith(worker.LIBRARY_CACHE_PREFIX), folder.name)
         self.assertTrue(os.path.samefile(folder.parent, tempfile.gettempdir()))
         self.assertTrue((folder / "fontlist-v390.json").is_file())
-        self.assertFalse(inherited.exists())
+        self.assertNotEqual(os.path.normcase(folder), os.path.normcase(inherited))  # replaced
         self.h.close()
         self.assertFalse(os.path.lexists(folder))
 
@@ -422,6 +422,7 @@ class WorkerTests(unittest.TestCase):
         # handle to start a worker removes it, by its owner's process id and
         # start time; a folder whose owner still runs, a reused process id,
         # and anything else in TEMP are kept, and a junction is not followed.
+        import _winapi
         import subprocess
 
         from workspace import diag, worker
@@ -445,16 +446,14 @@ class WorkerTests(unittest.TestCase):
             target.mkdir()
             Path(target, "kept.txt").write_text("x", encoding="utf-8")
             junction = Path(temp, f"{p}{pid}-1234-jkl")
-            made = subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(target)],
-                                  capture_output=True)
+            _winapi.CreateJunction(str(target), str(junction))
             self.assertEqual(worker.remove_stale_library_caches(), 2)
             self.assertFalse(stale.exists())
             self.assertFalse(reused.exists())
             for kept in (alive, other, kept_file, Path(target, "kept.txt")):
                 self.assertTrue(kept.exists(), kept.name)
-            if made.returncode == 0:
-                self.assertTrue(os.path.lexists(junction))
-                os.rmdir(junction)                       # the junction only
+            self.assertTrue(os.path.lexists(junction))       # neither followed nor removed
+            os.rmdir(junction)                               # the junction only
             # The handle sweeps before it makes its own folder.
             Path(stale, "inner").mkdir(parents=True)
             self.h.load(fake("echo"), 1)

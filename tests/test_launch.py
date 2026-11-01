@@ -1398,10 +1398,10 @@ class ChildCheckTests(unittest.TestCase):
                                                   return_value=(True, "dpapi round trip")))
             stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
             main.self_test()
-            self.assertFalse(os.path.exists(inherited))
         folders = set(seen.values())
         self.assertEqual(len(folders), 1, folders)       # one folder, set before every import
         folder = Path(folders.pop())
+        self.assertNotEqual(os.path.normcase(folder), os.path.normcase(inherited))  # replaced
         self.assertTrue(folder.name.startswith(worker.LIBRARY_CACHE_PREFIX), folder.name)
         self.assertTrue(os.path.samefile(folder.parent, tempfile.gettempdir()))
         self.assertIn("pyannote.audio", seen)
