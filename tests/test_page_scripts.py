@@ -681,6 +681,41 @@ class PageErrorPlaceTests(unittest.TestCase):
             "}, 30);\n")
         self.assertEqual(out, [[["rejection", meetings + 40, 3]], 1, True, 6])
 
+    def test_guard_follows_a_rejection_the_page_passes_on(self):
+        # #505 review: a then with no rejection handler, or a finally, marks
+        # the promise handled but passes its rejection on to the promise it
+        # returns, which no guard watched, so from file:// it was not sent at
+        # all. The guard now watches that one too. And a promise two callbacks
+        # return is watched once, so it is sent and rejected on once.
+        meetings = self.number("meetings.js") * 100000
+        out = self.run_page(
+            "guardCallbacks({ Promise });\n"
+            "const sent = [], unhandled = [];\n"
+            "reportUiError = (...args) => sent.push(args);\n"
+            "process.on('unhandledRejection', (reason) => unhandled.push(reason));\n"
+            "const at = (line) => {\n"
+            "  const err = new Error('hidden');\n"
+            "  err.stack = String(err) + " + frames(f"f ({BASE}meetings.js:") + " + line + ':3)';\n"
+            "  return err;\n"
+            "};\n"
+            "const passed = Promise.reject(at(41));\n"
+            "guarded(() => passed)();\n"
+            "passed.then((x) => x);                   // no rejection handler: passed on\n"
+            "const fin = Promise.reject(at(42));\n"
+            "guarded(() => fin)();\n"
+            "fin.finally(() => {});                   // passed on\n"
+            "const caught = Promise.reject(at(43));\n"
+            "guarded(() => caught)();\n"
+            "caught.then((x) => x).finally(() => {}).catch(() => {});   // handled at the end\n"
+            "const twice = Promise.reject(at(44));\n"
+            "guarded(() => twice)();\n"
+            "guarded(() => twice)();                  // a second callback returns it\n"
+            "setTimeout(() => console.log(JSON.stringify([sent, unhandled.length])), 30);\n")
+        self.assertCountEqual(out[0], [["rejection", meetings + 41, 3],
+                                       ["rejection", meetings + 42, 3],
+                                       ["rejection", meetings + 44, 3]])
+        self.assertEqual(out[1], 3)
+
     def test_guard_callbacks_wraps_listeners_and_timers(self):
         out = self.run_page(
             "const added = [], removed = [], timed = [];\n"

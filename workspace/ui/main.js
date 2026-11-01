@@ -38,7 +38,8 @@ function scriptLine(url, line) {
 // on with the same reason in a promise of its own: the event, where the
 // browser sends one, still fires, and the page's listener skips that promise
 // (#501: known by the promise, not the reason, which may be a string). A
-// promise the page also handles itself is not sent (#501). Only numbers leave
+// promise the page also handles itself is not sent (#501), and one that two
+// callbacks return is watched once. Only numbers leave
 // stackPlace: the stack's first frame in one of
 // PAGE_SCRIPTS, as scriptLine numbers it, and the column. The error's name and
 // message are cut off unread (they could quote meeting text) and no file name
@@ -46,6 +47,7 @@ function scriptLine(url, line) {
 let caughtAt = null;                  // [line, col] of the error now being reported
 const sentPromises = new WeakSet();   // the promises a guard rejected on after sending them
 const handled = new WeakSet();        // the promises then (catch, finally) was called on
+const watched = new WeakSet();        // the promises a guard watches, each once
 const promiseThen = Promise.prototype.then;   // the browser's own: the guard's watch is not a handler
 const guards = new WeakMap();         // a callback -> its guard, to remove it again
 const FRAME = /^ +at (?:.* \()?(.+):(\d+):(\d+)\)?$/;
@@ -77,14 +79,20 @@ function guarded(fn) {
         throw err;
       }
       // The browser does not wait for a callback's promise; the page may.
-      if (value instanceof Promise) {
-        promiseThen.call(value, undefined, (reason) => watchRejection(value, reason));
-      }
+      if (value instanceof Promise) watchPromise(value);
       return value;
     };
     guards.set(fn, guard);
   }
   return guard;
+}
+// Watch a promise a callback returned (or one it passes its rejection on to,
+// see guardCallbacks) with the browser's own then, so the watch does not count
+// as handling it; a promise is watched once, however many callbacks return it.
+function watchPromise(promise) {
+  if (watched.has(promise)) return;
+  watched.add(promise);
+  promiseThen.call(promise, undefined, (reason) => watchRejection(promise, reason));
 }
 // A callback's promise has rejected. The browser counts a rejection as
 // unhandled when nothing has handled the promise by the end of the task it
@@ -102,17 +110,29 @@ function watchRejection(promise, reason) {
 // (handleEvent) and a timer given as text (which the page's policy refuses
 // anyway) pass unchanged. Promise.prototype.then notes each promise it is
 // called on (catch and finally call it too), so that the guard knows a
-// promise the page handles itself; it behaves as before otherwise. An await
-// does not call then, so a promise handled only by an await elsewhere is
-// still sent (docs/DEVELOPER_NOTES.md, "Page scripts").
+// promise the page handles itself; it behaves as before otherwise. A then
+// with no rejection handler, and a finally, pass a watched promise's
+// rejection on to the promise they return, so the guard watches that one
+// too: the rejection is sent once, from wherever it ends up unhandled. An
+// await does not call then, so a promise handled only by an await elsewhere
+// is still sent (docs/DEVELOPER_NOTES.md, "Page scripts").
 function guardCallbacks(win) {
   const promise = win.Promise && win.Promise.prototype;
   if (promise) {
-    const then = promise.then;
+    const then = promise.then, fin = promise.finally;
     promise.then = function (...args) {
       if (Object(this) === this) handled.add(this);
-      return then.apply(this, args);
+      const next = then.apply(this, args);
+      if (typeof args[1] !== "function" && watched.has(this) && next instanceof Promise) watchPromise(next);
+      return next;
     };
+    if (typeof fin === "function") {
+      promise.finally = function (...args) {
+        const next = fin.apply(this, args);
+        if (watched.has(this) && next instanceof Promise) watchPromise(next);
+        return next;
+      };
+    }
   }
   const proto = win.EventTarget && win.EventTarget.prototype;
   if (proto) {
