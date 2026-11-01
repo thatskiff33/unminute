@@ -32,15 +32,23 @@ function scriptLine(url, line) {
 // guarded(): if it throws, the guard notes where, from the stack, and throws
 // the same error on, so nothing else changes; the error event that follows at
 // once sends that place. From file:// the browser sends no unhandledrejection
-// event at all for an error in the page's own scripts (same probe), so when an
-// async callback's promise rejects, the guard sends the rejection itself and
-// rejects on with the same reason (the event, where there is one, then skips
-// it). Only numbers leave stackPlace: the stack's first frame in one of
+// event at all for an error in the page's own scripts (same probe), so the
+// guard watches a promise a callback returns. If it rejects and nothing else
+// handles it (see watchRejection), the guard sends the rejection and rejects
+// on with the same reason in a promise of its own: the event, where the
+// browser sends one, still fires, and the page's listener skips that promise
+// (#501: known by the promise, not the reason, which may be a string). A
+// promise the page also handles itself is not sent (#501), and one that two
+// callbacks return is watched once. Only numbers leave
+// stackPlace: the stack's first frame in one of
 // PAGE_SCRIPTS, as scriptLine numbers it, and the column. The error's name and
 // message are cut off unread (they could quote meeting text) and no file name
 // or path is sent (docs/DEVELOPER_NOTES.md, "Page scripts").
 let caughtAt = null;                  // [line, col] of the error now being reported
-const sentRejections = new WeakSet();  // the reasons (objects) of rejections a guard has sent
+const sentPromises = new WeakSet();   // the promises a guard rejected on after sending them
+const handled = new WeakSet();        // the promises then (catch, finally) was called on
+const watched = new WeakSet();        // the promises a guard watches, each once
+const promiseThen = Promise.prototype.then;   // the browser's own: the guard's watch is not a handler
 const guards = new WeakMap();         // a callback -> its guard, to remove it again
 const FRAME = /^ +at (?:.* \()?(.+):(\d+):(\d+)\)?$/;
 function stackPlace(err) {
@@ -70,26 +78,62 @@ function guarded(fn) {
         caughtAt = stackPlace(err);
         throw err;
       }
-      // The browser does not wait for a callback's promise, so its rejection
-      // is one nobody handles.
-      if (value instanceof Promise) {
-        value.catch((reason) => {
-          if (Object(reason) === reason) sentRejections.add(reason);
-          reportUiError("rejection", ...(stackPlace(reason) || [0, 0]));
-          throw reason;
-        });
-      }
+      // The browser does not wait for a callback's promise; the page may.
+      if (value instanceof Promise) watchPromise(value);
       return value;
     };
     guards.set(fn, guard);
   }
   return guard;
 }
+// Watch a promise a callback returned (or one it passes its rejection on to,
+// see guardCallbacks) with the browser's own then, so the watch does not count
+// as handling it; a promise is watched once, however many callbacks return it.
+function watchPromise(promise) {
+  if (watched.has(promise)) return;
+  watched.add(promise);
+  promiseThen.call(promise, undefined, (reason) => watchRejection(promise, reason));
+}
+// A callback's promise has rejected. The browser counts a rejection as
+// unhandled when nothing has handled the promise by the end of the task it
+// rejected in; the guard waits a little longer, to the next task, then sends
+// it and rejects on, unless something else has handled it by then.
+function watchRejection(promise, reason) {
+  setTimeout(() => {
+    if (handled.has(promise)) return;
+    reportUiError("rejection", ...(stackPlace(reason) || [0, 0]));
+    sentPromises.add(Promise.reject(reason));
+  }, 0);
+}
 // Run once, as the page loads, before any listener is added: the browser's
 // own ways to call the page later go through guarded(). A listener object
 // (handleEvent) and a timer given as text (which the page's policy refuses
-// anyway) pass unchanged.
+// anyway) pass unchanged. Promise.prototype.then notes each promise it is
+// called on (catch and finally call it too), so that the guard knows a
+// promise the page handles itself; it behaves as before otherwise. A then
+// with no rejection handler, and a finally, pass a watched promise's
+// rejection on to the promise they return, so the guard watches that one
+// too: the rejection is sent once, from wherever it ends up unhandled. An
+// await does not call then, so a promise handled only by an await elsewhere
+// is still sent (docs/DEVELOPER_NOTES.md, "Page scripts").
 function guardCallbacks(win) {
+  const promise = win.Promise && win.Promise.prototype;
+  if (promise) {
+    const then = promise.then, fin = promise.finally;
+    promise.then = function (...args) {
+      if (Object(this) === this) handled.add(this);
+      const next = then.apply(this, args);
+      if (typeof args[1] !== "function" && watched.has(this) && next instanceof Promise) watchPromise(next);
+      return next;
+    };
+    if (typeof fin === "function") {
+      promise.finally = function (...args) {
+        const next = fin.apply(this, args);
+        if (watched.has(this) && next instanceof Promise) watchPromise(next);
+        return next;
+      };
+    }
+  }
   const proto = win.EventTarget && win.EventTarget.prototype;
   if (proto) {
     const add = proto.addEventListener, remove = proto.removeEventListener;
@@ -319,9 +363,9 @@ document.addEventListener("visibilitychange", () => {
 
 // Where the browser gives the file and line (served over HTTP, as in the
 // design check), they are used; from file:// it gives neither, and the place
-// a guard noted is used instead (#491). A rejection a guard has already sent
-// is not sent again; any other is sent with its reason's place, when it is an
-// Error with a stack.
+// a guard noted is used instead (#491). The promise a guard rejected on after
+// sending its rejection is not sent again (#501); any other is sent with its
+// reason's place, when it is an Error with a stack.
 window.addEventListener("error", (e) => {
   const caught = caughtAt;
   caughtAt = null;
@@ -329,7 +373,7 @@ window.addEventListener("error", (e) => {
   else reportUiError("error", ...(caught || [0, 0]));
 });
 window.addEventListener("unhandledrejection", (e) => {
-  if (Object(e.reason) === e.reason && sentRejections.has(e.reason)) return;
+  if (sentPromises.has(e.promise)) return;
   reportUiError("rejection", ...(stackPlace(e.reason) || [0, 0]));
 });
 window.addEventListener("pywebviewready", () => {

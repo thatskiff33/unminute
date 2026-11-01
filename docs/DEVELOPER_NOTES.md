@@ -198,9 +198,19 @@ real time, and remove it when the cause is fixed.
   wrapper), `setTimeout`, `setInterval`, `requestAnimationFrame`, the page's `on...`
   handlers and `wire()`. A guard that catches an error notes its place from the stack and
   throws the same error on, so the browser handles it as before and the `error` event that
-  follows sends that place. When an async callback's promise rejects, the guard sends the
-  rejection itself and rejects on with the same reason (the `unhandledrejection` event,
-  where the browser sends one, skips a reason a guard sent). `stackPlace` cuts off the
+  follows sends that place. When a promise a callback returns rejects and nothing else
+  handles it by the next task (the browser decides at the end of the task), the guard sends
+  the rejection itself and rejects on with the same reason, in a promise of its own; the
+  `unhandledrejection` event, where the browser sends one, skips that promise. It is known
+  by the promise, not the reason, so a string or number reason is not sent twice (#501). A
+  promise the page also handles is not sent (#501): `guardCallbacks` makes
+  `Promise.prototype.then` (which `catch` and `finally` call) note each promise it is called
+  on, and the guard watches with the browser's own `then`, so its watch is not counted. A
+  `then` with no rejection handler, and a `finally`, pass a watched promise's rejection on
+  to the promise they return, so the guard watches that one too, and the rejection is sent
+  once, from wherever it ends up unhandled (#505 review). A promise is watched once, however
+  many callbacks return it. An `await` does not call `then`, so a returned promise handled
+  only by an `await` elsewhere is still sent. `stackPlace` cuts off the
   error's name and message unread (they could quote meeting text), takes the first frame
   whose URL is one of `PAGE_SCRIPTS` and returns two numbers: no message, file name or path
   reaches the bridge. Not covered: an error while a script first loads (before `main.js`
