@@ -606,12 +606,13 @@ class PageErrorPlaceTests(unittest.TestCase):
     def test_guard_sends_an_async_callbacks_rejection_once(self):
         # From file:// the browser sends no unhandledrejection event for the
         # page's own errors (#491), so the guard sends it, and rejects on with
-        # the same reason; the page's own listener then skips that reason.
+        # the same reason; the page's own listener then skips that promise.
         meetings = self.number("meetings.js") * 100000
         out = self.run_page(
             "const sent = [], unhandled = [];\n"
             "reportUiError = (...args) => sent.push(args);\n"
-            "process.on('unhandledRejection', (reason) => unhandled.push(reason));\n"
+            "process.on('unhandledRejection', (reason, promise) =>\n"
+            "  unhandled.push([reason, promise]));\n"
             "const [onRejection] = loaded.window.listeners.unhandledrejection;\n"
             "const err = new Error('hidden');\n"
             "err.stack = String(err) + " + frames(f"f ({BASE}meetings.js:40:3)") + ";\n"
@@ -620,11 +621,65 @@ class PageErrorPlaceTests(unittest.TestCase):
             "setTimeout(async () => {\n"
             "  let same = false;\n"
             "  try { await value; } catch (e) { same = e === err; }\n"
-            "  const rejectedOn = unhandled.length === 1 && unhandled[0] === err;\n"
-            "  onRejection({ reason: err });          // the event for it: not sent again\n"
+            "  const rejectedOn = unhandled.length === 1 && unhandled[0][0] === err;\n"
+            "  onRejection({ reason: err, promise: unhandled[0][1] });   // not sent again\n"
             "  console.log(JSON.stringify([sent, same, rejectedOn, await fine]));\n"
             "}, 20);\n")
         self.assertEqual(out, [[["rejection", meetings + 40, 3]], True, True, 5])
+
+    def test_guard_sends_a_string_or_number_rejection_once(self):
+        # #501: the guard's sent rejections were known by their reason, in a
+        # WeakSet, which cannot hold a string or a number, so the event for
+        # one the guard had sent sent it again. Each is sent once now, and a
+        # rejection no guard sent still reaches the listener.
+        meetings = self.number("meetings.js") * 100000
+        out = self.run_page(
+            "const sent = [];\n"
+            "reportUiError = (...args) => sent.push(args);\n"
+            "const [onRejection] = loaded.window.listeners.unhandledrejection;\n"
+            "process.on('unhandledRejection', (reason, promise) =>\n"
+            "  onRejection({ reason, promise }));\n"
+            "const err = new Error('hidden');\n"
+            "err.stack = String(err) + " + frames(f"f ({BASE}meetings.js:40:3)") + ";\n"
+            "guarded(async () => { throw 'text'; })();\n"
+            "guarded(async () => { throw 7; })();\n"
+            "guarded(async () => { throw err; })();\n"
+            "Promise.reject(8);                       // no guard: its event sends it\n"
+            "setTimeout(() => console.log(JSON.stringify(sent)), 30);\n")
+        self.assertCountEqual(out, [["rejection", 0, 0], ["rejection", 0, 0],
+                                    ["rejection", meetings + 40, 3], ["rejection", 0, 0]])
+
+    def test_guard_skips_a_promise_the_page_handles(self):
+        # #501: a callback may return a promise the page also handles (a catch
+        # on it before it is returned, or after in the same task). That
+        # rejection is not unhandled, so it is not sent; one nobody handles
+        # is. Once guardCallbacks has run, Promise.prototype.then (which catch
+        # and finally call) notes the promises it is called on.
+        meetings = self.number("meetings.js") * 100000
+        out = self.run_page(
+            "guardCallbacks({ Promise });\n"
+            "const sent = [], unhandled = [];\n"
+            "reportUiError = (...args) => sent.push(args);\n"
+            "process.on('unhandledRejection', (reason) => unhandled.push(reason));\n"
+            "const err = new Error('hidden');\n"
+            "err.stack = String(err) + " + frames(f"f ({BASE}meetings.js:40:3)") + ";\n"
+            "const early = Promise.reject(err);\n"
+            "early.catch(() => {});                   // handled before it is returned\n"
+            "guarded(() => early)();\n"
+            "const late = Promise.reject('text');\n"
+            "guarded(() => late)();\n"
+            "late.then(undefined, () => {});          // handled after, in the same task\n"
+            "const after = Promise.reject(7);\n"
+            "guarded(() => after)();\n"
+            "queueMicrotask(() => after.finally(() => {}).catch(() => {}));   // a moment later\n"
+            "const lone = Promise.reject(err);        // nobody handles it: sent, once\n"
+            "guarded(() => lone)();\n"
+            "setTimeout(async () => {\n"
+            "  const thenWorks = await Promise.resolve(5).then((x) => x + 1);\n"
+            "  console.log(JSON.stringify([sent, unhandled.length, unhandled[0] === err,\n"
+            "                              thenWorks]));\n"
+            "}, 30);\n")
+        self.assertEqual(out, [[["rejection", meetings + 40, 3]], 1, True, 6])
 
     def test_guard_callbacks_wraps_listeners_and_timers(self):
         out = self.run_page(
