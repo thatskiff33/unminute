@@ -113,9 +113,13 @@ function watchRejection(promise, reason) {
 // promise the page handles itself; it behaves as before otherwise. A then
 // with no rejection handler, and a finally, pass a watched promise's
 // rejection on to the promise they return, so the guard watches that one
-// too: the rejection is sent once, from wherever it ends up unhandled. An
-// await does not call then, so a promise handled only by an await elsewhere
-// is still sent (docs/DEVELOPER_NOTES.md, "Page scripts").
+// too: the rejection is sent once, from wherever it ends up unhandled. Known
+// limits from file:// (docs/DEVELOPER_NOTES.md, "Page scripts"): an await
+// does not call then, so a promise handled only by an await elsewhere is
+// still sent; and a rejection passed on any other way is not sent at all:
+// through Promise.all, race or any, by an async function that returns the
+// promise or a new Promise resolved with it, or by a rejection handler that
+// throws it again (#506).
 function guardCallbacks(win) {
   const promise = win.Promise && win.Promise.prototype;
   if (promise) {
