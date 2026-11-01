@@ -167,7 +167,6 @@ class RunnerTests(unittest.TestCase):
             one = self.run_runner(root, "--only", "test_zq_only.Alpha.test_two")
             module = self.run_runner(root, "--strict-skips", "--only", "test_zq_only")
             prefix = self.run_runner(root, "--only", "test_zq_on")
-            both = self.run_runner(root, "--only", "test_zq_only", "--chunk", "1/2")
         self.assertEqual(alpha.returncode, 0, alpha.stdout + alpha.stderr)
         self.assertIn("Only test_zq_only.Alpha: 2 of the suite's 4 tests.", alpha.stdout)
         self.assertNotIn("Gamma", alpha.stdout + alpha.stderr)
@@ -177,8 +176,51 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("3 of the suite's 4 tests", module.stdout)
         self.assertEqual(prefix.returncode, 1, prefix.stdout + prefix.stderr)   # whole names only
         self.assertIn("No test matched; nothing was run.", prefix.stdout)
-        self.assertNotEqual(both.returncode, 0)
-        self.assertIn("cannot be used together", both.stderr)
+
+    def test_only_with_chunk_deals_out_just_the_named_tests(self):
+        # #500: a pull request's CI runs its selected tests in parts. Each named
+        # class lands in exactly one part, nothing unnamed runs, strict skips
+        # apply per part, and a part dealt nothing passes having run nothing,
+        # while a selection that matches nothing still fails.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tests").mkdir()
+            (root / "tests" / "test_zq_sel.py").write_text(textwrap.dedent("""
+                import unittest
+
+                class Alpha(unittest.TestCase):
+                    def test_one(self): pass
+                    def test_two(self): pass
+
+                class Beta(unittest.TestCase):
+                    def test_one(self): self.skipTest("not allowed")
+            """))
+            (root / "tests" / "test_zq_unnamed.py").write_text(textwrap.dedent("""
+                import unittest
+
+                class Gamma(unittest.TestCase):
+                    def test_one(self): self.fail("must not run")
+            """))
+            first, second = (self.run_runner(root, "--strict-skips", "--chunk", f"{k}/2",
+                                             "--only", "test_zq_sel") for k in (1, 2))
+            alone = [self.run_runner(root, "--chunk", f"{k}/3", "--only", "test_zq_sel.Alpha")
+                     for k in (1, 2, 3)]
+            nothing = self.run_runner(root, "--chunk", "1/2", "--only", "test_zq_none")
+        # Alpha (two tests) to part 1, Beta to part 2, as the dealing for unknown classes.
+        self.assertIn("Chunk 1 of 2: 2 of the selection's 3 tests, in 1 classes.", first.stdout)
+        self.assertIn("Chunk 2 of 2: 1 of the selection's 3 tests, in 1 classes.", second.stdout)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.assertEqual(second.returncode, 1, second.stdout + second.stderr)   # Beta's skip
+        for r in (first, second):
+            self.assertNotIn("Gamma", r.stdout + r.stderr)
+        ran = [r for r in alone if "Chunk 1 of 3 ran 2 test(s)." in r.stdout]
+        self.assertEqual(len(ran), 1)
+        for r in alone:
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for r in alone[1:]:
+            self.assertIn("No class of the selection was dealt to this chunk", r.stdout)
+        self.assertEqual(nothing.returncode, 1, nothing.stdout + nothing.stderr)
+        self.assertIn("No test matched; nothing was run.", nothing.stdout)
 
     def test_only_still_runs_and_fails_a_named_module_that_does_not_import(self):
         # Review of #408: unittest names an import failure unittest.loader._FailedTest.<module>.
@@ -312,9 +354,16 @@ class ChunkTests(unittest.TestCase):
 class GateTests(unittest.TestCase):
     """The required "Unit tests (Windows)" job that stands for the chunks."""
 
-    def gate(self, needs):
+    def gate(self, needs, event="pull_request"):
         with contextlib.redirect_stdout(io.StringIO()):
-            return run_tests.gate(needs if isinstance(needs, str) else json.dumps(needs))
+            return run_tests.gate(needs if isinstance(needs, str) else json.dumps(needs), event)
+
+    @staticmethod
+    def selected(mode, select="success", chunks="success"):
+        """$NEEDS as ci.yml gives it with the test selection (#500)."""
+        return {run_tests.SELECT_JOB: {"result": select,
+                                       "outputs": {"mode": mode, "names": "", "chunks": "[1]"}},
+                "windows-tests-chunk": {"result": chunks, "outputs": {}}}
 
     def test_passes_only_when_every_chunk_succeeded(self):
         needs = {"windows-tests-chunk": {"result": "success", "outputs": {}}}
@@ -327,9 +376,47 @@ class GateTests(unittest.TestCase):
         self.assertEqual(self.gate({"a": {"result": "success"}, "b": {"result": "skipped"}}), 1)
 
     def test_no_chunks_or_unreadable_input_fails_it(self):
-        for needs in ("", "{}", "not json", {"windows-tests-chunk": None}):
+        for needs in ("", "{}", "not json", {"windows-tests-chunk": None}, "[]", "3"):
             with self.subTest(needs=needs):
                 self.assertEqual(self.gate(needs), 1)
+
+    def test_with_a_selection_every_chosen_chunk_must_pass(self):
+        # #500: the selection succeeded and every chunk it chose passed.
+        for mode in ("all", "some"):
+            with self.subTest(mode=mode):
+                self.assertEqual(self.gate(self.selected(mode)), 0)
+                for result in ("failure", "cancelled", "skipped", None):
+                    self.assertEqual(self.gate(self.selected(mode, chunks=result)), 1)
+
+    def test_a_selection_that_did_not_succeed_or_is_unknown_fails_it(self):
+        for select in ("failure", "cancelled", "skipped", None):
+            with self.subTest(select=select):
+                self.assertEqual(self.gate(self.selected("all", select=select)), 1)
+                self.assertEqual(self.gate(self.selected("none", select=select,
+                                                         chunks="skipped")), 1)
+        for mode in ("", None, "ALL", "nothing", "some "):
+            with self.subTest(mode=mode):
+                self.assertEqual(self.gate(self.selected(mode)), 1)
+        broken = self.selected("all")
+        broken[run_tests.SELECT_JOB]["outputs"] = "mode=all"
+        self.assertEqual(self.gate(broken), 1)
+        alone = {run_tests.SELECT_JOB: self.selected("all")[run_tests.SELECT_JOB]}
+        self.assertEqual(self.gate(alone), 1)                 # no chunk job at all
+
+    def test_nothing_changed_passes_only_with_every_chunk_skipped(self):
+        # The one pass without a chunk run: a pull request that changed no file.
+        self.assertEqual(self.gate(self.selected("none", chunks="skipped")), 0)
+        for result in ("success", "failure", "cancelled", None):
+            with self.subTest(result=result):
+                self.assertEqual(self.gate(self.selected("none", chunks=result)), 1)
+
+    def test_only_a_pull_request_may_run_less_than_everything(self):
+        # A push to main and the nightly run take the full suite (#500).
+        for event in ("push", "schedule", "workflow_dispatch", "", "pull_request_target"):
+            with self.subTest(event=event):
+                self.assertEqual(self.gate(self.selected("all"), event), 0)
+                self.assertEqual(self.gate(self.selected("some"), event), 1)
+                self.assertEqual(self.gate(self.selected("none", chunks="skipped"), event), 1)
 
 
 class WorkflowTests(unittest.TestCase):
@@ -341,25 +428,36 @@ class WorkflowTests(unittest.TestCase):
         blocks = re.split(r"^  ([\w-]+):\s*$", text[text.index("\njobs:"):], flags=re.MULTILINE)
         cls.jobs = dict(zip(blocks[1::2], blocks[2::2], strict=True))
 
-    def test_the_chunks_are_numbered_one_to_n_and_each_runs_its_own(self):
+    def test_the_chunks_come_from_the_selection_and_each_runs_its_own(self):
+        # The chunk numbers are the selection's (#500); tests/test_select_tests.py
+        # checks they run 1 to N for every selection.
         chunk = self.jobs["windows-tests-chunk"]
-        listed = re.search(r"^\s+chunk: \[([\d, ]+)\]$", chunk, re.MULTILINE)
-        self.assertIsNotNone(listed, "the chunk matrix is not a plain list")
-        numbers = [int(n) for n in listed[1].split(",")]
-        self.assertEqual(numbers, list(range(1, len(numbers) + 1)))
+        self.assertIn("    needs: select-tests\n", chunk)
+        self.assertIn("    if: ${{ needs.select-tests.outputs.mode != 'none' }}\n", chunk)
+        self.assertIn("        chunk: ${{ fromJSON(needs.select-tests.outputs.chunks) }}\n", chunk)
         self.assertIn("fail-fast: false", chunk)
         self.assertIn("CHUNK: ${{ matrix.chunk }}", chunk)
         self.assertIn("CHUNKS: ${{ strategy.job-total }}", chunk)
-        self.assertIn("run: python tools/run_tests.py --strict-skips --chunk "
-                      '"$env:CHUNK/$env:CHUNKS"', chunk)
+        self.assertIn("SELECTED: ${{ needs.select-tests.outputs.names }}", chunk)
+        self.assertIn("if ($env:SELECTED) { $only = @('--only') + ($env:SELECTED -split ' ') }",
+                      chunk)
+        self.assertIn('python tools/run_tests.py --strict-skips --chunk "$env:CHUNK/$env:CHUNKS" '
+                      "@only\n", chunk)
 
-    def test_the_required_job_needs_every_chunk_and_always_runs(self):
+    def test_the_required_job_needs_the_selection_and_every_chunk_and_always_runs(self):
         gate = self.jobs["windows-tests"]
+        self.assertEqual(run_tests.SELECT_JOB, "select-tests")
         self.assertIn("    name: Unit tests (Windows)\n", gate)
-        self.assertIn("    needs: windows-tests-chunk\n", gate)
+        self.assertIn("    needs: [select-tests, windows-tests-chunk]\n", gate)
         self.assertIn("    if: ${{ always() }}\n", gate)
         self.assertIn("NEEDS: ${{ toJSON(needs) }}", gate)
-        self.assertIn("run: python3 tools/run_tests.py --gate", gate)
+        self.assertIn("EVENT: ${{ github.event_name }}", gate)
+        # The gate runs from the base commit on a pull request, so a pull
+        # request cannot loosen its own gate.
+        self.assertIn("if [ \"$EVENT\" = pull_request ]; then trusted='HEAD^1'; fi", gate)
+        self.assertIn('git show "$trusted:tools/run_tests.py" > "$RUNNER_TEMP/gate/run_tests.py"',
+                      gate)
+        self.assertIn('python3 -I "$RUNNER_TEMP/gate/run_tests.py" --gate', gate)
 
     def test_no_other_windows_job_runs_the_whole_suite(self):
         # The chunks replace the single run; another full run would double the time.

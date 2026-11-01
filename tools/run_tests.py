@@ -24,8 +24,12 @@
 # --only NAME ... runs just the named test modules, classes or tests (for
 # example test_drafts, or test_hardening.MachineModeScriptTests), with the same
 # bytecode and skip rules: the quick local run for what a change touches. The
-# full suite runs on CI on every push, in parts (the owner's decision, 26 October
-# 2026), so the shared laptop is kept for screen and timing work.
+# full suite runs on CI on every push to main, in parts (the owner's decision,
+# 26 October 2026), so the shared laptop is kept for screen and timing work.
+# With --chunk as well, it runs the K-th of N parts of just those tests, dealt
+# out the same way: a pull request's CI runs the tests tools/select_tests.py
+# chose for it so (#500). A part that gets none of them passes, having run
+# nothing, as long as the selection as a whole matched some test.
 #
 # No test starts a real model download (#382): before the first test the runner
 # installs tests/download_guard.py, which replaces workspace.setup._download_main
@@ -39,6 +43,7 @@
 #   python tools/run_tests.py --only test_drafts test_app.LockedPageTests
 #   python tools/run_tests.py --strict-skips   # Windows CI, in one go
 #   python tools/run_tests.py --strict-skips --chunk 2/8
+#   python tools/run_tests.py --strict-skips --chunk 1/2 --only test_drafts test_app
 #   python tools/run_tests.py --update-durations chunk-1.log chunk-2.log ...
 
 import argparse
@@ -72,6 +77,8 @@ DURATIONS = Path(__file__).resolve().parent / "test_durations.json"
 UNKNOWN_SECONDS = 1.0
 # Starts the line on which each chunk prints its seconds per class.
 TIMES_PREFIX = "Class times: "
+# The CI job that chooses the tests a pull request runs (#500), as $NEEDS names it.
+SELECT_JOB = "select-tests"
 
 
 def bytecode(root):
@@ -272,17 +279,51 @@ def update_durations(logs, path=DURATIONS):
     return 0
 
 
-def gate(needs_json):
+def gate(needs_json, event=""):
     """The final "Unit tests (Windows)" job: passes only when every job it
-    needs succeeded. Failed, cancelled, skipped or none at all fails."""
+    needs succeeded. Failed, cancelled, skipped or none at all fails.
+
+    With the test selection (#500, tools/select_tests.py) among them, the
+    selection itself must have succeeded with a known mode; anything but a pull
+    request must have selected everything; and every other job must have
+    succeeded, except that when nothing changed (mode "none") they must all have
+    been skipped, which is then the pass."""
     try:
         needs = json.loads(needs_json or "{}")
     except ValueError:
         needs = {}
-    results = {job: (info or {}).get("result") for job, info in needs.items()}
+    if not isinstance(needs, dict):
+        needs = {}
+    results = {job: (info or {}).get("result") if isinstance(info, dict) or info is None
+               else None for job, info in needs.items()}
     for job, result in sorted(results.items()):
         print(f"{job}: {result}")
-    if not results or any(result != "success" for result in results.values()):
+    if SELECT_JOB not in needs:
+        if not results or any(result != "success" for result in results.values()):
+            print("Not every chunk passed.")
+            return 1
+        print("Every chunk passed.")
+        return 0
+    outputs = (needs[SELECT_JOB] or {}).get("outputs") or {}
+    mode = outputs.get("mode") if isinstance(outputs, dict) else None
+    chunks = {job: result for job, result in results.items() if job != SELECT_JOB}
+    if results[SELECT_JOB] != "success" or mode not in ("all", "some", "none"):
+        print("The test selection did not finish.")
+        return 1
+    print(f"Test selection: {mode} (event {event or 'unknown'}).")
+    if event != "pull_request" and mode != "all":
+        print("Only a pull request runs a selection: anything else runs every test.")
+        return 1
+    if not chunks:
+        print("No chunk job to check.")
+        return 1
+    if mode == "none":
+        if any(result != "skipped" for result in chunks.values()):
+            print("Nothing was selected, yet a chunk job ran.")
+            return 1
+        print("No file changed, so no test needed to run.")
+        return 0
+    if any(result != "success" for result in chunks.values()):
         print("Not every chunk passed.")
         return 1
     print("Every chunk passed.")
@@ -313,14 +354,13 @@ def main():
     parser.add_argument("--update-durations", nargs="+", metavar="LOG",
                         help="rewrite the table from the chunks' class times in saved logs")
     parser.add_argument("--gate", action="store_true",
-                        help="CI only: pass when every job in $NEEDS (JSON) succeeded")
+                        help="CI only: pass when every job in $NEEDS (JSON) succeeded, "
+                             "as the test selection in it allows ($EVENT: the event)")
     args = parser.parse_args()
-    if args.only and args.chunk:
-        parser.error("--only and --chunk cannot be used together")
     if args.update_durations:
         return update_durations(args.update_durations)
     if args.gate:
-        return gate(os.environ.get("NEEDS", ""))
+        return gate(os.environ.get("NEEDS", ""), os.environ.get("EVENT", ""))
 
     no_bytecode()
     before = bytecode(ROOT)
@@ -347,8 +387,14 @@ def main():
     if args.chunk:
         everything = suite.countTestCases()
         suite = chunk_suite(suite, args.chunk, load_durations())
+        whose = "selection's" if args.only else "suite's"
         print(f"Chunk {args.chunk[0]} of {args.chunk[1]}: {suite.countTestCases()} of the "
-              f"suite's {everything} tests, in {len(units(suite))} classes.", flush=True)
+              f"{whose} {everything} tests, in {len(units(suite))} classes.", flush=True)
+        if args.only and not suite.countTestCases():
+            # A selection with fewer classes than chunks (#500): the selection
+            # as a whole matched tests above, and the other chunks run them.
+            print("No class of the selection was dealt to this chunk; nothing to run.")
+            return 0
     # After discovery, so importing the tests runs as before; before any test.
     TimedResult.guard = install_download_guard(ROOT)
     result = unittest.TextTestRunner(verbosity=2, resultclass=TimedResult).run(suite)

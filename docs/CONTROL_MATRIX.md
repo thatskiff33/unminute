@@ -18,7 +18,7 @@ It does not check that the words in the Control column still describe the code. 
 
 | Evidence | What it is | When it runs |
 | --- | --- | --- |
-| CI | The guard tests, run by `tools/run_tests.py` in the required checks on every pull request ("Unit tests (Windows)" with strict skips, and the Linux tests in "Syntax check"). The other required checks are listed in [RELEASING.md](RELEASING.md). | Every pull request |
+| CI | The guard tests, run by `tools/run_tests.py` in the required checks ("Unit tests (Windows)" with strict skips, and the Linux tests in "Syntax check"): on a pull request those its changes select (`tools/select_tests.py`; a change to a shared or core file, or one the map does not know, runs them all), and all of them on every push to `main` and nightly (#500). The other required checks are listed in [RELEASING.md](RELEASING.md). | Every pull request (selected); every push to `main` and nightly (all) |
 | Build | The Release workflow's checks of the package it builds: the packaged `--self-test`, `--verify-precompiled`, and the signed build provenance and SBOM attestations (`.github/workflows/release.yml`). | Every release |
 | Release evidence | The five reports run against the release package (performance, packaged lifecycle, crash, UI, accessibility), checked by `tools/evidence.py` before publishing ([RELEASING.md](RELEASING.md), "Cutting a release"). | Every release |
 | IT | A control the deploying organisation runs on its devices or tenant ([IT_DEPLOYMENT.md](IT_DEPLOYMENT.md)). Unminute cannot check it. | Set by IT |

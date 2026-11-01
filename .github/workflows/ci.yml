@@ -1,9 +1,15 @@
-# Lightweight checks on every pull request and on pushes to main. Nothing here
-# installs torch or the models: the full stack is ~1.5 GB and needs a gated
+# Lightweight checks on every pull request, on pushes to main and nightly. Nothing
+# here installs torch or the models: the full stack is ~1.5 GB and needs a gated
 # Hugging Face model, so the end-to-end smoke test stays a local step before a
 # release (see docs/RELEASING.md). Every job name below is a required status
-# check in the branch ruleset, except the chunks of the Windows unit tests:
-# the "Unit tests (Windows)" job that needs them all stands for them.
+# check in the branch ruleset, except the test selection and the chunks of the
+# Windows unit tests: the "Unit tests (Windows)" job that needs them all stands
+# for them, and "Syntax check" needs the selection too.
+#
+# Test selection (#500; the owner's decision, 1 Nov 2026; docs/RELEASING.md): a
+# pull request runs only the unit tests mapped to the files it changes
+# (tools/select_tests.py, tools/test_map.json), in as many chunks as they need;
+# a push to main and the nightly run take the full suite in all its chunks.
 #
 # Supply-chain rules for this file (docs/RELEASING.md):
 # - no permissions by default; each job asks only for what it needs;
@@ -22,6 +28,9 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # The full suite every night too (#500), on main: 03:17 NZDT, 02:17 NZST.
+  schedule:
+    - cron: "17 14 * * *"
 
 permissions: {}
 
@@ -38,12 +47,102 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  select-tests:
+    # Which unit tests run (#500). On a pull request: the files its merge commit
+    # changes against the base branch (the merge's first parent, so the same set
+    # as against the merge base, less what main already has), through
+    # tools/test_map.json. A push to main and the nightly run take everything.
+    # The selector, its map and the duration table come from the base commit,
+    # not the pull request (as the Review record check runs its parser, #442),
+    # so a pull request cannot narrow its own selection; one that changes them
+    # runs everything. The selector reads the file names NUL-separated, and
+    # nothing from the pull request reaches a shell line. Not a required check
+    # itself: "Syntax check" and "Unit tests (Windows)" need it, always run, and
+    # fail unless it succeeded.
+    name: Select tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      mode: ${{ steps.select.outputs.mode }}
+      names: ${{ steps.select.outputs.names }}
+      chunks: ${{ steps.select.outputs.chunks }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          # The merge commit and its parents: the base branch and the pull request.
+          fetch-depth: 2
+      # The runner image's Python: the selector uses the standard library only.
+      - name: Select the tests
+        id: select
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          trusted=HEAD
+          if [ "$EVENT" = pull_request ]; then
+            git rev-parse --verify --quiet 'HEAD^2' > /dev/null || { echo "Not a merge commit."; exit 1; }
+            trusted='HEAD^1'
+          fi
+          selector="$RUNNER_TEMP/selector"
+          mkdir -p "$selector"
+          # Every test, in FULL_CHUNKS parts.
+          everything() {
+            { echo "mode=all"; echo "names="; echo "chunks=[1, 2, 3, 4, 5, 6, 7, 8]"; } >> "$GITHUB_OUTPUT"
+          }
+          if ! git cat-file -e "$trusted:tools/select_tests.py" 2> /dev/null; then
+            # A base without the selector (only the pull request that added it,
+            # #500): everything runs, and no code from the pull request decides that.
+            echo "The base commit has no test selector: every test runs."
+            everything
+            exit 0
+          fi
+          for file in select_tests.py test_map.json test_durations.json; do
+            git show "$trusted:tools/$file" > "$selector/$file"
+          done
+          if [ "$EVENT" = pull_request ]; then
+            # The selection goes to scratch files first. If the base's selector
+            # fails, every test runs instead, and nothing it wrote is used: a
+            # broken selector on main must not fail every pull request, its own
+            # fix included (#503 review). That is never narrower. A push to main
+            # or the nightly run below still fails loudly.
+            picked="$RUNNER_TEMP/selection.out"
+            notes="$RUNNER_TEMP/selection.md"
+            if python3 -I "$selector/select_tests.py" --root . --changed 'HEAD^1' HEAD \
+                --github-output "$picked" --summary "$notes"; then
+              cat "$picked" >> "$GITHUB_OUTPUT"
+              cat "$notes" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::warning::The base commit's test selector failed: every test runs."
+              everything
+            fi
+          else
+            python3 -I "$selector/select_tests.py" --root . --all \
+              --github-output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY"
+          fi
+
   check:
+    # Follows the test selection (#500) for its unit tests. It needs the
+    # selection and always runs, failing if the selection did not succeed: a
+    # required check skipped because a job it needs failed would count as passing.
     name: Syntax check
+    needs: select-tests
+    if: ${{ always() }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
+      - name: The test selection succeeded
+        env:
+          SELECTION: ${{ needs.select-tests.result }}
+        run: |
+          if [ "$SELECTION" != success ]; then
+            echo "The test selection did not succeed ($SELECTION)."
+            exit 1
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
@@ -65,8 +164,19 @@ jobs:
           python tools/lock.py --subset numpy av cryptography --output "$RUNNER_TEMP/test-requirements.txt"
           pip install --disable-pip-version-check --only-binary=:all: --require-hashes \
             --no-deps -r "$RUNNER_TEMP/test-requirements.txt"
-      - name: Unit tests
-        run: python tools/run_tests.py
+      - name: Unit tests, as selected
+        env:
+          MODE: ${{ needs.select-tests.outputs.mode }}
+          SELECTED: ${{ needs.select-tests.outputs.names }}
+        run: |
+          case "$MODE" in
+            all) python tools/run_tests.py ;;
+            some)
+              read -r -a names <<< "$SELECTED"
+              python tools/run_tests.py --only "${names[@]}" ;;
+            none) echo "No file changed: no unit test to run." ;;
+            *) echo "Unknown test selection."; exit 1 ;;
+          esac
 
       # Parse every tracked PowerShell script and fail on any error.
       - name: Parse PowerShell scripts
@@ -89,16 +199,21 @@ jobs:
     # junction, file-lock and Windows path tests are really exercised. The
     # suite runs in parts on separate machines at once (#386): tools/run_tests.py
     # deals whole test classes out by their measured times, every class to
-    # exactly one part. The number of parts is the length of the list below;
-    # tests/test_run_tests.py checks it runs 1 to N.
+    # exactly one part. The parts come from the test selection (#500): the full
+    # suite in tools/select_tests.py's FULL_CHUNKS parts, or a pull request's
+    # selected tests in as many parts as their measured times need, numbered 1 to
+    # N (tests/test_select_tests.py). When nothing changed there are none, and
+    # "Unit tests (Windows)" checks that this job was skipped.
     name: Windows tests, chunk ${{ matrix.chunk }} of ${{ strategy.job-total }}
+    needs: select-tests
+    if: ${{ needs.select-tests.outputs.mode != 'none' }}
     runs-on: windows-2025
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        chunk: [1, 2, 3, 4, 5, 6, 7, 8]
+        chunk: ${{ fromJSON(needs.select-tests.outputs.chunks) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -147,7 +262,13 @@ jobs:
         env:
           CHUNK: ${{ matrix.chunk }}
           CHUNKS: ${{ strategy.job-total }}
-        run: python tools/run_tests.py --strict-skips --chunk "$env:CHUNK/$env:CHUNKS"
+          # Test module and class names, checked by the selector; empty for everything.
+          SELECTED: ${{ needs.select-tests.outputs.names }}
+        run: |
+          $only = @()
+          if ($env:SELECTED) { $only = @('--only') + ($env:SELECTED -split ' ') }
+          python tools/run_tests.py --strict-skips --chunk "$env:CHUNK/$env:CHUNKS" @only
+          exit $LASTEXITCODE
       # Saved only after a miss, by a chunk whose installer tests filled it; the
       # first chunk to save wins and the others' saves are refused, harmlessly.
       - name: Was the module analysis cache filled
@@ -165,11 +286,15 @@ jobs:
           key: ${{ steps.psmodules.outputs.key }}
 
   windows-tests:
-    # The required check. It passes only when every chunk above passed: a
-    # failed, cancelled or skipped chunk fails it, and always() makes it run
-    # (and fail) then rather than be skipped, which would count as passing.
+    # The required check. It passes only when the selection succeeded and every
+    # chunk it chose passed: a failed, cancelled or skipped chunk fails it, and
+    # always() makes it run (and fail) then rather than be skipped, which would
+    # count as passing. Only when nothing changed may the chunks be skipped, and
+    # only on a pull request: a push to main or the nightly run must have run
+    # everything (tools/run_tests.py, gate). Like the selector, the gate runs from
+    # the base commit, so a pull request cannot loosen its own gate.
     name: Unit tests (Windows)
-    needs: windows-tests-chunk
+    needs: [select-tests, windows-tests-chunk]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     permissions:
@@ -178,11 +303,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 2
       # The runner image's Python is enough: the check uses the standard library.
-      - name: Every chunk passed
+      - name: Every selected chunk passed
         env:
           NEEDS: ${{ toJSON(needs) }}
-        run: python3 tools/run_tests.py --gate
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          trusted=HEAD
+          if [ "$EVENT" = pull_request ]; then trusted='HEAD^1'; fi
+          mkdir -p "$RUNNER_TEMP/gate"
+          git show "$trusted:tools/run_tests.py" > "$RUNNER_TEMP/gate/run_tests.py"
+          python3 -I "$RUNNER_TEMP/gate/run_tests.py" --gate
 
   resolve:
     # Prove the locks are current and complete (#111 B1). tools/lock.py --check
