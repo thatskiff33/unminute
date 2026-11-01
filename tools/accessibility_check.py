@@ -37,6 +37,13 @@
 # examples (and First examples), from the keyboard's point of view, and fails
 # unless focus lands on that speaker's name box, then on their paging button,
 # inside the dialog and matching :focus-visible, with the row gone.
+# It needs an unlocked session (#507), as tools/workspace_ui_check.py does:
+# the session's lock state is read (tools/session_state.py) as the check
+# starts, before and after each page step and after each window closes. If it
+# is locked, or cannot be read, the check stops with exit 2 ("the session
+# locked"), never a pass or findings, and the report's "session" block records
+# where; release evidence refuses a report whose block shows a lock, or that
+# has none (tools/evidence.py).
 # docs/RELEASE_STANDARD.md, "Accessibility against WCAG 2.2 AA", says what
 # each check leaves out. It does not replace testing with screen-reader users
 # and pilot users (#27), and passing it is not conformance.
@@ -937,10 +944,11 @@ def checks(window, ws, mid, report, modes=(None,), feed=None):
     import time
 
     import draft_scenario
-    from workspace_ui_check import WAIT, evaluate
+    from workspace_ui_check import WAIT, evaluate, session_step
 
     from workspace import drafts
     try:
+        session_step("the first page steps")
         window.events.loaded.wait(30)
         while not window.evaluate_js("!!(window.workspace && window.pywebview && "
                                      "window.pywebview.api && window.pywebview.api.meetings)"):
@@ -957,6 +965,7 @@ def checks(window, ws, mid, report, modes=(None,), feed=None):
         report["views"] = {}
         # Each view is opened once and audited in each colour mode asked for.
         for name, go in VIEWS.items():
+            session_step(f"the view {name}")
             if name == DRAFT_VIEW:                  # a recording with draft text showing
                 if feed is None:
                     raise RuntimeError("the recording draft view needs the check's DraftFeed")
@@ -1001,8 +1010,9 @@ def locked_checks(window, report, modes=(None,)):
     keyboard goes next."""
     import time
 
-    from workspace_ui_check import WAIT, evaluate
+    from workspace_ui_check import WAIT, evaluate, session_step
     try:
+        session_step("the locked screen")
         window.events.loaded.wait(30)
         while not window.evaluate_js("!!(window.workspace && window.pywebview && "
                                      "window.pywebview.api && window.pywebview.api.status)"):
@@ -1065,20 +1075,28 @@ def create_window(ws, title):
 
 
 def locked_main(out, modes):
-    """The locked screen's own process (pywebview starts once a process)."""
+    """The locked screen's own process (pywebview starts once a process),
+    with its own session block (the parent adds it to its own)."""
+    import session_state
+    import workspace_ui_check as ui
     from workspace_ui_check import locked_workspace
 
     from workspace import shell
+    ui.SESSION = session_state.Watch()
+    ui.session_step("the locked screen")  # its first reading is named for it too
     report = {}
     with tempfile.TemporaryDirectory() as tmp:
         try:
             ws = locked_workspace(Path(tmp))
+            ui.session_check("before")
         except Exception as exc:
             report["error"] = error_text(exc)
         else:
             window = create_window(ws, "Accessibility check, locked (synthetic data)")
             shell.run(locked_checks, (window, report, modes))
             ws.close()
+    ui.SESSION.reading("after the locked screen's window closed")
+    report["session"] = ui.SESSION.record()
     import residue
     residue.write_guarded(out, report)
     return 0
@@ -1089,7 +1107,9 @@ def main():
     # workspace_ui_check puts the app checked (this checkout, or --app) on the path,
     # so it comes first: draft_scenario and the rest import workspace from there.
     import evidence
-    from workspace_ui_check import APP, FAKE, run_locked_child, write_wav
+    import session_state
+    import workspace_ui_check as ui
+    from workspace_ui_check import APP, FAKE, run_locked_child, session_stopped, write_wav
 
     import draft_scenario  # noqa: I001  (after the line above: it imports workspace)
     from workspace import shell
@@ -1110,13 +1130,17 @@ def main():
     if args.locked_only:                  # the locked screen's own process (#111 C4b)
         return locked_main(args.locked_only, modes)
     before = evidence.prepare(ap, args, APP if args.app else None)
+    ui.SESSION = session_state.Watch()
+    out = Path(args.report)
+    report = {"colour_mode": args.colour_mode}
+    ui.SESSION.reading("as the check started")
+    if ui.SESSION.stopped:                # stop now, not after the set-up
+        return session_stopped(out, report)
     # The decoder runs in an AppContainer that cannot read a development
     # Python (#299): decode in a scratch copy it can read (nothing to do in a
     # package's own runtime, whose install it reads).
     import decoder_runtime
     decoder_runtime.use()
-    out = Path(args.report)
-    report = {"colour_mode": args.colour_mode}
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         ws = Workspace(root / "ws", root / "models", start=False,
@@ -1133,9 +1157,18 @@ def main():
         shell.run(checks, (window, ws, mid, report, modes, feed))
         feed.remove()
         ws.close()
+    ui.SESSION.reading("after the main window closed")
+    if ui.SESSION.stopped:
+        return session_stopped(out, report)
     # The locked screen (#111 C4b), in a window and process of its own, in the
-    # same colour modes; its views count for the owner exceptions too.
+    # same colour modes; its views count for the owner exceptions too. It
+    # records the session's state too.
     locked = run_locked_child(args, "--locked-only", extra=["--colour-mode", args.colour_mode])
+    ui.SESSION.merge(locked.pop("session", None))
+    ui.SESSION.reading("after the locked screen's process ended")
+    if ui.SESSION.stopped:
+        return session_stopped(out, report)
+    report["session"] = ui.SESSION.record()
     report["locked_heading_focused"] = locked.get("heading_focused")
     report.setdefault("views", {}).update(locked.get("views") or {})
     excepted = owner_exceptions(report)

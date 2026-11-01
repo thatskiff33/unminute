@@ -796,6 +796,11 @@ class FakeDisplay:
             "locked": False, "screensaver": False}
         self.known, self.kept, self.calls, self.measuring = known, kept, [], None
         self.at_start, self.session_at_start = at_start, session_at_start
+        # Each reading recorded as WindowsDisplay records it (#507).
+        self._now = None
+        self.watch = perf_check.session_state.Watch(reader=lambda: {
+            "locked": self._now.get("locked") if isinstance(self._now, dict) else None,
+            "how": "wts" if isinstance(self._now, dict) else None})
 
     def start(self):
         self.calls.append("start")
@@ -804,10 +809,13 @@ class FakeDisplay:
     def current(self):
         return self.at_start if self.measuring is None else self.states(0, 0)[-1]
 
-    def session(self):
+    def session(self, where="a visible state"):
         if self.measuring is None and self.session_at_start is not None:
-            return self.session_at_start
-        return self.session_state
+            self._now = self.session_at_start
+        else:
+            self._now = self.session_state
+        self.watch.reading(where)
+        return self._now
 
     def stop(self):
         self.calls.append("stop")

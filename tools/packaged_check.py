@@ -20,7 +20,13 @@
 # (26 Oct 2026), the window step as #418's criterion allows (the report
 # names how many and why). The report counts them, never reads them out
 # (#418). It needs an idle, unlocked desktop: the window step drives a real
-# window. It checks:
+# window. The session's lock state is read (tools/session_state.py; #507) as
+# the check starts, and before and after the window step and the idle
+# window; if it is locked, or cannot be read, the check stops with exit 2
+# ("the session locked"), never a pass or a failure, removes its throwaway
+# base as it would at the end, and the report's "session" block records
+# where. Release evidence refuses a report whose block shows a lock, or that
+# has none (tools/evidence.py). It checks:
 #   - self-test (dependencies, network guard) from the packaged runtime;
 #   - offline processing with cached models and no Hugging Face token present;
 #   - the full lifecycle (import, transcribe, speakers, review, cleanup);
@@ -98,6 +104,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent))
 import evidence  # noqa: E402
 import residue  # noqa: E402
+import session_state  # noqa: E402
 import windows_powershell  # noqa: E402
 
 MARKER = "zebracrossingquartz"     # distinctive text written into the meeting
@@ -125,6 +132,10 @@ EVENT_LOG_WHY = ("written by the app's own starts (the window step and the idle 
                  "#418's criterion allows, counted here): each entry holds a chain, a "
                  "sequence number, a kind and the line's hash, never an id or content "
                  "(T20); the children drop the copy")
+# The session's lock state before and after each window step (#507): main()
+# puts a session_state.Watch here. None (the unit tests) reads nothing.
+SESSION = None
+BASE_REMOVE_TRIES = 20             # files can stay locked for a moment after a kill
 
 
 class _PMC(ctypes.Structure):
@@ -234,7 +245,34 @@ def chunks_scanned(scanned):
                and Path(rel).suffix == recorder.CHUNK_SUFFIX)
 
 
+def remove_base(base):
+    """Remove the throwaway base (files can stay locked for a moment after a
+    kill); whether it is gone. Its path names the Windows user, so it is
+    never reported."""
+    for _ in range(BASE_REMOVE_TRIES):
+        shutil.rmtree(base, ignore_errors=True)
+        if not base.exists():
+            break
+        time.sleep(0.5)
+    return not base.exists()
+
+
+def session_check(where, base=None):
+    """Stop the check (session_state.SessionLocked) unless the session is
+    unlocked now and has been at every reading before; the throwaway base
+    goes first, as it would at the end of a run."""
+    if SESSION is None:
+        return
+    try:
+        SESSION.check(where)
+    except session_state.SessionLocked:
+        if base is not None:
+            remove_base(base)
+        raise
+
+
 def check(version_dir, cache, wav, report, system_dumps=False):
+    session_check("as the check started")
     runtime, app = Path(version_dir) / "runtime", Path(version_dir) / "app"
     started = time.time()
     env = dict(os.environ)
@@ -301,7 +339,11 @@ def check(version_dir, cache, wav, report, system_dumps=False):
 
     # 1b. The window with content (#418): the marked meeting in the real
     #     window, through the real start, closed normally before the scans.
-    report["window"] = window_step(runtime, flags, env, app, workspace, names, base, cache)
+    session_check("before the window step", base)
+    try:
+        report["window"] = window_step(runtime, flags, env, app, workspace, names, base, cache)
+    finally:                    # read even if the step raised: a lock there stops as one
+        session_check("after the window step", base)
 
     # 2. At rest, while the meeting exists. The positive control first: the
     #    same finder must find every pattern in a planted file.
@@ -378,6 +420,7 @@ def check(version_dir, cache, wav, report, system_dumps=False):
     # 6. Idle window: CPU and memory of the whole process tree for 60 s. taskkill
     # is found first, so a missing one stops the check before the app starts.
     taskkill = windows_powershell.system_program("taskkill.exe")
+    session_check("before the idle window", base)
     p = subprocess.Popen([str(runtime / "pythonw.exe"), *flags, "-m", "workspace"], env=env,
                          cwd=app)
     time.sleep(20)
@@ -393,6 +436,7 @@ def check(version_dir, cache, wav, report, system_dumps=False):
                              "cpu_percent_of_one_core": round((cpu1 - cpu0) / 60 * 100, 1),
                              "working_set_mb": sum(m[0] for m in mems if m)}
     kill(taskkill, pids)
+    session_check("after the idle window", base)
     # The Event Log entries both windows wrote for this workspace, counted
     # (the idle window's last ones may be missing: taskkill ends it).
     report["event_log"] = {"window_step": report["window"].get("event_log_entries"),
@@ -407,12 +451,7 @@ def check(version_dir, cache, wav, report, system_dumps=False):
         report["system_dumps"] = residue.system_dumps(started)
     # The throwaway base goes (files can stay locked for a moment after the
     # kill). Its path names the Windows user, so it is not reported.
-    for _ in range(20):
-        shutil.rmtree(base, ignore_errors=True)
-        if not base.exists():
-            break
-        time.sleep(0.5)
-    report["profile_removed"] = not base.exists()
+    report["profile_removed"] = remove_base(base)
 
 
 def record(command, rest, env, app, base, roots, timeout=1800):
@@ -1066,12 +1105,23 @@ def main():
     args = ap.parse_args()
     # A wrong --zip, or a folder that is not that zip's, stops now, not after the run.
     before = evidence.prepare(ap, args, version_dir=Path(args.version_dir))
+    global SESSION
+    SESSION = session_state.Watch()
     report = {"when": time.strftime("%Y-%m-%d %H:%M"), "cpu_count": os.cpu_count()}
     try:
         check(args.version_dir, args.cache, args.wav, report,
               system_dumps=args.report_system_dumps)
     except Exception as exc:
         report["error"] = residue.redact(f"{type(exc).__name__}: {exc}")
+    report["session"] = SESSION.record()
+    if SESSION.stopped:
+        # Neither a pass nor a failure: no verdict, and nothing stamped as
+        # release evidence. The name guard still applies (P3).
+        report = residue.guarded(report)
+        Path(args.out).write_text(json.dumps(report, indent=2), encoding="utf-8")
+        print(json.dumps(report, indent=2))
+        print(session_state.stopped_message(SESSION))
+        return 2
     report["failed"] = verdict(report)
     report["pass"] = not report["failed"]
     # Last: a report that would carry the Windows user name anywhere, the

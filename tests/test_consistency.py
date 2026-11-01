@@ -187,6 +187,16 @@ class DependencyPinTests(unittest.TestCase):
                              f"quality.yml's {variable} differs from tools/run_pester.ps1")
 
 
+class SessionRecordTests(unittest.TestCase):
+    def test_the_session_record_version_has_one_value(self):
+        # #507: the window checks write a "session" block of
+        # tools/session_state.py's RECORD, and tools/evidence.py (which runs
+        # under -I and so cannot import it) refuses any other: change both.
+        record = one(r"^RECORD = (\d+)$", read("tools/session_state.py"), "RECORD")
+        checked = one(r"^SESSION_RECORD = (\d+)$", read("tools/evidence.py"), "SESSION_RECORD")
+        self.assertEqual(record, checked)
+
+
 class VersionTests(unittest.TestCase):
     def test_version_file_matches_the_newest_changelog_heading(self):
         # #131: VERSION is the one source of the version. tools/changelog.py sets
