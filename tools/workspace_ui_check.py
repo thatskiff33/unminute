@@ -7,6 +7,8 @@
 # with a recording showing draft text (#370): invented sample sentences from
 # tools/draft_scenario.py, with no microphone, speech model or audio; the
 # window is minimised and restored once during it.
+# Then raises three deliberate page errors (a timer's, a listener's and an
+# async callback's) and needs each to reach report_ui_error with its line (#491).
 #
 #   python tools/workspace_ui_check.py <report.json>
 #
@@ -19,6 +21,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -64,6 +67,20 @@ SR = 16000
 # click, or a locked screen, where it cannot be answered) is closed, so the
 # check fails instead of waiting for ever.
 STUCK_DIALOG_S = 20
+# #491: what report_ui_error received from the page in this run (kind, line,
+# column: numbers only), and the deliberate page errors raised to read it.
+PAGE_ERRORS = []
+PAGE_ERROR_JS = """
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    setTimeout(groupOf, 0, null);           // a timer: groupOf(null) throws in meetings.js
+    await wait(1500);                       // the bridge takes one page error a second
+    const target = document.createElement('div');
+    target.addEventListener('page-error-check', () => groupOf(null));   // a listener
+    target.dispatchEvent(new Event('page-error-check'));
+    await wait(1500);
+    setTimeout(async () => { groupOf(null); }, 0);   // an async callback: a rejection
+    await wait(1500);
+    return true;"""
 
 
 def write_wav(path, seconds):
@@ -321,6 +338,35 @@ def press(script, title, seen=None):
             user32.PostMessageW(button, 0x0101, 0x0D, 0)
             time.sleep(0.2)
     return True
+
+
+def expected_page_error_line():
+    """report_ui_error's line for the error groupOf(null) raises: meetings.js's
+    number in the page's scripts times 100000, plus the line of groupOf's first
+    statement (docs/DEVELOPER_NOTES.md, "Page scripts")."""
+    ui = APP / "workspace" / "ui"
+    main_js = (ui / "main.js").read_text(encoding="utf-8")
+    names = re.search(r"const PAGE_SCRIPTS = \[(.*?)\];", main_js, re.DOTALL).group(1)
+    number = re.findall(r'"([^"]+)"', names).index("meetings.js") + 1
+    lines = (ui / "meetings.js").read_text(encoding="utf-8").splitlines()
+    return number * 100000 + lines.index("function groupOf(m) {") + 2
+
+
+def page_error_problems(received, expected):
+    """#491: from file://, as the window opens the page, WebView2 hides an
+    uncaught error's line from the error event (line 0) and sends no
+    unhandledrejection event for the page's own errors. Each deliberate error
+    (a timer's, a listener's and an async callback's rejection) must arrive
+    once, in order, with its real line and a column."""
+    kinds = ["error", "error", "rejection"]
+    got = [[r.get("kind"), r.get("line"), r.get("col")] for r in received]
+    if [g[0] for g in got] != kinds:
+        return [f"page error lines: report_ui_error received the kinds {[g[0] for g in got]}, "
+                f"not {kinds}"]
+    if any(line != expected or not col for _, line, col in got):
+        return [f"page error lines: report_ui_error received {got}, not line {expected} "
+                "with a column each"]
+    return []
 
 
 def native_checks(window, ws, mid):
@@ -772,6 +818,9 @@ def checks(window, ws, mid, long_mid, grow_mid, fail_mid, report):
         report["native"] = native_checks(window, ws, long_mid)
         report["failed_meeting"] = failed_meeting_checks(window, ws, fail_mid)
         report["drafts"] = draft_area_checks(window, ws)
+        PAGE_ERRORS.clear()                 # only the deliberate errors from here (#491)
+        evaluate(window, PAGE_ERROR_JS)
+        report["page_errors"] = list(PAGE_ERRORS)
         tree = process_tree(os.getpid())
         report["listeners"] = listeners(tree)
         report["blocked_calls"] = list(shell.blocked_calls)
@@ -1474,6 +1523,13 @@ def main():
         credentials.save_token = lambda t, target=None: VAULT.__setitem__("token", t)
         credentials.load_token = lambda target=None: VAULT.get("token")
         credentials.has_token = lambda target=None: "token" in VAULT
+        # What report_ui_error receives, after the bridge's checks (#491).
+        reported = ws.report_ui_error
+
+        def page_error(event, line, col):
+            PAGE_ERRORS.append({"kind": event, "line": line, "col": col})
+            return reported(event, line, col)
+        ws.report_ui_error = page_error
         holder = {}
         window = shell.create_window(api.make_api(ws, lambda: holder.get("window")),
                                      title="Workspace UI check (synthetic data)",
@@ -1571,6 +1627,7 @@ def main():
     if report["draft_problems"]:
         bad.append("draft text (" + "; ".join(report["draft_problems"]) + ")")
     bad.extend(locked_problems(report["locked_screen"]))
+    bad.extend(page_error_problems(report.get("page_errors") or [], expected_page_error_line()))
     print("FAILED: " + ", ".join(bad) if bad else "ALL CHECKS PASSED")
     if args.zip:
         ev = evidence.stamp_file(out, "ui", args.zip, APP.parent, passed=not bad,

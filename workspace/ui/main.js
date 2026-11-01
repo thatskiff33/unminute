@@ -23,6 +23,88 @@ function scriptLine(url, line) {
   const at = PAGE_SCRIPTS.findIndex((name) => String(new URL(name, document.baseURI)) === url);
   return at < 0 ? line : (at + 1) * SCRIPT_LINES + Math.max(0, line | 0);
 }
+
+// The window opens the page from file://, where WebView2 hides an uncaught
+// error in the page's own scripts from the error event: "Script error.", no
+// file, line 0 (real window, 30 Oct 2026, #491). An error the page catches
+// itself still has its stack. So every callback the browser calls later (an
+// event listener, an on... handler, a timer, an animation frame) runs inside
+// guarded(): if it throws, the guard notes where, from the stack, and throws
+// the same error on, so nothing else changes; the error event that follows at
+// once sends that place. From file:// the browser sends no unhandledrejection
+// event at all for an error in the page's own scripts (same probe), so when an
+// async callback's promise rejects, the guard sends the rejection itself and
+// rejects on with the same reason (the event, where there is one, then skips
+// it). Only numbers leave stackPlace: the stack's first frame in one of
+// PAGE_SCRIPTS, as scriptLine numbers it, and the column. The error's name and
+// message are cut off unread (they could quote meeting text) and no file name
+// or path is sent (docs/DEVELOPER_NOTES.md, "Page scripts").
+let caughtAt = null;                  // [line, col] of the error now being reported
+const sentRejections = new WeakSet();  // the reasons (objects) of rejections a guard has sent
+const guards = new WeakMap();         // a callback -> its guard, to remove it again
+const FRAME = /^ +at (?:.* \()?(.+):(\d+):(\d+)\)?$/;
+function stackPlace(err) {
+  let stack, head;
+  try {
+    stack = String(err.stack);
+    head = String(err);
+  } catch (e) { return null; }        // not an Error, or one that will not say
+  if (!stack.startsWith(head)) return null;
+  for (const frame of stack.slice(head.length).split("\n")) {
+    const m = FRAME.exec(frame);
+    if (!m) continue;
+    const at = PAGE_SCRIPTS.findIndex((name) => String(new URL(name, document.baseURI)) === m[1]);
+    if (at >= 0) return [scriptLine(m[1], Number(m[2])), Math.max(0, Number(m[3]) | 0)];
+  }
+  return null;
+}
+function guarded(fn) {
+  if (typeof fn !== "function") return fn;
+  let guard = guards.get(fn);
+  if (!guard) {
+    guard = function (...args) {
+      let value;
+      try {
+        value = fn.apply(this, args);
+      } catch (err) {
+        caughtAt = stackPlace(err);
+        throw err;
+      }
+      // The browser does not wait for a callback's promise, so its rejection
+      // is one nobody handles.
+      if (value instanceof Promise) {
+        value.catch((reason) => {
+          if (Object(reason) === reason) sentRejections.add(reason);
+          reportUiError("rejection", ...(stackPlace(reason) || [0, 0]));
+          throw reason;
+        });
+      }
+      return value;
+    };
+    guards.set(fn, guard);
+  }
+  return guard;
+}
+// Run once, as the page loads, before any listener is added: the browser's
+// own ways to call the page later go through guarded(). A listener object
+// (handleEvent) and a timer given as text (which the page's policy refuses
+// anyway) pass unchanged.
+function guardCallbacks(win) {
+  const proto = win.EventTarget && win.EventTarget.prototype;
+  if (proto) {
+    const add = proto.addEventListener, remove = proto.removeEventListener;
+    proto.addEventListener = function (type, fn, options) {
+      return add.call(this, type, guarded(fn), options);
+    };
+    proto.removeEventListener = function (type, fn, options) {
+      return remove.call(this, type, (typeof fn === "function" && guards.get(fn)) || fn, options);
+    };
+  }
+  for (const name of ["setTimeout", "setInterval", "requestAnimationFrame"]) {
+    const real = win[name];
+    if (typeof real === "function") win[name] = (fn, ...rest) => real.call(win, guarded(fn), ...rest);
+  }
+}
 function reportUiError(event, line, col) {
   if (!bridgeReady) { earlyError = earlyError || [event, line, col]; return; }
   if (reporting) return;
@@ -218,6 +300,8 @@ function askClose() {
 // Everything the page runs as it loads, in the order app.js ran it before the
 // split: the meter's colours follow the theme, the polling follows the window's
 // visibility, page errors are reported, then the page is wired and started.
+// First, the browser's ways to call the page later are guarded (#491).
+guardCallbacks(window);
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", readVizColours);
 
 document.addEventListener("visibilitychange", () => {
@@ -233,8 +317,21 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
-window.addEventListener("error", (e) => reportUiError("error", scriptLine(e.filename, e.lineno), e.colno));
-window.addEventListener("unhandledrejection", () => reportUiError("rejection", 0, 0));
+// Where the browser gives the file and line (served over HTTP, as in the
+// design check), they are used; from file:// it gives neither, and the place
+// a guard noted is used instead (#491). A rejection a guard has already sent
+// is not sent again; any other is sent with its reason's place, when it is an
+// Error with a stack.
+window.addEventListener("error", (e) => {
+  const caught = caughtAt;
+  caughtAt = null;
+  if (e.filename) reportUiError("error", scriptLine(e.filename, e.lineno), e.colno);
+  else reportUiError("error", ...(caught || [0, 0]));
+});
+window.addEventListener("unhandledrejection", (e) => {
+  if (Object(e.reason) === e.reason && sentRejections.has(e.reason)) return;
+  reportUiError("rejection", ...(stackPlace(e.reason) || [0, 0]));
+});
 window.addEventListener("pywebviewready", () => {
   bridgeReady = true;
   const early = earlyError;
@@ -244,7 +341,7 @@ window.addEventListener("pywebviewready", () => {
 
 window.workspace = { call, show, openMeeting, refresh, state, play, say, setStep, askClose };   // check tools, close
 
-wire();
+guarded(wire)();                      // an error in wiring has its place too (#491)
 window.addEventListener("pywebviewready", async () => {
   // A locked workspace (#111 C4b): the status first, and if it is locked only
   // the locked screen, with no other request and no polling.

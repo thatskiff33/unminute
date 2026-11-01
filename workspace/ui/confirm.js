@@ -18,7 +18,7 @@ function confirmDialog({ title, body, check, onConfirm, limits = true, limitsTex
   $("c-icon-ok").toggleAttribute("hidden", danger);
   $("c-icon-danger").toggleAttribute("hidden", !danger);
   dlg.returnValue = "";
-  dlg.onclose = () => { if (dlg.returnValue === "ok") onConfirm(); };
+  dlg.onclose = guarded(() => { if (dlg.returnValue === "ok") onConfirm(); });   // main.js (#491)
   dlg.showModal();
 }
 
@@ -61,13 +61,13 @@ function modelNotReady(chosen, same) {
     "still the model chosen in Settings > Speech model. " : "") + chosen.note;
   $("md-downloads").hidden = !chosen.offered;
   dlg.returnValue = "";
-  dlg.onclose = () => {
+  dlg.onclose = guarded(() => {      // main.js (#491)
     if (dlg.returnValue === "downloads") show("downloads");
     else if (dlg.returnValue === "settings") {
       show("settings");
       $("h-model").scrollIntoView({ block: "center" });   // the picker fills once Settings has loaded
     }
-  };
+  });
   dlg.showModal();
 }
 

@@ -182,12 +182,34 @@ real time, and remove it when the cause is fixed.
   100000 plus the line: 300120 is line 120 of the third script, `meetings.js`. A line from
   any other script (none in the app; `fixtures.js` in the design check) is sent as it is.
   The largest value fits the bridge's limit of 10,000,000 while there are fewer than 100
-  scripts of fewer than 100,000 lines each. In headless Edge with the page opened from
-  `file://`, as the app opens it, the browser hides the details of the page's own script
-  errors ("Script error.", no file, line 0), with one app.js as with the split (probe of
-  30 Oct 2026, #414), so the page sends 0 there; the numbers show where the page is served
-  over HTTP, as in the design check. Whether the real WebView2 window does the same is to
-  confirm.
+  scripts of fewer than 100,000 lines each.
+- **From `file://` the browser hides the page's own errors; the page reads its own stack.**
+  The window opens the page from `file://`, and WebView2 then gives an uncaught error in one
+  of the page's scripts to the `error` event as "Script error.", with no file, line 0 and
+  no error object, and sends no `unhandledrejection` event at all for one. Measured in the
+  real window on 30 Oct 2026 (#491; a throwaway empty workspace, `groupOf(null)` raised from
+  a timer): before the fix `report_ui_error` received `("error", 0, 0)` for each error and
+  nothing for a rejection. Headless Edge from `file://` does the same (#414 probe); served
+  over HTTP, as in the design check, the file and line arrive. An error the page catches
+  itself still has its full stack, so `main.js` (`guardCallbacks`, at load before any
+  listener) wraps each callback the browser calls later in `guarded()`:
+  `EventTarget.prototype.addEventListener` (and `removeEventListener`, which finds the same
+  wrapper), `setTimeout`, `setInterval`, `requestAnimationFrame`, the page's `on...`
+  handlers and `wire()`. A guard that catches an error notes its place from the stack and
+  throws the same error on, so the browser handles it as before and the `error` event that
+  follows sends that place. When an async callback's promise rejects, the guard sends the
+  rejection itself and rejects on with the same reason (the `unhandledrejection` event,
+  where the browser sends one, skips a reason a guard sent). `stackPlace` cuts off the
+  error's name and message unread (they could quote meeting text), takes the first frame
+  whose URL is one of `PAGE_SCRIPTS` and returns two numbers: no message, file name or path
+  reaches the bridge. Not covered: an error while a script first loads (before `main.js`
+  installs the guards) and a promise chain the page builds itself (`.then` callbacks) still
+  send 0, or nothing for a rejection. `tools/workspace_ui_check.py` raises a timer's, a
+  listener's and an async callback's error in the real window and needs each line;
+  `tests/test_page_scripts.py` (`PageErrorPlaceTests`) runs the functions themselves.
+  Served over HTTP the browser's own file and line are used. Loading the page another way
+  (a virtual host instead of `file://`) would make the browser give the details itself;
+  that is #488, after 1.0.
 
 ## Windows, WebView2 and pythonnet
 
