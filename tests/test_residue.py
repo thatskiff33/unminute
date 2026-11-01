@@ -7,6 +7,7 @@
 
 import json
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -482,6 +483,60 @@ class WindowFilesTests(TempDir):
             residue.lend_models(cache, target)
         self.assertEqual(b"", target.read_bytes())
 
+    @unittest.skipUnless(os.name == "nt", "Windows' 260-character path limit")
+    def test_models_past_the_windows_path_limit_are_lent_and_taken_back(self):
+        # #499: the GPU component in the model cache holds licence files
+        # whose paths, in the cache and in the throwaway profile, pass
+        # Windows' 260-character limit (MAX_PATH), which applies unless long
+        # paths are turned on for the computer. They are lent and taken back
+        # like the rest, never unreadable.
+        def extended(path):              # this test's own files, made and removed
+            return "\\\\?\\" + os.path.abspath(path)
+
+        def put(rel, data):
+            path = cache / rel
+            os.makedirs(extended(path.parent), exist_ok=True)
+            with open(extended(path), "wb") as f:
+                f.write(data)
+            return path
+        cache, target = self.root / "cache", self.ws.parent / "models"
+        deep = "/".join(["licence-folder-" + "d" * 30] * 6)       # 275 characters
+        small_rel, big_rel = f"gpu/{deep}/LICENSE.txt", f"gpu/{deep}/model.bin"
+        try:
+            small = put(small_rel, b"licence")
+            big = put(big_rel, b"w" * residue.LINK_FROM)
+            self.assertGreater(len(str(small)), 260)
+            self.assertGreater(len(str(target / small_rel)), 260)
+            lent, counts = residue.lend_models(cache, target)
+            self.assertEqual({"linked": 1, "copied": 1, "unreadable": []}, counts)
+            self.assertEqual(sorted([small_rel, big_rel]), sorted(lent))
+            self.assertTrue(os.path.samefile(extended(big), extended(target / big_rel)))
+            with open(extended(target / small_rel), "rb") as f:
+                self.assertEqual(b"licence", f.read())
+            back = residue.return_models(target, lent, residue.names())
+            self.assertEqual({"new": [], "unexplained": [], "removed": True,
+                              "unreadable": []}, back)
+            self.assertFalse(os.path.lexists(extended(target)))
+            # The cache's own files are untouched: a link removed is only a link.
+            with open(extended(big), "rb") as f:
+                self.assertEqual(residue.LINK_FROM, len(f.read()))
+        finally:
+            # Before tearDown's cleanup, which could not reach them.
+            for folder in (cache, target):
+                shutil.rmtree(extended(folder), ignore_errors=True)
+
+    def test_the_extended_form_is_an_absolute_path_with_its_prefix(self):
+        # #499: residue._long() gives Windows' extended-length form, which
+        # passes the 260-character limit; elsewhere the path as it is.
+        if os.name != "nt":
+            self.assertEqual(str(self.root), residue._long(self.root))
+            return
+        self.assertEqual("\\\\?\\" + os.path.abspath(self.root), residue._long(self.root))
+        self.assertEqual("\\\\?\\" + os.path.abspath("rel\\x"), residue._long("rel/x"))
+        self.assertEqual("\\\\?\\UNC\\server\\share\\x", residue._long("\\\\server\\share\\x"))
+        once = residue._long(self.root)
+        self.assertEqual(once, residue._long(once))                   # never twice
+
     def test_nothing_to_lend_is_nothing_lent(self):
         lent, counts = residue.lend_models(self.root / "none", self.ws.parent / "models")
         self.assertEqual(({}, {"linked": 0, "copied": 0, "unreadable": []}), (lent, counts))
@@ -667,6 +722,31 @@ class OutsideTests(TempDir):
         # Nothing is expected in the redirected folders.
         for place in ("TEMP", "APPDATA", "USERPROFILE"):
             self.assertIsNone(residue.explain(place, "x.tmp", n))
+
+    def test_only_the_intel_shader_cache_s_own_files_are_explained(self):
+        # #499, under DEC-057: the Intel graphics driver writes a compiled
+        # shader, named by a 64-digit hash, directly in LocalLow\Intel\
+        # ShaderCache when the window draws. Only that is explained, and the
+        # report names the entry it relied on; anything else there fails.
+        n, digest = residue.names(), "0123456789abcdef" * 4
+        entry = "LocalLow: Intel/ShaderCache/[0-9a-f]{64}"
+        self.assertIsNotNone(residue.explain("LocalLow", f"Intel/ShaderCache/{digest}", n))
+        self.assertEqual({entry: 1}, residue.explained(
+            {"LocalLow": [f"Intel/ShaderCache/{digest}"]}, n))
+        for name in (f"Intel/ShaderCache/{digest[:-1]}",          # 63 digits
+                     f"Intel/ShaderCache/{digest}0",              # 65
+                     f"Intel/ShaderCache/{digest.upper()}",
+                     f"Intel/ShaderCache/{digest}.json",
+                     f"Intel/ShaderCache/sub/{digest}",
+                     f"Intel/ShaderCache/{digest[:-8]}notes.txt",
+                     f"Intel/Other/{digest}", f"Intel/{digest}",
+                     f"Other/Intel/ShaderCache/{digest}"):
+            with self.subTest(name=name):
+                self.assertIsNone(residue.explain("LocalLow", name, n))
+        # Only in LocalLow: never in the redirected folders or the model cache.
+        for place in ("TEMP", "APPDATA", "USERPROFILE", residue.REST, "model_cache"):
+            with self.subTest(place=place):
+                self.assertIsNone(residue.explain(place, f"Intel/ShaderCache/{digest}", n))
 
     def test_the_explained_records_are_where_the_app_writes_them(self):
         # Tied to workspace/asr_engines.py's own paths, not a copy of their

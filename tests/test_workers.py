@@ -386,6 +386,93 @@ class WorkerTests(unittest.TestCase):
         found = json.loads(turns[0][2])
         self.assertNotIn(os.path.abspath(later), found)
 
+    def test_the_speaker_libraries_keep_their_cache_in_a_throwaway_folder(self):
+        # #499: matplotlib, which pyannote.audio loads, writes its font list
+        # to %LOCALAPPDATA%\matplotlib unless MPLCONFIGDIR names another
+        # folder, and it stayed there after the app. When the speaker
+        # libraries load, the worker has MPLCONFIGDIR set to the handle's own
+        # throwaway folder in TEMP (an inherited value replaced), which the
+        # handle removes, with what was written there, when it closes.
+        import json
+
+        from workspace import audiocrypt, media, worker
+        from workspace.worker import diarize
+        path, key, context = Path(self.tmp.name) / "a.uma", bytes(range(32)), ("decoded", "m")
+        with audiocrypt.AudioWriter(path, key, context, "float32", 1, SR) as w:
+            w.write(np.zeros(SR, dtype=np.float32))
+        audio = media.AudioRef(path, key, context, SR)
+        inherited = Path(self.tmp.name, "inherited")
+        with mock.patch.dict(os.environ, {"MPLCONFIGDIR": str(inherited)}):
+            self.h.load(fake("echo"), 1)                 # the worker starts
+        turns, _, _, _ = diarize(self.h, fake("library_cache_diarizer"), audio, None, 1)
+        seen = json.loads(turns[0][2])
+        self.assertTrue(seen["folder"])
+        folder = Path(seen["folder"])
+        self.assertTrue(seen["there"])
+        self.assertTrue(folder.name.startswith(worker.LIBRARY_CACHE_PREFIX), folder.name)
+        self.assertTrue(os.path.samefile(folder.parent, tempfile.gettempdir()))
+        self.assertTrue((folder / "fontlist-v390.json").is_file())
+        self.assertNotEqual(os.path.normcase(folder), os.path.normcase(inherited))  # replaced
+        self.h.close()
+        self.assertFalse(os.path.lexists(folder))
+
+    @unittest.skipUnless(sys.platform == "win32", "process start times are read on Windows")
+    def test_a_cache_folder_a_crash_left_is_removed_when_the_next_worker_starts(self):
+        # #499: a killed app never removes its handle's folder. The next
+        # handle to start a worker removes it, by its owner's process id and
+        # start time; a folder whose owner still runs, a reused process id,
+        # and anything else in TEMP are kept, and a junction is not followed.
+        import _winapi
+        import subprocess
+
+        from workspace import diag, worker
+        with tempfile.TemporaryDirectory() as temp, \
+                mock.patch("tempfile.gettempdir", return_value=temp):
+            ended = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"],
+                                   capture_output=True, text=True, check=True)
+            pid = int(ended.stdout)
+            p = worker.LIBRARY_CACHE_PREFIX
+            stale = Path(temp, f"{p}{pid}-1234-abc_9")
+            Path(stale, "inner").mkdir(parents=True)
+            Path(stale, "inner", "fontlist-v390.json").write_text("{}", encoding="utf-8")
+            alive = Path(temp, f"{p}{os.getpid()}-{diag.process_created()}-def")
+            reused = Path(temp, f"{p}{os.getpid()}-1234-ghi")      # same id, other start
+            other = Path(temp, "unminute-libcache-notes")
+            kept_file = Path(temp, f"{p}{pid}-1234-file")
+            for folder in (alive, reused, other):
+                folder.mkdir()
+            kept_file.write_text("x", encoding="utf-8")
+            target = Path(temp, "elsewhere")
+            target.mkdir()
+            Path(target, "kept.txt").write_text("x", encoding="utf-8")
+            junction = Path(temp, f"{p}{pid}-1234-jkl")
+            _winapi.CreateJunction(str(target), str(junction))
+            self.assertEqual(worker.remove_stale_library_caches(), 2)
+            self.assertFalse(stale.exists())
+            self.assertFalse(reused.exists())
+            for kept in (alive, other, kept_file, Path(target, "kept.txt")):
+                self.assertTrue(kept.exists(), kept.name)
+            self.assertTrue(os.path.lexists(junction))       # neither followed nor removed
+            os.rmdir(junction)                               # the junction only
+            # The handle sweeps before it makes its own folder.
+            Path(stale, "inner").mkdir(parents=True)
+            self.h.load(fake("echo"), 1)
+            self.assertFalse(stale.exists())
+            self.assertTrue(self.h._library_cache.startswith(temp))
+            self.h.close()
+            self.assertEqual(sorted(e.name for e in os.scandir(temp)),
+                             sorted([alive.name, other.name, kept_file.name, target.name]))
+
+    def test_a_worker_starts_when_no_cache_folder_can_be_made(self):
+        # #499, D4: a TEMP that cannot take the folder leaves matplotlib at
+        # its default; transcription and speaker identification still run.
+        from workspace import worker
+        with mock.patch("tempfile.mkdtemp", side_effect=PermissionError(13, "denied")):
+            self.assertIsNone(worker.new_library_cache())
+            self.h.load(fake("echo"), 1)
+        self.assertIn("threads=1", self.h.transcribe(np.zeros(10, np.float32))[0][0].text)
+        worker.remove_library_cache(None)                # nothing to remove
+
 
 class SlowToEnd:
     """A stand-in worker process that ends only after 8 s of waiting for it,

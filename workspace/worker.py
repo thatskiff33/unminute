@@ -103,6 +103,86 @@ NO_CURRENT_FOLDER = "NoDefaultCurrentDirectoryInExePath"
 #     the owner's decisions DEC-052 and DEC-073).
 PROGRAM_FILES_VARIABLES = ("ProgramFiles", "ProgramW6432")
 
+# matplotlib, which pyannote.audio imports when it loads (pyplot, so its font
+# manager too), writes a list of the computer's fonts into its config folder:
+# %LOCALAPPDATA%\matplotlib, or %USERPROFILE%\.matplotlib, unless
+# MPLCONFIGDIR names another. Left there, it would outlive the app (#499).
+# So every process that loads the speaker libraries points MPLCONFIGDIR at a
+# throwaway folder of the app's own in TEMP (LIBRARY_CACHE_PREFIX), made by
+# the process that owns it and removed when that is done: the worker
+# handle's when it closes (a worker is terminated, so it never removes
+# anything itself), and --self-test's when it ends. A folder whose owner
+# ended without removing it (a crash, or the app ended from Task Manager) is
+# removed the next time a worker handle makes its own
+# (remove_stale_library_caches()). The font list names fonts and their
+# files only, no meeting content. Forced, like the telemetry switches: a
+# value inherited from the user's environment is replaced.
+LIBRARY_CACHE_VARIABLE = "MPLCONFIGDIR"
+LIBRARY_CACHE_PREFIX = "unminute-libcache-"
+# The folder's name: the prefix, its owner's process id and start time
+# (diag.process_created), then mkdtemp's random part.
+_LIBRARY_CACHE_NAME = re.compile(re.escape(LIBRARY_CACHE_PREFIX) + r"(\d+)-(\d+)-\w+")
+
+
+def new_library_cache():
+    """A new throwaway folder for the speaker libraries' own cache, in TEMP,
+    named after this process (_LIBRARY_CACHE_NAME), or None when it cannot
+    be made: matplotlib then uses its default, and speaker identification
+    still runs (D4)."""
+    import tempfile
+
+    from workspace import diag
+    owner = f"{os.getpid()}-{diag.process_created() or 0}"
+    try:
+        return tempfile.mkdtemp(prefix=f"{LIBRARY_CACHE_PREFIX}{owner}-")
+    except OSError:
+        return None
+
+
+def remove_stale_library_caches():
+    """Remove the folders in TEMP that new_library_cache() made for a
+    process that has ended (by its id and start time, so a reused id is not
+    taken for it): what a crash left. A folder whose owner is still running
+    (the app's own, or a self-test's) is kept, and so is anything not named
+    as new_library_cache() names them, and a link or junction, which is
+    never followed. Windows only: elsewhere no process's start time can be
+    read, so nothing is removed. How many were removed."""
+    if os.name != "nt":
+        return 0
+    import tempfile
+
+    from workspace import diag
+    try:
+        entries = list(os.scandir(tempfile.gettempdir()))
+    except OSError:
+        return 0
+    removed = 0
+    for entry in entries:
+        found = _LIBRARY_CACHE_NAME.fullmatch(entry.name)
+        if found is None:
+            continue
+        try:
+            if entry.is_junction() or not entry.is_dir(follow_symlinks=False):
+                continue
+        except OSError:
+            continue
+        pid, created = int(found[1]), int(found[2])
+        running = diag.process_created(pid)
+        if running is not None and created in (0, running):
+            continue                 # its owner is still running
+        remove_library_cache(entry.path)
+        removed += 1
+    return removed
+
+
+def remove_library_cache(folder):
+    """Remove a folder new_library_cache() made, with what is in it. A link
+    in it is removed, never followed (shutil.rmtree); what cannot be removed
+    is left (a file still open)."""
+    if folder:
+        import shutil
+        shutil.rmtree(folder, ignore_errors=True)
+
 
 # A worker whose pipe has just closed is ending: wait this long for it, so its
 # own exit code (a crash's) is kept rather than replaced by terminate()'s.
@@ -192,12 +272,16 @@ def clear_dll_path_environment(program_files=None):
             os.environ[name] = folder
 
 
-def _start_up(log_dir, log_name, quiet, gpu_site=None, gpu_component=None):
+def _start_up(log_dir, log_name, quiet, gpu_site=None, gpu_component=None,
+              library_cache=None):
     """A worker process's start-up, before any model library is imported:
     the DLL-path environment cleared and ProgramFiles set (T25), its
-    log, no telemetry, the offline guard (N1), weights-only loading and, if
-    quiet, below-normal priority. Shared by the main, GPU and draft workers.
-    Returns (log, the device it runs speech models on)."""
+    log, no telemetry, the offline guard (N1), weights-only loading, the
+    speaker libraries' cache in library_cache (the handle's throwaway
+    folder, LIBRARY_CACHE_VARIABLE) and, if quiet, below-normal priority.
+    Shared by the main, GPU and draft workers; the draft worker loads no
+    speaker library and is given no folder. Returns (log, the device it runs
+    speech models on)."""
     # First of all, before workspace.diag: importing it reads sysconfig's
     # paths, and sysconfig then keeps the user base it found, PYTHONUSERBASE
     # included, for PyTorch to read later (#358; the clearing also resets a
@@ -234,6 +318,8 @@ def _start_up(log_dir, log_name, quiet, gpu_site=None, gpu_component=None):
         offline_guard.install()
         os.environ.update(WEIGHTS_ONLY)
         os.environ.pop(NOT_WEIGHTS_ONLY, None)
+        if library_cache:                # nothing left in %LOCALAPPDATA%\matplotlib (#499)
+            os.environ[LIBRARY_CACHE_VARIABLE] = library_cache
         # ONNX Runtime (Parakeet, and the voice detection Whisper uses) has its own
         # Windows telemetry events, switched off by a call rather than a variable.
         offline_guard.disable_onnxruntime_telemetry()
@@ -260,8 +346,9 @@ def _start_up(log_dir, log_name, quiet, gpu_site=None, gpu_component=None):
 
 
 def _worker_main(conn, cache_dir, quiet, gpu_site=None, allow_test_engines=False,
-                 log_dir=None, log_name="worker", gpu_component=None):
-    log, asr_device = _start_up(log_dir, log_name, quiet, gpu_site, gpu_component)
+                 log_dir=None, log_name="worker", gpu_component=None, library_cache=None):
+    log, asr_device = _start_up(log_dir, log_name, quiet, gpu_site, gpu_component,
+                                library_cache)
     from workspace import diag
     try:
         from workspace.engines import load_engine
@@ -417,6 +504,10 @@ class WorkerHandle:
         self._gpu_whisper = None     # companion GPU worker (Whisper only, #248)
         self._ctx = mp.get_context("spawn")
         self._proc = self._conn = None
+        # The speaker libraries' throwaway cache folder (new_library_cache()):
+        # made when a worker first starts, kept for the workers this handle
+        # starts after it, removed by close() (#499).
+        self._library_cache = None
         self._loaded = None          # what the CURRENT worker process has loaded
         self._wanted = None          # what the caller last asked for (reload after restart)
         self._info = None
@@ -446,10 +537,13 @@ class WorkerHandle:
     def _start(self):
         parent, child = self._ctx.Pipe()
         log_dir = str(self.log.folder) if self.log is not None else None
+        if self._library_cache is None:
+            remove_stale_library_caches()        # what a crashed app left (#499)
+            self._library_cache = new_library_cache()
         self._proc = self._ctx.Process(target=_worker_main,
                                        args=(child, self.cache_dir, self.quiet, self.gpu_site,
                                              self.allow_test_engines, log_dir, self._log_name,
-                                             self.gpu_component),
+                                             self.gpu_component, self._library_cache),
                                        daemon=True, name="unminute-gpu-worker" if self.gpu_site
                                        else "unminute-worker")
         self._proc.start()
@@ -584,6 +678,10 @@ class WorkerHandle:
             companion.close(deadline)
         with self._lock:
             self._kill(wait=deadline - time.monotonic())
+            # Once its worker has ended: nothing of the speaker libraries'
+            # cache is left in TEMP (#499).
+            remove_library_cache(self._library_cache)
+            self._library_cache = None
 
     def _terminate(self):
         """Flag the stop and terminate this worker and its companions, waiting

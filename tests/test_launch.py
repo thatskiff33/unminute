@@ -1367,6 +1367,46 @@ class ChildCheckTests(unittest.TestCase):
         self.assertEqual(seen, {})
         self.assertEqual(out.getvalue().splitlines()[-1], "FAIL")
 
+    @unittest.skipUnless(HAVE_DEPS, "numpy/av/cryptography not installed")
+    def test_the_self_test_keeps_the_speaker_libraries_cache_in_a_throwaway_folder(self):
+        # #499: importing pyannote.audio loads matplotlib, which writes its
+        # font list to %LOCALAPPDATA%\matplotlib unless MPLCONFIGDIR names
+        # another folder; the launcher runs --self-test on the user's own
+        # profile. The self-test sets MPLCONFIGDIR to a throwaway folder of
+        # its own in TEMP (an inherited value replaced) before it imports any
+        # library, and removes it, with what was written there, when it ends.
+        import io
+
+        from workspace import __main__ as main
+        from workspace import shell, speaker_load, worker
+        shell.wait_preload()                    # as the test above: no other thread imports
+        seen = {}
+
+        def imp(name):
+            folder = os.environ.get("MPLCONFIGDIR")
+            seen[name] = folder
+            if name == "pyannote.audio" and folder and os.path.isdir(folder):
+                Path(folder, "fontlist-v390.json").write_text("{}", encoding="utf-8")
+        with tempfile.TemporaryDirectory() as scratch, contextlib.ExitStack() as stack:
+            inherited = os.path.join(scratch, "inherited")
+            stack.enter_context(mock.patch.dict(os.environ, {"MPLCONFIGDIR": inherited}))
+            stack.enter_context(mock.patch("importlib.import_module", side_effect=imp))
+            stack.enter_context(mock.patch.object(main.offline_guard,
+                                                  "disable_onnxruntime_telemetry"))
+            stack.enter_context(mock.patch.object(speaker_load, "self_check", return_value=[]))
+            stack.enter_context(mock.patch.object(main, "dpapi_round_trip",
+                                                  return_value=(True, "dpapi round trip")))
+            stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            main.self_test()
+        folders = set(seen.values())
+        self.assertEqual(len(folders), 1, folders)       # one folder, set before every import
+        folder = Path(folders.pop())
+        self.assertNotEqual(os.path.normcase(folder), os.path.normcase(inherited))  # replaced
+        self.assertTrue(folder.name.startswith(worker.LIBRARY_CACHE_PREFIX), folder.name)
+        self.assertTrue(os.path.samefile(folder.parent, tempfile.gettempdir()))
+        self.assertIn("pyannote.audio", seen)
+        self.assertFalse(os.path.lexists(folder))
+
     # PyTorch reads the user base and ProgramFiles only on Windows, where
     # sysconfig always has a user base (on Linux it can be None).
     @unittest.skipUnless(sys.platform == "win32" and HAVE_DEPS, "Windows app dependencies")

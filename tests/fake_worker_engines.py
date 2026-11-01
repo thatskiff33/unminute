@@ -249,6 +249,20 @@ def dll_folders_diarizer(audio, hint):
     return [(0.0, 1.0, json.dumps(torch_dll_folders()))], [], "cpu"
 
 
+def library_cache_diarizer(audio, hint):
+    """Speaker identification that reports, as its one speaker's label (a
+    JSON object), the MPLCONFIGDIR it loads with and whether that folder is
+    there, after writing a file into it as matplotlib writes its font list
+    (#499)."""
+    import json
+    folder = os.environ.get("MPLCONFIGDIR")
+    there = bool(folder) and os.path.isdir(folder)
+    if there:
+        with open(os.path.join(folder, "fontlist-v390.json"), "w", encoding="utf-8") as f:
+            f.write("{}")
+    return [(0.0, 1.0, json.dumps({"folder": folder, "there": there}))], [], "cpu"
+
+
 def diarizer_fails(audio, hint):
     raise RuntimeError("speaker model failed verification")
 

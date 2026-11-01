@@ -379,8 +379,7 @@ def self_test():
     """Import every dependency the app needs, prove the guard blocks the
     network and that a code-running speaker checkpoint is refused. Prints one
     line per check; exit code 0 only if all pass."""
-    import importlib
-    import socket
+    import os
     # No DLL folder named by the environment (#357, #358, T25): CTranslate2,
     # PyTorch and TorchCodec, imported below, add folders from outside the app
     # to the DLL search path when they load (HIP_PATH, PYTHONUSERBASE,
@@ -395,12 +394,29 @@ def self_test():
     # imported before this); if it cannot (the known-folder lookup failing
     # included), it imports nothing more and fails.
     try:
-        from workspace.worker import clear_dll_path_environment
+        from workspace.worker import (LIBRARY_CACHE_VARIABLE, clear_dll_path_environment,
+                                      new_library_cache, remove_library_cache)
         clear_dll_path_environment()
     except Exception as exc:
         print(f"FAILED  DLL path variables could not be cleared ({type(exc).__name__})")
         print("FAIL")
         return 1
+    # The speaker libraries' cache (matplotlib's font list) in a throwaway
+    # folder of the self-test's own, removed when it ends, as a worker's is:
+    # nothing is left in %LOCALAPPDATA%\matplotlib (#499).
+    cache = new_library_cache()
+    if cache:
+        os.environ[LIBRARY_CACHE_VARIABLE] = cache
+    try:
+        return _self_test_checks()
+    finally:
+        remove_library_cache(cache)
+
+
+def _self_test_checks():
+    """self_test()'s checks, once its environment is set."""
+    import importlib
+    import socket
     ok = True
     offline_guard.disable_onnxruntime_telemetry()   # before onnxruntime is used below
     for name in ("numpy", "av", "onnxruntime", "onnx_asr", "faster_whisper", "ctranslate2",
