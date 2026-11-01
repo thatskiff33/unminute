@@ -200,9 +200,11 @@ changes, or GitHub owner settings.
 ## Checks
 
 - Python: test what a change touches with `python tools/run_tests.py --only <modules>`
-  (`--strict-skips` on Windows; run tests only through it) and `ruff check .`. CI runs the full
-  suite on every push, in parts, and it is required before merge; never run it on the shared
-  laptop (DEC-053).
+  (`--strict-skips` on Windows; run tests only through it) and `ruff check .`. CI runs, in parts,
+  the tests `tools/test_map.json` ties to a pull request's changes, and the full suite on every
+  push to `main` and nightly (DEC-083); the pull request's run is required before merge. Never
+  run the full suite on the shared laptop (DEC-053). A new test module or source file needs its
+  entry in the map (`python tools/select_tests.py --check`; `docs/RELEASING.md`).
 - No test downloads a model (`tests/download_guard.py` refuses the real download process): fake
   it (a `Downloads` target, or patch `setup._download_main`); a networkless test of the download
   process opts in with `download_guard.real_download_process()`.

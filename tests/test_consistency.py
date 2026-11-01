@@ -497,15 +497,19 @@ class DocsTests(unittest.TestCase):
     # change, the audit also runs daily and CodeQL runs weekly, so they keep their
     # own workflows. quality.yml holds report-only jobs, and scorecard.yml a
     # report-only job that never runs on a pull request (#415; ScorecardTests);
-    # release.yml runs only from a release tag. One exception: a job run in parts
+    # release.yml runs only from a release tag. Two exceptions: a job run in parts
     # by a matrix (the Windows unit tests, #386) is not required itself; the job
     # that needs it and always runs is, and
-    # test_matrix_parts_stand_behind_a_required_job holds that. review-record.yml's
+    # test_matrix_parts_stand_behind_a_required_job holds that. Nor is a job in
+    # SUPPORT_JOBS (the test selection, #500): every required job that needs it
+    # always runs and fails unless it succeeded
+    # (test_support_jobs_stand_behind_required_jobs). review-record.yml's
     # "Review record" runs on every pull request but is not required yet: the
     # owner adds it to the ruleset after about a week (#410), and it then moves to
     # REQUIRED_WORKFLOWS and docs/RELEASING.md's list.
     # review-record-rerun.yml only re-runs it when a collaborator comments.
     REQUIRED_WORKFLOWS = ("ci.yml", "changelog.yml", "audit.yml", "codeql.yml")
+    SUPPORT_JOBS = {"ci.yml": ("select-tests",)}
     REPORT_ONLY_WORKFLOWS = ("quality.yml", "scorecard.yml")
     PENDING_REQUIRED_WORKFLOWS = ("review-record.yml",)
     OTHER_WORKFLOWS = ("release.yml", "review-record-rerun.yml")
@@ -535,7 +539,10 @@ class DocsTests(unittest.TestCase):
     @classmethod
     def required_jobs(cls, name):
         """The names of the required status checks in .github/workflows/<name>."""
-        return [job for job in cls.workflow_jobs(name)[1] if not cls.is_matrix_part(job)]
+        support = {one(r"^    name: (.+)$", cls.job_blocks(name)[job_id], f"{job_id}'s name")
+                   for job_id in cls.SUPPORT_JOBS.get(name, ())}
+        return [job for job in cls.workflow_jobs(name)[1]
+                if not cls.is_matrix_part(job) and job not in support]
 
     @classmethod
     def setUpClass(cls):
@@ -620,6 +627,32 @@ class DocsTests(unittest.TestCase):
                     self.assertEqual(len(gates), 1, f"no one required job needs {job_id}")
                     self.assertIn("    if: ${{ always() }}\n", gates[0])
         self.assertGreaterEqual(found, 1, "the Windows unit tests no longer run in parts")
+
+    def test_support_jobs_stand_behind_required_jobs(self):
+        # #500: the test selection is not a required check because each job that
+        # needs it is a matrix part (standing behind its own required job) or a
+        # required job that always runs and fails unless the selection
+        # succeeded: by reading its result itself, or through the gate. A
+        # skipped required job would count as passing.
+        for name, support in self.SUPPORT_JOBS.items():
+            blocks = self.job_blocks(name)
+            for job_id in support:
+                with self.subTest(workflow=name, job=job_id):
+                    self.assertIn(job_id, blocks)
+                    self.assertNotRegex(blocks[job_id], r"(?m)^    if:", "it must always run")
+                    users = {other: body for other, body in blocks.items()
+                             if re.search(rf"^    needs: (\[[^\]]*\b)?{re.escape(job_id)}\b",
+                                          body, re.MULTILINE)}
+                    required = {other: body for other, body in users.items()
+                                if not self.is_matrix_part(
+                                    one(r"^    name: (.+)$", body, "a name"))}
+                    self.assertGreaterEqual(len(required), 1, f"no required job needs {job_id}")
+                    for other, body in required.items():
+                        self.assertIn("    if: ${{ always() }}\n", body, other)
+                        self.assertTrue(f"${{{{ needs.{job_id}.result }}}}" in body
+                                        or "run_tests.py\" --gate" in body, other)
+                    # Every required check that runs tests is among them.
+                    self.assertTrue({"check", "windows-tests"} <= set(required))
 
     # One group per pull request, cancelled by a newer push; every other run in a
     # group of its own (its run id), never cancelled.
