@@ -7,6 +7,7 @@
 # still removed.
 
 import ast
+import importlib.util
 import sys
 import tempfile
 import types
@@ -103,12 +104,18 @@ class EndBrowserTests(unittest.TestCase):
         end.assert_not_called()
 
 
+# System.Windows.Forms.CloseReason, with its .NET values.
+CLOSE_REASON = types.SimpleNamespace(WindowsShutDown=1, UserClosing=3, TaskManagerClosing=5)
+
+
 def fake_forms():
-    """System.Windows.Forms with just FormClosingEventHandler (pythonnet)."""
+    """System.Windows.Forms with just FormClosingEventHandler and CloseReason
+    (pythonnet)."""
     system = types.ModuleType("System")
     windows = types.ModuleType("System.Windows")
     forms = types.ModuleType("System.Windows.Forms")
     forms.FormClosingEventHandler = lambda fn: fn
+    forms.CloseReason = CLOSE_REASON
     system.Windows, windows.Forms = windows, forms
     return {"System": system, "System.Windows": windows, "System.Windows.Forms": forms}
 
@@ -144,8 +151,8 @@ class EndOnCloseTests(unittest.TestCase):
         self.form = types.SimpleNamespace(FormClosing=Event(), browser=Browser())
         self.window = types.SimpleNamespace(native=self.form)
 
-    def close(self, cancel):
-        args = types.SimpleNamespace(Cancel=cancel)
+    def close(self, cancel, reason=CLOSE_REASON.UserClosing):
+        args = types.SimpleNamespace(Cancel=cancel, CloseReason=reason)
         with mock.patch.object(shell, "end_browser") as end:
             for handler in self.form.FormClosing.handlers:
                 handler(self.form, args)
@@ -161,6 +168,18 @@ class EndOnCloseTests(unittest.TestCase):
         shell.end_browser_on_close(self.window)
         self.close(cancel=True).assert_not_called()
 
+    def test_task_manager_ends_the_browser(self):
+        shell.end_browser_on_close(self.window)
+        end = self.close(cancel=False, reason=CLOSE_REASON.TaskManagerClosing)
+        end.assert_called_once_with(self.form.browser)
+
+    def test_a_windows_shutdown_or_sign_out_leaves_the_browser_running(self):
+        # WinForms raises FormClosing at WM_QUERYENDSESSION and closes the form
+        # only at WM_ENDSESSION; a shutdown cancelled in between must not leave
+        # the window open without its browser (review of 09f0287).
+        shell.end_browser_on_close(self.window)
+        self.close(cancel=False, reason=CLOSE_REASON.WindowsShutDown).assert_not_called()
+
     def test_hooked_once(self):
         shell.end_browser_on_close(self.window)
         shell.end_browser_on_close(self.window)
@@ -168,7 +187,7 @@ class EndOnCloseTests(unittest.TestCase):
 
     def test_a_failure_never_stops_the_close(self):
         shell.end_browser_on_close(self.window)
-        args = types.SimpleNamespace(Cancel=False)
+        args = types.SimpleNamespace(Cancel=False, CloseReason=CLOSE_REASON.UserClosing)
         with mock.patch.object(shell, "end_browser", side_effect=OSError("access denied")):
             self.form.FormClosing.handlers[0](self.form, args)
         self.assertFalse(args.Cancel)
@@ -209,6 +228,37 @@ class EndOnCloseTests(unittest.TestCase):
             view.unminute_browser_ended = True
             view.clear_user_data()
             self.assertTrue(Path(tmp).exists())
+
+
+WEBVIEW = importlib.util.find_spec("webview")
+
+
+@unittest.skipUnless(WEBVIEW, "pywebview not installed")
+class PinnedPywebviewTests(unittest.TestCase):
+    """_clear_after_end() replaces pywebview 6.2.1's private-mode clean-up at
+    class level. If an upgrade renames or changes it, this fails, so the
+    replacement is re-checked rather than silently skipped (the profile would
+    then stay until the next start's storage_folder clean-up). Read as source:
+    importing the backend needs .NET."""
+
+    def source(self, name):
+        folder = Path(WEBVIEW.submodule_search_locations[0]) / "platforms"
+        return ast.parse((folder / name).read_text(encoding="utf-8"))
+
+    def test_edgechrome_still_clears_the_profile_the_way_it_replaces(self):
+        views = [node for node in ast.walk(self.source("edgechromium.py"))
+                 if isinstance(node, ast.ClassDef) and node.name == "EdgeChrome"]
+        self.assertEqual(len(views), 1)
+        clear = [node for node in views[0].body
+                 if isinstance(node, ast.FunctionDef) and node.name == "clear_user_data"]
+        self.assertEqual(len(clear), 1)
+        body = ast.unparse(clear[0])
+        for part in ("_state['private_mode']", "BrowserProcessId", "self.webview.Dispose()",
+                     "shutil.rmtree(self.user_data_folder)"):
+            self.assertIn(part, body)
+
+    def test_the_form_still_calls_it_when_closed(self):
+        self.assertIn("self.browser.clear_user_data()", ast.unparse(self.source("winforms.py")))
 
 
 class StartWiringTests(unittest.TestCase):

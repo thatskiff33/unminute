@@ -8,6 +8,7 @@
 # private_mode keeps WebView2 from persisting cookies/storage between runs.
 
 import json
+import ntpath
 import os
 import threading
 import time
@@ -570,11 +571,15 @@ def _close_now(window):
 # (%LOCALAPPDATA%\Microsoft\IdentityCache) and WinINet's cache and cookie
 # stores in the user's profile, outside Chromium's network stack and its
 # host-resolver block. The window never needs any of it, and no documented
-# WebView2 setting turns it off (docs/SECURITY_MODEL.md T1; docs/DEVELOPER_NOTES.md
+# WebView2 setting turns it off (docs/SECURITY_MODEL.md T11; docs/DEVELOPER_NOTES.md
 # "WebView2 and the user's account"). The runtime loads the library lazily and,
 # in our reproduction, only during that shutdown, so once a close is going
 # ahead the app ends the browser process itself and the shutdown never runs.
 # The window's WebView2 profile is in private mode and is removed anyway.
+# A Windows shutdown or sign-out is left alone: WinForms raises FormClosing at
+# its query stage (WM_QUERYENDSESSION) and closes the form only once it ends,
+# so if the shutdown were then cancelled the window would stay open without
+# its browser. Windows ends the session's processes itself (T11 residual).
 BROWSER_EXE = "msedgewebview2.exe"
 BROWSER_EXIT_WAIT_MS = 3000
 
@@ -584,17 +589,19 @@ def end_browser_on_close(window):
     end WebView2's browser process before the window disposes the control,
     which would start the browser's own shutdown. Call once the window is
     shown, after every other FormClosing handler has been added: this one
-    must run last, as an earlier one may still cancel or allow the close."""
+    must run last, as an earlier one may still cancel or allow the close.
+    A Windows shutdown or sign-out (CloseReason.WindowsShutDown) is left
+    alone: that close is only a query and can still be cancelled."""
     if getattr(window, "_browser_end_hooked", False):
         return
     window._browser_end_hooked = True
     import sys
-    from System.Windows.Forms import FormClosingEventHandler
+    from System.Windows.Forms import CloseReason, FormClosingEventHandler
     _clear_after_end(getattr(sys.modules.get("webview.platforms.edgechromium"), "EdgeChrome", None))
     form = window.native
 
     def on_form_closing(sender, args):     # WinForms raises this on the UI thread
-        if args.Cancel:
+        if args.Cancel or args.CloseReason == CloseReason.WindowsShutDown:
             return
         _guarded(end_browser, form.browser)
     form.FormClosing += FormClosingEventHandler(on_form_closing)
@@ -657,7 +664,8 @@ def terminate_browser(pid, api=None):
         return False
     try:
         name = api.image_name(handle)
-        if not name or os.path.basename(name).lower() != BROWSER_EXE:
+        # A Windows path, so split it as one on every platform the tests run on.
+        if not name or ntpath.basename(name).lower() != BROWSER_EXE:
             return False
         if not api.terminate(handle):
             return False

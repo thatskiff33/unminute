@@ -328,7 +328,13 @@ real time, and remove it when the cause is fixed.
   process itself once a close goes ahead (`shell.end_browser_on_close`), and the shutdown
   never runs. Ending it makes pywebview's own private-mode clean-up fail at its first step
   (it asks the ended process for its id), so `shell._clear_after_end` disposes the control and
-  removes the same folder without that step. With the fix the browser and its children were
+  removes the same folder without that step. That replaces pywebview 6.2.1's
+  `EdgeChrome.clear_user_data` at class level: on a pywebview upgrade, re-check it
+  (`tests/test_webview_close.py` `PinnedPywebviewTests` fails if its shape changes; if it no
+  longer runs, the profile stays until the next start's `storage_folder` clean-up). A Windows
+  shutdown or sign-out is left alone (`CloseReason.WindowsShutDown`): Windows Forms raises
+  FormClosing at `WM_QUERYENDSESSION` but closes the form only at `WM_ENDSESSION`, so a
+  cancelled shutdown would otherwise leave the window open without its browser. With the fix the browser and its children were
   gone within 0.1 s of the close, the profile folder was removed, no crash report was written,
   and the real start closed with exit code 0. The internal feature names come from the runtime's
   `msedge.dll` and are not documented: do not ship them as switches. To look again, the probe
