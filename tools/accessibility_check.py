@@ -1083,6 +1083,7 @@ def locked_main(out, modes):
 
     from workspace import shell
     ui.SESSION = session_state.Watch()
+    ui.session_step("the locked screen")  # its first reading is named for it too
     report = {}
     with tempfile.TemporaryDirectory() as tmp:
         try:

@@ -51,11 +51,17 @@ UOI_NAME = 2
 WTS, DESKTOP = "wts", "input desktop"
 
 
+# What a stop says: a lock seen as one, or a state that could not be read
+# (which stops the check too, as it might be a lock). The docs quote the
+# shared start, "the session locked".
+LOCKED, UNREAD = "the session locked", "the session locked, or its state could not be read"
+
+
 class SessionLocked(RuntimeError):
     """The session was locked, or its state could not be read, at a step."""
 
-    def __init__(self, where):
-        super().__init__(f"the session locked ({where})")
+    def __init__(self, where, unread=False):
+        super().__init__(f"{UNREAD if unread else LOCKED} ({where})")
         self.where = where
 
 
@@ -167,6 +173,7 @@ class Watch:
         self._read, self._lock = reader or (lambda: read()), threading.Lock()
         self.readings = self.by_wts = self.by_desktop = self.unread = 0
         self.locked_at = None
+        self.unread_stop = False            # the stop came from a state not read as locked
         self.step = "a window step"         # the check names its steps (a fixed name)
 
     @property
@@ -185,6 +192,7 @@ class Watch:
                 self.unread += 1
             if state.get("locked") is not False and self.locked_at is None:
                 self.locked_at = str(where)
+                self.unread_stop = state.get("locked") is not True
         return state
 
     def check(self, where):
@@ -192,7 +200,7 @@ class Watch:
         been at every reading before."""
         self.reading(where)
         if self.stopped:
-            raise SessionLocked(self.locked_at)
+            raise SessionLocked(self.locked_at, self.unread_stop)
 
     def merge(self, record):
         """Adds another process's record (a check's own child process) to
@@ -207,6 +215,7 @@ class Watch:
                 self.unread += 1
                 if self.locked_at is None:
                     self.locked_at = "no record from the check's own child process"
+                    self.unread_stop = True
                 return
             self.readings += record["readings"]
             self.by_wts += record["wts"]
@@ -214,6 +223,9 @@ class Watch:
             self.unread += record["unread"]
             if record["locked"] and self.locked_at is None:
                 self.locked_at = record["locked_at"] or "in the check's own child process"
+                # The child's record has counts only: any unread reading
+                # there may be what stopped it.
+                self.unread_stop = record["unread"] > 0
 
     def record(self):
         """The report's "session" block: counts and the step's name only."""
@@ -236,10 +248,10 @@ def valid(record):
             and (record.get("locked_at") is None or isinstance(record.get("locked_at"), str)))
 
 
-STOPPED = ("STOPPED: the session locked ({where}), so this run is neither a pass nor a "
+STOPPED = ("STOPPED: {what} ({where}), so this run is neither a pass nor a "
            "failure. Keep the session unlocked (an inactivity lock set by policy locks it "
            "too; docs/RELEASING.md) and run the check again.")
 
 
 def stopped_message(watch):
-    return STOPPED.format(where=watch.locked_at)
+    return STOPPED.format(what=UNREAD if watch.unread_stop else LOCKED, where=watch.locked_at)

@@ -1481,6 +1481,7 @@ def locked_main(out):
     import webbrowser
     global SESSION
     SESSION = session_state.Watch()
+    session_step("the locked screen")     # its first reading is named for it too
     webbrowser.open = lambda url, *a, **k: OPENED.append(url) or True   # no browser starts
     report, calls = {}, []
     with tempfile.TemporaryDirectory() as tmp:

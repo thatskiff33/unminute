@@ -9,6 +9,7 @@
 
 import io
 import json
+import shutil
 import struct
 import sys
 import tempfile
@@ -145,9 +146,14 @@ class WatchTests(unittest.TestCase):
 
     def test_an_unreadable_state_stops_as_a_lock(self):
         watch = session_state.Watch(reader(None))
-        with self.assertRaises(session_state.SessionLocked):
+        with self.assertRaises(session_state.SessionLocked) as caught:
             watch.check("as the check started")
         self.assertEqual(1, watch.record()["unread"])
+        # Said as it is: it may not have been a lock (review of 9c54272).
+        self.assertEqual("the session locked, or its state could not be read "
+                         "(as the check started)", str(caught.exception))
+        self.assertIn("STOPPED: the session locked, or its state could not be read "
+                      "(as the check started)", session_state.stopped_message(watch))
 
     def test_a_child_process_record_is_added(self):
         child = session_state.Watch(reader(False, True))
@@ -164,6 +170,14 @@ class WatchTests(unittest.TestCase):
         self.assertFalse(quiet.stopped)
         quiet.merge({"record": 0})
         self.assertTrue(quiet.stopped)
+        self.assertIn("or its state could not be read", session_state.stopped_message(quiet))
+        # A child's lock is said as one unless the child had an unread reading.
+        self.assertNotIn("could not be read", session_state.stopped_message(parent))
+        unread = session_state.Watch(reader(None))
+        unread.reading("before the locked screen")
+        merged = session_state.Watch(reader(False))
+        merged.merge(unread.record())
+        self.assertIn("or its state could not be read", session_state.stopped_message(merged))
 
     def test_the_record_version_is_the_one_evidence_checks(self):
         self.assertEqual(session_state.RECORD, evidence.SESSION_RECORD)
@@ -295,26 +309,49 @@ class PackagedCheckTests(unittest.TestCase):
     def test_a_lock_removes_the_throwaway_base_and_stops(self):
         self.tool.SESSION = session_state.Watch(reader(True))
         base = Path(tempfile.mkdtemp(prefix="umpkg-test-"))
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)   # if the check fails
         (base / "windows.bin").write_bytes(b"synthetic")
         with self.assertRaises(session_state.SessionLocked):
             self.tool.session_check("after the window step", base)
         self.assertFalse(base.exists())
 
     def test_the_packaged_check_stops_with_exit_2_when_locked(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             out = Path(tmp) / "report.json"
             printed = io.StringIO()
             argv = [self.tool.__file__, str(Path(tmp) / "v"), str(Path(tmp) / "cache"),
                     str(Path(tmp) / "a.wav"), str(out)]
+            # Any throwaway base goes in tmp, so a failure leaves none in %TEMP%.
             with mock.patch.object(sys, "argv", argv), windows_says(LOCK, "Default"), \
-                    redirect_stdout(printed):
+                    mock.patch.object(tempfile, "tempdir", tmp), redirect_stdout(printed):
                 rc = self.tool.main()
             report = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual([], list(Path(tmp).glob("umpkg-*")))
         self.assertEqual(2, rc)
         self.assertTrue(report["session"]["locked"])
         self.assertNotIn("pass", report)
         self.assertNotIn("failed", report)
         self.assertIn("STOPPED: the session locked", printed.getvalue())
+
+    def test_a_lock_seen_after_a_window_step_that_raised_still_stops(self):
+        # The reading after the window step runs even when the step raises,
+        # so the lock wins over the step's error and the base goes.
+        self.tool.SESSION = session_state.Watch(reader(False, False, True))
+        done = mock.Mock(stdout='{"ok": true}', stderr="", returncode=0)
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            root = Path(tmp)
+            with mock.patch.object(tempfile, "tempdir", tmp), \
+                    mock.patch.object(self.tool.evidence, "add_app"), \
+                    mock.patch.object(self.tool.residue, "names", return_value={}), \
+                    mock.patch.object(self.tool.residue, "real_places", return_value=[]), \
+                    mock.patch.object(self.tool.residue, "snapshot", return_value={}), \
+                    mock.patch.object(self.tool.subprocess, "run", return_value=done), \
+                    mock.patch.object(self.tool, "window_step",
+                                      side_effect=RuntimeError("the step broke")), \
+                    self.assertRaises(session_state.SessionLocked) as caught:
+                self.tool.check(root / "v", root / "cache", root / "a.wav", {})
+            self.assertEqual([], list(root.glob("umpkg-*")))
+        self.assertEqual("after the window step", caught.exception.where)
 
 
 class EvidenceTests(unittest.TestCase):

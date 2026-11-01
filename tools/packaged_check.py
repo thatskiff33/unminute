@@ -340,8 +340,10 @@ def check(version_dir, cache, wav, report, system_dumps=False):
     # 1b. The window with content (#418): the marked meeting in the real
     #     window, through the real start, closed normally before the scans.
     session_check("before the window step", base)
-    report["window"] = window_step(runtime, flags, env, app, workspace, names, base, cache)
-    session_check("after the window step", base)
+    try:
+        report["window"] = window_step(runtime, flags, env, app, workspace, names, base, cache)
+    finally:                    # read even if the step raised: a lock there stops as one
+        session_check("after the window step", base)
 
     # 2. At rest, while the meeting exists. The positive control first: the
     #    same finder must find every pattern in a planted file.
