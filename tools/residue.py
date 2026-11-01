@@ -275,6 +275,23 @@ def start_files(workspace, n):
 LINK_FROM = 1 << 20     # lend_models(): a file this large is hard-linked, a smaller one copied
 
 
+def _long(path):
+    """path in Windows' extended-length form (\\\\?\\C:\\..., or
+    \\\\?\\UNC\\server\\share\\... for a network path): absolute, and past the
+    260-character limit (MAX_PATH) that applies unless long paths are turned
+    on for the computer. The GPU component in the model cache holds licence
+    files deeper than that once the cache or the throwaway profile adds its
+    own folders (#499). Elsewhere, and for a path already in that form, the
+    path as it is."""
+    path = str(path)
+    if os.name != "nt" or path.startswith("\\\\?\\"):
+        return path
+    path = os.path.abspath(path)
+    if path.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + path[2:]
+    return "\\\\?\\" + path
+
+
 def lend_models(cache, target):
     """Lend the model cache to the window step's real start (#418), which
     looks for models only in the throwaway profile's own models folder
@@ -287,10 +304,12 @@ def lend_models(cache, target):
     A target that is already there (a folder, a file or a link) is refused
     with FileExistsError before anything is made: return_models() removes
     the whole target, so it is only ever one this lent into (fail closed).
+    Both are used in Windows' extended-length form (_long()), so a file
+    deeper than the 260-character limit is lent too (#499).
     Returns (listing() of target as lent, {"linked": n, "copied": n,
     "unreadable": [name]}); return_models() takes it back."""
     import shutil
-    cache, target = Path(cache), Path(target)
+    cache, target = Path(_long(cache)), Path(_long(target))
     if os.path.lexists(target):
         # Its name only, never the path (P3).
         raise FileExistsError(f"the models folder to lend into is already there: {target.name}")
@@ -321,9 +340,10 @@ def return_models(target, lent, n):
     changed there, by name, and those nothing in EXPLAINED's model cache
     entries explains (as "model_cache/<name>"); then the folder is removed
     (a hard link is removed, never the cache's own file). Whether it is
-    gone, and the folders that could not be listed."""
+    gone, and the folders that could not be listed. In Windows'
+    extended-length form, as lent (_long())."""
     import shutil
-    target, refused = Path(target), []
+    target, refused = Path(_long(target)), []
     now = listing(target, refused) if target.exists() else {}
     new = new_or_changed(lent, now)
     shutil.rmtree(target, ignore_errors=True)
@@ -380,7 +400,16 @@ def event_log_entries(audit_folder, read=None):
 EXPLAINED = {
     "LocalLow": (
         (r"Microsoft/CryptnetUrlCache/.+",
-         "Windows' cache of downloaded certificate data, shared by every program"),),
+         "Windows' cache of downloaded certificate data, shared by every program"),
+        # Added under DEC-057 after the v0.5.0-preview.5 evidence run, whose
+        # window step left one such file (#499). Only a file named by a
+        # 64-digit lower-case hash directly in that folder, as the Intel
+        # driver names them; anything else under LocalLow/Intel still fails.
+        (r"Intel/ShaderCache/[0-9a-f]{64}",
+         "the Intel graphics driver's own cache of compiled GPU shaders, which "
+         "the driver writes when the window (WebView2) draws, for every program "
+         "that draws with it: each file a shader program named by its hash, "
+         "never the page's text, audio or images"),),
     "model_cache": (
         (r"(.+/)?{verified_marker}",
          "a model's verification record: its revision, file sizes and times (I1)"),
