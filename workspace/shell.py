@@ -642,10 +642,10 @@ def end_browser_on_close(window):
     def on_form_closing(sender, args):     # WinForms raises this on the UI thread
         if args.CloseReason == CloseReason.WindowsShutDown and not session.cancelled:
             # A shutdown's or sign-out's query: keep the browser, and from now
-            # on see how the session ends (a failure keeps the old behaviour).
+            # on see how the session ends (a failure keeps the old behaviour,
+            # and the next query tries again).
             if not session.watching:
-                session.watching = True
-                _guarded(_watch_messages, form, session.seen)
+                session.watching = _installed(_watch_messages, form, session.seen)
             return
         if args.Cancel:
             return
@@ -666,8 +666,10 @@ class EndSession:
     too. `cancelled` is True from a cancelled end of session until the next
     shutdown query (WM_QUERYENDSESSION), which is seen before Windows Forms
     raises its FormClosing. `watching` is True while the window's messages are
-    watched; a destroyed window handle ends the watch and forgets a cancel, so
-    a lost watch can only keep the browser, never end it at a query."""
+    watched: a watch that could not be installed leaves it False, so the next
+    shutdown query tries again (#522), and a destroyed window handle ends the
+    watch and forgets a cancel, so a lost watch can only keep the browser,
+    never end it at a query."""
 
     def __init__(self):
         self.cancelled = False
@@ -682,19 +684,43 @@ class EndSession:
             self.cancelled = self.watching = False
 
 
+def _installed(install, *args):
+    """True only if install(*args) returned true; False if it returned false
+    or raised."""
+    try:
+        return bool(install(*args))
+    except Exception:
+        return False
+
+
 def subclass_proc(seen, default, remove):
     """The body of a window subclass procedure (SUBCLASSPROC): tell `seen`
     each message and its wParam (a failure there never affects the message),
     remove the subclass when the window is destroyed (WM_NCDESTROY, its last
     message), so none outlives its window, and always hand the message
     on unchanged (`default`, DefSubclassProc), so Windows Forms answers it
-    exactly as before."""
+    exactly as before. If handing it on fails, the answer is the safe one
+    (`if_handing_on_fails`), never a refusal to end the session (#522)."""
     def proc(hwnd, msg, wparam, lparam, uid, ref):
         _guarded(seen, msg, wparam)
         if msg == WM_NCDESTROY:
             _guarded(remove, hwnd, uid)
-        return default(hwnd, msg, wparam, lparam)
+        try:
+            return default(hwnd, msg, wparam, lparam)
+        except BaseException:      # nothing can cross back into Windows anyway
+            return if_handing_on_fails(msg)
     return proc
+
+
+def if_handing_on_fails(msg):
+    """The answer for a message whose handling failed (#522). A callback that
+    raised would return 0 (ctypes), and 0 for WM_QUERYENDSESSION tells Windows
+    not to end the session: answer TRUE, as DefWindowProc does, so the window
+    never holds up a shutdown or sign-out. Any other message gets 0, what a
+    callback that raised returned before, which for WM_ENDSESSION,
+    WM_NCDESTROY and WM_CLOSE means the message was processed (and, for
+    WM_CLOSE, that nothing is destroyed)."""
+    return 1 if msg == WM_QUERYENDSESSION else 0
 
 
 WATCH_ID = 0x520             # this subclass's id on the window (uIdSubclass)

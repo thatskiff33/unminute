@@ -380,9 +380,10 @@ class CancelledShutdownTests(unittest.TestCase):
         end = mock.patch.object(shell, "end_browser")
         self.end = end.start()
         self.addCleanup(end.stop)
-        # The window subclass, as the fake form's hooks.
+        # The window subclass, as the fake form's hooks; True if installed,
+        # as _watch_messages returns.
         watch = mock.patch.object(shell, "_watch_messages",
-                                  side_effect=lambda form, seen: form.hooks.append(seen))
+                                  side_effect=lambda form, seen: form.hooks.append(seen) or True)
         self.watch = watch.start()
         self.addCleanup(watch.stop)
 
@@ -441,6 +442,36 @@ class CancelledShutdownTests(unittest.TestCase):
         self.cancelled_shutdown()
         self.assertTrue(self.form.send(WM_CLOSE))
         self.end.assert_not_called()
+
+    def failed_watch_tried_again(self, first_attempt):
+        # #522: a failed install must not count as watching, or no later
+        # shutdown query would try again.
+        install = self.watch.side_effect
+        attempts = [first_attempt]
+
+        def watch(form, seen):
+            if attempts:
+                return attempts.pop()(form, seen)
+            return install(form, seen)
+        self.watch.side_effect = watch
+        self.cancelled_shutdown()                       # not watched: the cancel is unseen
+        self.assertTrue(self.form.send(WM_CLOSE))
+        self.end.assert_not_called()                    # browser kept, as before #520
+        self.form.closed = False
+        self.cancelled_shutdown()                       # the next query watches
+        self.assertEqual(self.watch.call_count, 2)
+        self.assertEqual(len(self.form.hooks), 1)
+        self.assertTrue(self.form.send(WM_CLOSE))
+        self.end.assert_called_once_with(self.form.browser)
+
+    def test_a_watch_that_raised_is_tried_again_at_the_next_query(self):
+        def raises(form, seen):
+            raise OSError("no subclass")
+        self.failed_watch_tried_again(raises)
+
+    def test_a_watch_that_was_refused_is_tried_again_at_the_next_query(self):
+        # SetWindowSubclass returned FALSE: nothing was installed.
+        self.failed_watch_tried_again(lambda form, seen: False)
 
     def test_a_destroyed_window_handle_forgets_the_cancel_and_watches_again(self):
         self.cancelled_shutdown()
@@ -501,6 +532,37 @@ class SubclassProcTests(unittest.TestCase):
         self.assertEqual(proc(11, WM_QUERYENDSESSION, 0, 0, shell.WATCH_ID, 0), 7)
         self.assertEqual(proc(11, shell.WM_NCDESTROY, 0, 0, shell.WATCH_ID, 0), 7)
         self.assertEqual(len(self.defaults), 2)
+
+    def test_a_failure_handing_on_never_refuses_to_end_the_session(self):
+        # #522: if DefSubclassProc raised, the ctypes callback would answer 0,
+        # which for WM_QUERYENDSESSION refuses to end the session.
+        def default(*message):
+            raise OSError("exception: access violation")
+        proc = shell.subclass_proc(lambda msg, wparam: None, default, lambda hwnd, uid: None)
+        self.assertEqual(proc(11, WM_QUERYENDSESSION, 0, 0, shell.WATCH_ID, 0), 1)   # TRUE
+        for msg in (WM_ENDSESSION, WM_CLOSE, shell.WM_NCDESTROY):
+            self.assertEqual(proc(11, msg, 0, 0, shell.WATCH_ID, 0), 0)          # processed
+
+    @unittest.skipUnless(sys.platform == "win32", "user32 is a Windows library")
+    def test_windows_is_told_the_session_may_end(self):
+        # The same through the native callback, called by user32 as Windows
+        # would call it (CallWindowProcW, no window): TRUE, not 0.
+        import ctypes
+        from ctypes import wintypes
+
+        def default(*message):
+            raise OSError("exception: access violation")
+        proc_type = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wintypes.HWND, wintypes.UINT,
+                                       wintypes.WPARAM, wintypes.LPARAM)
+        proc = shell.subclass_proc(lambda msg, wparam: None, default, lambda hwnd, uid: None)
+        callback = proc_type(lambda hwnd, msg, wparam, lparam:
+                             proc(hwnd, msg, wparam, lparam, shell.WATCH_ID, 0))
+        user32 = ctypes.WinDLL("user32")
+        user32.CallWindowProcW.argtypes = (ctypes.c_void_p, wintypes.HWND, wintypes.UINT,
+                                           wintypes.WPARAM, wintypes.LPARAM)
+        user32.CallWindowProcW.restype = ctypes.c_ssize_t
+        address = ctypes.cast(callback, ctypes.c_void_p).value
+        self.assertEqual(user32.CallWindowProcW(address, None, WM_QUERYENDSESSION, 0, 0), 1)
 
     def test_removed_when_the_window_is_destroyed(self):
         proc = self.proc()

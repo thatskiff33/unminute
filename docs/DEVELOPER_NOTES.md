@@ -348,13 +348,15 @@ real time, and remove it when the cause is fixed.
   cancelled end of session as an ordinary close; the next `WM_QUERYENDSESSION`, seen before
   Windows Forms raises its FormClosing, makes it a query again. Every message to the window then
   runs a little Python, so the watch starts only at a shutdown query; if it cannot be installed,
-  or the window handle is recreated, the browser is kept for such a close, as before. With the
-  #509 fix the browser and its children were gone within 0.1 s of the close, the profile folder was removed,
-  no crash report was written, and the real start closed with exit code 0. The internal feature
-  names come from the runtime's `msedge.dll` and are not documented: do not ship them as
-  switches. To look again, the probe scripts watched the tree's loaded modules (Toolhelp
-  snapshots every 50 ms, names only) and the files by name, in a throwaway `USERPROFILE`; never
-  list or read the real profile's `IdentityCache` (it holds the user's tokens).
+  or the window handle is recreated, the browser is kept for such a close, as before, and the
+  next shutdown query tries again; if handing a message on fails, the window still answers a
+  shutdown query TRUE (#522). With the #509 fix the browser and its children were gone within
+  0.1 s of the close, the profile folder was removed, no crash report was written, and the real
+  start closed with exit code 0. The internal feature names come from the runtime's `msedge.dll`
+  and are not documented: do not ship them as switches. To look again, the probe scripts watched
+  the tree's loaded modules (Toolhelp snapshots every 50 ms, names only) and the files by name,
+  in a throwaway `USERPROFILE`; never list or read the real profile's `IdentityCache` (it holds
+  the user's tokens).
 - **Power requests do not survive a closed lid.** `PowerSetRequest` keeps a computer awake only
   against the idle timer: Windows ends it when the user closes the lid (action Sleep), presses
   the power button or chooses Sleep, and on Modern Standby on battery five minutes after the
