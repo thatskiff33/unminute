@@ -713,13 +713,13 @@ def subclass_proc(seen, default, remove):
 
 
 def if_handing_on_fails(msg):
-    """The answer for a message whose handling failed (#522). A callback that
-    raised would return 0 (ctypes), and 0 for WM_QUERYENDSESSION tells Windows
-    not to end the session: answer TRUE, as DefWindowProc does, so the window
-    never holds up a shutdown or sign-out. Any other message gets 0, what a
-    callback that raised returned before, which for WM_ENDSESSION,
-    WM_NCDESTROY and WM_CLOSE means the message was processed (and, for
-    WM_CLOSE, that nothing is destroyed)."""
+    """The answer for a message whose handling failed (#522). A ctypes callback
+    that raised could return 0 (observed, not documented by Python), and 0 for
+    WM_QUERYENDSESSION tells Windows not to end the session: answer TRUE, as
+    DefWindowProc does, so the window never holds up a shutdown or sign-out.
+    Any other message gets 0 (what a callback that raised was observed to
+    return before), which for WM_ENDSESSION, WM_NCDESTROY and WM_CLOSE means
+    the message was processed (and, for WM_CLOSE, that nothing is destroyed)."""
     return 1 if msg == WM_QUERYENDSESSION else 0
 
 
