@@ -25,8 +25,14 @@
 # report whose record shows a lock, or that has none (its SESSION_RECORD,
 # which a test keeps equal to RECORD below). A lock that starts and ends
 # between two readings is not seen.
+#
+# Release evidence counts only readings of the WTS flag (the owner's
+# decision, 2 Nov 2026, #514): tools/evidence.py also refuses a report with
+# any reading made from the input desktop's name. A development run may still
+# use that fallback, and Watch says so (FALLBACK) the first time it does.
 
 import struct
+import sys
 import threading
 
 # The record's version: tools/evidence.py's SESSION_RECORD is kept equal to it
@@ -55,6 +61,18 @@ WTS, DESKTOP = "wts", "input desktop"
 # (which stops the check too, as it might be a lock). The docs quote the
 # shared start, "the session locked".
 LOCKED, UNREAD = "the session locked", "the session locked, or its state could not be read"
+
+
+# What a check prints the first time a reading used the input desktop's name
+# (#514): the run goes on, but its report is not release evidence.
+FALLBACK = ("NOTE: the session's lock state was read from the input desktop's name, not "
+            "Windows' session lock flag (WTS) ({where}). That fallback can miss a lock "
+            "(#507): this run is fine for development, but tools/evidence.py check refuses "
+            "its report as release evidence (#514).")
+
+
+def _say(text):
+    print(text, file=sys.stderr, flush=True)
 
 
 class SessionLocked(RuntimeError):
@@ -167,14 +185,26 @@ class Watch:
     """The session's state at each window step of a check, and the record of
     it for the check's report. check(where) reads it and raises
     SessionLocked unless it is unlocked; reading(where) only records it.
-    Once a reading has found it locked or unread, the watch stays stopped."""
+    Once a reading has found it locked or unread, the watch stays stopped.
+    The first reading made from the input desktop's name, here or in a
+    merged record, is said (FALLBACK, through say: stderr by default)."""
 
-    def __init__(self, reader=None):
+    def __init__(self, reader=None, say=None):
         self._read, self._lock = reader or (lambda: read()), threading.Lock()
+        self._say = say or _say
         self.readings = self.by_wts = self.by_desktop = self.unread = 0
         self.locked_at = None
         self.unread_stop = False            # the stop came from a state not read as locked
         self.step = "a window step"         # the check names its steps (a fixed name)
+        self.fallback_said = False
+
+    def _fallback(self, where):
+        """Say, once a run, that a reading used the input desktop's name."""
+        with self._lock:
+            if self.fallback_said:
+                return
+            self.fallback_said = True
+        self._say(FALLBACK.format(where=where))
 
     @property
     def stopped(self):
@@ -193,6 +223,8 @@ class Watch:
             if state.get("locked") is not False and self.locked_at is None:
                 self.locked_at = str(where)
                 self.unread_stop = state.get("locked") is not True
+        if state.get("how") == DESKTOP:
+            self._fallback(where)
         return state
 
     def check(self, where):
@@ -226,6 +258,8 @@ class Watch:
                 # The child's record has counts only: any unread reading
                 # there may be what stopped it.
                 self.unread_stop = record["unread"] > 0
+        if record["input_desktop"] > 0:     # the child's own note went to its captured output
+            self._fallback("in the check's own child process")
 
     def record(self):
         """The report's "session" block: counts and the step's name only."""

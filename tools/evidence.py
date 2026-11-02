@@ -21,7 +21,10 @@
 #     session stayed unlocked: its "session" block (tools/session_state.py,
 #     SESSION_RECORD; #507) read the lock state at each window step and never
 #     found it locked or unreadable. A report with no such block, made by an
-#     earlier tool whose lock test missed a lock on Windows 11, is refused.
+#     earlier tool whose lock test missed a lock on Windows 11, is refused, and
+#     so is one with any reading made from the input desktop's name, not the
+#     session's WTS lock flag: that fallback missed a lock on Windows 11 (the
+#     owner's decision, 2 Nov 2026, #514).
 # The Release workflow refuses to publish unless one passing report of each kind
 # is attached, each naming the zip it publishes and made by a clean checkout of
 # the commit the zip was built from:
@@ -432,8 +435,11 @@ def accessibility_views_missing(body):
 def session_problem(body):
     """Why a window check's report does not show the session unlocked
     throughout (None when it does): its "session" block of SESSION_RECORD,
-    with every reading made (by the WTS flag or the input desktop's name),
-    none unread, and no lock."""
+    with every reading made, none unread, no lock, and every reading made
+    from the session's WTS lock flag. A reading from the input desktop's
+    name (session_state's fallback, which missed a lock on Windows 11, #507)
+    is refused: release evidence counts only WTS readings (the owner's
+    decision, 2 Nov 2026, #514)."""
     record = body.get("session") if isinstance(body, dict) else None
     counts = ("readings", "wts", "input_desktop", "unread")
     if not (isinstance(record, dict) and record.get("record") == SESSION_RECORD
@@ -449,6 +455,12 @@ def session_problem(body):
     if (record["readings"] < 1 or record["unread"] != 0
             or record["wts"] + record["input_desktop"] != record["readings"]):
         return "records readings of the session's state that were not made"
+    if record["wts"] < record["readings"]:
+        return (f"records {record['input_desktop']} of its {record['readings']} readings of "
+                "the session's state from the input desktop's name, not Windows' session lock "
+                "flag (WTS), and that fallback can miss a lock (#507). Release evidence counts "
+                "only WTS readings (owner decision, 2 Nov 2026, #514): run the check again "
+                "where the WTS flag can be read")
     return None
 
 

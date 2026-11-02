@@ -581,6 +581,24 @@ class CheckTests(TempDir):
                               problems[0])
         self.assertNotIn("session", report("crash"))
 
+    def test_a_window_check_with_a_reading_not_from_wts_is_refused(self):
+        # #514 (the owner's decision, 2 Nov 2026): the input desktop's name
+        # missed a lock on Windows 11 (#507), so a window check's report counts
+        # only if every reading came from the session's WTS lock flag. The
+        # refusal names the report and its kind.
+        for kind in evidence.SESSION_KINDS:
+            with self.subTest(kind=kind):
+                fallback = report(kind)
+                fallback["session"].update(wts=5, input_desktop=1)
+                self.assertEqual([f"{kind}.json: {kind} records 1 of its 6 readings of the "
+                                  "session's state from the input desktop's name, not Windows' "
+                                  "session lock flag (WTS), and that fallback can miss a lock "
+                                  "(#507). Release evidence counts only WTS readings (owner "
+                                  "decision, 2 Nov 2026, #514): run the check again where the "
+                                  "WTS flag can be read"],
+                                 evidence.check(SHA, self.complete(**{kind: fallback})))
+        self.assertEqual([], evidence.check(SHA, self.complete()))     # all WTS: passes
+
     def test_the_commit_given_must_be_the_packages(self):
         problems = evidence.check(SHA, self.complete(), commit="d" * 40)
         self.assertEqual(5, len(problems))
