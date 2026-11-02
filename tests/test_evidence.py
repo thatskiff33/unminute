@@ -537,6 +537,51 @@ class StampTests(TempDir):
         self.assertIn("1 of 6 session readings came from the input desktop's name", line)
         self.assertEqual(self.STAMP_KEYS, set(json.loads(out.read_text("utf-8"))["evidence"]))
 
+    def test_an_unread_reading_is_not_counted_as_a_fallback_reading(self):
+        # #516 (review of #515): a run stopped for an unread state records
+        # readings 3, wts 2, input_desktop 0, unread 1. None came from the
+        # input desktop's name, so the EVIDENCE line must not say one did; it
+        # names the unread one, and the stamp still fails (E2: any reading
+        # not from the WTS flag fails it, even if the check passed).
+        zpath, folder = make_package(self.root)
+        before = evidence.identity(zpath, folder)
+        unread = {**UNLOCKED, "readings": 3, "wts": 2, "input_desktop": 0, "unread": 1}
+        self.assertEqual(0, evidence.fallback_readings({"session": dict(unread)}))
+        self.assertEqual(1, evidence.non_wts_readings({"session": dict(unread)}))
+        for kind in evidence.SESSION_KINDS:
+            for passed in (True, False):
+                with self.subTest(kind=kind, passed=passed):
+                    self.assertFalse(evidence.stamp({"session": dict(unread)}, kind, zpath,
+                                                    folder, passed, before)["pass"])
+        out = self.root / "perf.json"
+        out.write_text(json.dumps({"session": unread}), encoding="utf-8")
+        with mock.patch("builtins.print") as printed:
+            ev = evidence.stamp_file(out, "perf", zpath, folder, False, before)
+        self.assertFalse(ev["pass"])
+        line = printed.call_args.args[0]
+        self.assertTrue(line.startswith("EVIDENCE perf: FAIL"), line)
+        self.assertNotIn("input desktop", line)
+        self.assertIn("; 1 of 3 session readings were not made, so it is not release "
+                      "evidence (#514, DEC-084)", line)
+        # A fallback reading and an unread one are each named.
+        both = {**unread, "readings": 4, "input_desktop": 1}
+        self.assertEqual("; 1 of 4 session readings came from the input desktop's name, not "
+                         "the WTS flag and 1 of 4 session readings were not made, so it is "
+                         "not release evidence (#514, DEC-084)",
+                         evidence.session_note({"session": both}))
+        # A block whose input_desktop is not a count keeps the old reckoning,
+        # and one with no readings count names no total rather than failing.
+        for bad in (None, -1, True, "1"):
+            with self.subTest(input_desktop=bad):
+                self.assertEqual(1, evidence.fallback_readings(
+                    {"session": {**unread, "input_desktop": bad}}))
+        self.assertEqual("; 2 session readings came from the input desktop's name, not the "
+                         "WTS flag, so it is not release evidence (#514, DEC-084)",
+                         evidence.session_note({"session": {"input_desktop": 2}}))
+        for body in ({}, {"session": None}, {"session": dict(UNLOCKED)}, None):
+            with self.subTest(body=body):
+                self.assertEqual("", evidence.session_note(body))
+
     def test_an_unknown_kind_is_refused(self):
         zpath, folder = make_package(self.root)
         with self.assertRaises(ValueError):
