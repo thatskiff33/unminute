@@ -440,7 +440,7 @@ class EvidenceTests(unittest.TestCase):
         self.assertIn("no record of the session's state", evidence.session_problem({}))
 
     def test_a_reading_from_the_input_desktop_is_refused(self):
-        # #514 (the owner's decision, 2 Nov 2026): the input desktop's name
+        # #514 (the owner's decision DEC-084, 2 Nov 2026): the input desktop's name
         # missed a lock on Windows 11 (#507), so release evidence counts only
         # WTS readings. One fallback reading among many is enough to refuse.
         for wts, desktop in ((3, 1), (0, 4), (39, 1)):

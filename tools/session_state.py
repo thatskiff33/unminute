@@ -27,7 +27,7 @@
 # between two readings is not seen.
 #
 # Release evidence counts only readings of the WTS flag (the owner's
-# decision, 2 Nov 2026, #514): tools/evidence.py also refuses a report with
+# decision DEC-084, 2 Nov 2026, #514): tools/evidence.py also refuses a report with
 # any reading made from the input desktop's name. A development run may still
 # use that fallback, and Watch says so (FALLBACK) the first time it does.
 

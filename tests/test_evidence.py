@@ -509,6 +509,34 @@ class StampTests(TempDir):
         self.assertEqual((True, "run by someone", ev), (ev["pass"], saved["note"],
                                                         saved["evidence"]))
 
+    def test_a_window_check_with_a_fallback_reading_stamps_fail(self):
+        # #514 (DEC-084; review of e9c10f6, N1): a --zip run whose session
+        # block has a reading from the input desktop's name is not release
+        # evidence, so its stamp fails and the EVIDENCE line says why, rather
+        # than saying PASS and being refused only by "check" at publish.
+        zpath, folder = make_package(self.root)
+        before = evidence.identity(zpath, folder)
+        fallback = {**UNLOCKED, "wts": 5, "input_desktop": 1}
+        for kind in evidence.SESSION_KINDS:
+            with self.subTest(kind=kind):
+                ev = evidence.stamp({"session": dict(fallback)}, kind, zpath, folder, True,
+                                    before)
+                self.assertEqual((True, False), (ev["check_passed"], ev["pass"]))
+                self.assertTrue(evidence.stamp({"session": dict(UNLOCKED)}, kind, zpath,
+                                               folder, True, before)["pass"])
+        # The crash check opens no window: its session block is not read.
+        self.assertTrue(evidence.stamp({"session": dict(fallback)}, "crash", zpath, folder,
+                                       True, before)["pass"])
+        out = self.root / "ui.json"
+        out.write_text(json.dumps({"session": fallback}), encoding="utf-8")
+        with mock.patch("builtins.print") as printed:
+            ev = evidence.stamp_file(out, "ui", zpath, folder, True, before)
+        self.assertFalse(ev["pass"])
+        line = printed.call_args.args[0]
+        self.assertTrue(line.startswith("EVIDENCE ui: FAIL"), line)
+        self.assertIn("1 of 6 session readings came from the input desktop's name", line)
+        self.assertEqual(self.STAMP_KEYS, set(json.loads(out.read_text("utf-8"))["evidence"]))
+
     def test_an_unknown_kind_is_refused(self):
         zpath, folder = make_package(self.root)
         with self.assertRaises(ValueError):
@@ -582,7 +610,7 @@ class CheckTests(TempDir):
         self.assertNotIn("session", report("crash"))
 
     def test_a_window_check_with_a_reading_not_from_wts_is_refused(self):
-        # #514 (the owner's decision, 2 Nov 2026): the input desktop's name
+        # #514 (the owner's decision DEC-084, 2 Nov 2026): the input desktop's name
         # missed a lock on Windows 11 (#507), so a window check's report counts
         # only if every reading came from the session's WTS lock flag. The
         # refusal names the report and its kind.
@@ -594,8 +622,8 @@ class CheckTests(TempDir):
                                   "session's state from the input desktop's name, not Windows' "
                                   "session lock flag (WTS), and that fallback can miss a lock "
                                   "(#507). Release evidence counts only WTS readings (owner "
-                                  "decision, 2 Nov 2026, #514): run the check again where the "
-                                  "WTS flag can be read"],
+                                  "decision DEC-084, 2 Nov 2026, #514): run the check again where "
+                                  "the WTS flag can be read"],
                                  evidence.check(SHA, self.complete(**{kind: fallback})))
         self.assertEqual([], evidence.check(SHA, self.complete()))     # all WTS: passes
 
