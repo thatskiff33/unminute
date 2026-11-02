@@ -338,8 +338,18 @@ real time, and remove it when the cause is fixed.
   reason `shell.never_block_shutdown`, which lets a shutdown's close through while recording,
   never marks the window closable (`unminute_may_close`): a cancelled shutdown (`WM_ENDSESSION`
   with wParam 0) raises no Windows Forms event, so a mark set at the query would outlive it and
-  the user's next close would skip the recording question (#512). With the fix the
-  browser and its children were gone within 0.1 s of the close, the profile folder was removed,
+  the user's next close would skip the recording question (#512). Windows Forms also keeps the
+  form's close reason at `WindowsShutDown` after a cancelled shutdown (`Form.cs` resets it only
+  in `ShowDialog` and for a cancelled MDI child, and `WM_CLOSE` sets `TaskManagerClosing` only
+  when no reason is set), so a later `WM_CLOSE` from another program reaches FormClosing as
+  `WindowsShutDown` too, and would keep the browser (#520). From the first shutdown query the
+  window therefore watches its own messages through a window subclass (`SetWindowSubclass`,
+  `shell._watch_messages`), and `shell.EndSession` treats a `WindowsShutDown` close after a
+  cancelled end of session as an ordinary close; the next `WM_QUERYENDSESSION`, seen before
+  Windows Forms raises its FormClosing, makes it a query again. Every message to the window then
+  runs a little Python, so the watch starts only at a shutdown query; if it cannot be installed,
+  or the window handle is recreated, the browser is kept for such a close, as before. With the
+  #509 fix the browser and its children were gone within 0.1 s of the close, the profile folder was removed,
   no crash report was written, and the real start closed with exit code 0. The internal feature
   names come from the runtime's `msedge.dll` and are not documented: do not ship them as
   switches. To look again, the probe scripts watched the tree's loaded modules (Toolhelp

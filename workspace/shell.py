@@ -611,6 +611,12 @@ def never_block_shutdown(window):
 # its query stage (WM_QUERYENDSESSION) and closes the form only once it ends,
 # so if the shutdown were then cancelled the window would stay open without
 # its browser. Windows ends the session's processes itself (T11 residual).
+# After a cancelled shutdown WinForms keeps the form's close reason at
+# WindowsShutDown (for a window like ours it resets it only in ShowDialog,
+# which the app does not use), so a later WM_CLOSE from another program would
+# look like a shutdown too (#520). The window therefore watches, from its
+# first shutdown query, for the end of the session (EndSession) and treats a
+# WindowsShutDown close after a cancelled one as an ordinary close.
 BROWSER_EXE = "msedgewebview2.exe"
 BROWSER_EXIT_WAIT_MS = 3000
 
@@ -622,7 +628,8 @@ def end_browser_on_close(window):
     shown, after every other FormClosing handler has been added: this one
     must run last, as an earlier one may still cancel or allow the close.
     A Windows shutdown or sign-out (CloseReason.WindowsShutDown) is left
-    alone: that close is only a query and can still be cancelled."""
+    alone: that close is only a query and can still be cancelled. A
+    WindowsShutDown close after a cancelled shutdown is not a query (#520)."""
     if getattr(window, "_browser_end_hooked", False):
         return
     window._browser_end_hooked = True
@@ -630,12 +637,97 @@ def end_browser_on_close(window):
     from System.Windows.Forms import CloseReason, FormClosingEventHandler
     _clear_after_end(getattr(sys.modules.get("webview.platforms.edgechromium"), "EdgeChrome", None))
     form = window.native
+    session = EndSession()
 
     def on_form_closing(sender, args):     # WinForms raises this on the UI thread
-        if args.Cancel or args.CloseReason == CloseReason.WindowsShutDown:
+        if args.CloseReason == CloseReason.WindowsShutDown and not session.cancelled:
+            # A shutdown's or sign-out's query: keep the browser, and from now
+            # on see how the session ends (a failure keeps the old behaviour).
+            if not session.watching:
+                session.watching = True
+                _guarded(_watch_messages, form, session.seen)
+            return
+        if args.Cancel:
             return
         _guarded(end_browser, form.browser)
     form.FormClosing += FormClosingEventHandler(on_form_closing)
+
+
+WM_QUERYENDSESSION = 0x0011
+WM_ENDSESSION = 0x0016
+WM_NCDESTROY = 0x0082
+
+
+class EndSession:
+    """How the window was last told a Windows shutdown or sign-out ended
+    (#520). Windows Forms raises no event when one is cancelled (WM_ENDSESSION
+    with wParam 0) and keeps the form's close reason at WindowsShutDown, so a
+    later WM_CLOSE from another program reaches FormClosing as WindowsShutDown
+    too. `cancelled` is True from a cancelled end of session until the next
+    shutdown query (WM_QUERYENDSESSION), which is seen before Windows Forms
+    raises its FormClosing. `watching` is True while the window's messages are
+    watched; a destroyed window handle ends the watch and forgets a cancel, so
+    a lost watch can only keep the browser, never end it at a query."""
+
+    def __init__(self):
+        self.cancelled = False
+        self.watching = False
+
+    def seen(self, msg, wparam):
+        if msg == WM_QUERYENDSESSION:
+            self.cancelled = False
+        elif msg == WM_ENDSESSION and not wparam:
+            self.cancelled = True
+        elif msg == WM_NCDESTROY:
+            self.cancelled = self.watching = False
+
+
+def subclass_proc(seen, default, remove):
+    """The body of a window subclass procedure (SUBCLASSPROC): tell `seen`
+    each message and its wParam (a failure there never affects the message),
+    remove the subclass when the window is destroyed (WM_NCDESTROY, as
+    Microsoft's "Subclassing Controls" advises), and always hand the message
+    on unchanged (`default`, DefSubclassProc), so Windows Forms answers it
+    exactly as before."""
+    def proc(hwnd, msg, wparam, lparam, uid, ref):
+        _guarded(seen, msg, wparam)
+        if msg == WM_NCDESTROY:
+            _guarded(remove, hwnd, uid)
+        return default(hwnd, msg, wparam, lparam)
+    return proc
+
+
+WATCH_ID = 0x520             # this subclass's id on the window (uIdSubclass)
+_watch_procs = []            # each installed procedure, kept alive for the process
+
+
+def _watch_messages(form, seen):
+    """From now on call seen(msg, wparam) for each message Windows sends the
+    form, before Windows Forms handles it, through a window subclass (comctl32
+    SetWindowSubclass): Windows Forms raises no event for some messages. Call
+    on the form's UI thread. True if installed. Each message then runs a little
+    Python, so it is installed only once a shutdown query has come."""
+    import ctypes
+    from ctypes import wintypes
+    lresult = ctypes.c_ssize_t
+    proc_type = ctypes.WINFUNCTYPE(lresult, wintypes.HWND, wintypes.UINT, wintypes.WPARAM,
+                                   wintypes.LPARAM, ctypes.c_size_t, ctypes.c_size_t)
+    comctl = ctypes.WinDLL("comctl32")
+    comctl.SetWindowSubclass.argtypes = (wintypes.HWND, proc_type, ctypes.c_size_t,
+                                         ctypes.c_size_t)
+    comctl.SetWindowSubclass.restype = wintypes.BOOL
+    comctl.RemoveWindowSubclass.argtypes = (wintypes.HWND, proc_type, ctypes.c_size_t)
+    comctl.RemoveWindowSubclass.restype = wintypes.BOOL
+    comctl.DefSubclassProc.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM,
+                                       wintypes.LPARAM)
+    comctl.DefSubclassProc.restype = lresult
+    callback = None
+
+    def remove(hwnd, uid):
+        comctl.RemoveWindowSubclass(hwnd, callback, uid)
+    callback = proc_type(subclass_proc(seen, comctl.DefSubclassProc, remove))
+    _watch_procs.append(callback)
+    return bool(comctl.SetWindowSubclass(form.Handle.ToInt64(), callback, WATCH_ID, 0))
 
 
 def end_browser(browser):
