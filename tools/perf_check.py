@@ -104,6 +104,13 @@ SPEECH_SECONDS = 120.0
 SPEECH_TIMEOUT_S = 600            # decoding it, once per invocation (speech_step())
 SPEECH_FILE = "speech.pcm"        # 16-bit mono at SYNTHETIC_RATE, in the tool's own folder
 LEAK_BUDGET_MINUTES = 30          # the leak budget is growth over this long
+# The leak check reads the tree's private bytes this often through its hold and
+# gates on a least-squares line through the readings (the owner's decision
+# DEC-086, #526): two end-point snapshots swung by more than the budget between
+# runs. A hold counts as measured only if at least this share of its planned
+# readings saw the tree it started with (leak_report()).
+LEAK_SAMPLE_S = 30
+LEAK_MIN_SHARE = 0.8
 # A release run's shape; release evidence needs at least this (tools/evidence.py).
 RELEASE_RUNS = evidence.PERF_RELEASE["runs"]
 RELEASE_SETTLE_S = evidence.PERF_RELEASE["settle_s"]
@@ -201,9 +208,17 @@ its database schema and its root key, protected by Windows Data Protection
 the store step's open_0_meetings_s does. Both have budgets (#430): workspace_s
 bounds creating a new workspace, not unlocking one. With
 --leak-minutes it holds the Meetings view that long, once, in the last run,
-after the idle states and before any recording, and reports the growth. The
-leak budget is for 30 minutes, so a shorter hold is reported but not compared:
-short-window noise cannot be scaled up.
+after the idle states and before any recording, and reports the growth. It
+prints when the hold starts and ends: nobody touches the computer in between.
+It reads the tree's private bytes every 30 s through the hold and fits a
+least-squares line (DEC-086, #526): "private_growth_mb", the budgeted figure,
+is that line's rise over 30 minutes, "private_trend_mb" its rise over the
+hold, "processes" each process's own line, and "private_growth_mb_raw" the
+last reading less the first, for reference only. If too few readings saw the
+tree the hold began with, or the tree at the end differs, the hold is not
+measured ("not_measured" says why) and fails the budget. The leak budget is
+for 30 minutes, so a shorter hold is reported but not compared: short-window
+noise cannot be scaled up.
 
 Drawn on screen (#292): a visible state's drawing cost is only paid while the
 display is on and the window is drawn, so the run asks Windows to keep the
@@ -344,6 +359,92 @@ def compare(figures, budgets, skip=()):
 # (#111 C7, #430, #376).
 BUDGETED = (("cpu_percent_of_one_core", "private_mb", "startup_s", "workspace_s")
             + STORE_FIGURES + IMPORT_FIGURES)
+
+
+def clock(seconds):
+    """A wall-clock time as the operator reads it, such as 14:05."""
+    return time.strftime("%H:%M", time.localtime(seconds))
+
+
+def leak_times(minutes):
+    """When the leak check reads the tree, in seconds from the start of its
+    hold: every LEAK_SAMPLE_S, the last at the end of the hold."""
+    hold = minutes * 60
+    return [min(k * LEAK_SAMPLE_S, hold) for k in range(math.ceil(hold / LEAK_SAMPLE_S) + 1)]
+
+
+def _slope(points):
+    """The least-squares slope of [(x, y)], or None without two distinct x."""
+    if len(points) < 2:
+        return None
+    mx = sum(x for x, _ in points) / len(points)
+    my = sum(y for _, y in points) / len(points)
+    sxx = sum((x - mx) ** 2 for x, _ in points)
+    if sxx <= 0:
+        return None
+    return sum((x - mx) * (y - my) for x, y in points) / sxx
+
+
+def leak_report(readings, minutes):
+    """The leak check's figures from its readings: one per planned time
+    (leak_times()), each (seconds since the hold began, {(pid, exe name):
+    private bytes}) or None where the tree could not be read.
+
+    The gated figure, private_growth_mb, is the rise of a least-squares line
+    through the tree's total private bytes over LEAK_BUDGET_MINUTES, so garbage
+    collection's swings average out instead of deciding the figure (DEC-086).
+    The line uses only the readings that saw the tree the hold began with, so a
+    process starting or ending is not taken for growth or shrinkage. The hold
+    counts as measured only if its first and last readings were taken, its
+    last saw that tree, at least LEAK_MIN_SHARE of the planned readings saw it,
+    and they span at least that share of the hold. Otherwise "not_measured"
+    says why and private_growth_mb is left out, which fails the budget rather
+    than passing it. A hold shorter than LEAK_BUDGET_MINUTES reports its trend
+    over the hold (private_trend_mb) but no private_growth_mb: short-window
+    noise cannot be scaled up. "private_growth_mb_raw" is the old figure, the
+    last reading's total less the first's, for reference only. "processes" is
+    each process's own line over the same readings (its sum is the total's),
+    by exe name and process id: counts and MB, never paths."""
+    hold = minutes * 60
+    taken = [r for r in readings if r is not None]
+    out = {"minutes": minutes, "sample_every_s": LEAK_SAMPLE_S,
+           "samples_planned": len(readings), "samples_unreadable": len(readings) - len(taken)}
+    total = lambda procs: sum(procs.values())  # noqa: E731
+    if len(taken) >= 2:
+        out["private_growth_mb_raw"] = round((total(taken[-1][1]) - total(taken[0][1])) / 2**20, 1)
+    start = set(taken[0][1]) if taken else set()
+    fit = [(t, procs) for t, procs in taken if set(procs) == start]
+    out["samples"] = len(fit)
+    out["samples_other_tree"] = len(taken) - len(fit)
+    needed = max(3, math.ceil(LEAK_MIN_SHARE * len(readings)))
+    span = fit[-1][0] - fit[0][0] if fit else 0
+    slope = _slope([(t, total(procs)) for t, procs in fit])
+    if not readings or readings[0] is None or readings[-1] is None:
+        reason = "the first or last reading of the hold could not be taken"
+    elif set(readings[-1][1]) != start:
+        reason = "the process tree at the end of the hold is not the one it began with"
+    elif len(fit) < needed:
+        reason = (f"too few readings saw the process tree the hold began with "
+                  f"({len(fit)} of {len(readings)}; {needed} needed)")
+    elif slope is None or span < LEAK_MIN_SHARE * hold:
+        reason = f"the readings span {round(span)} s of the {hold} s hold"
+    else:
+        reason = None
+    if slope is not None:
+        out["processes"] = sorted(
+            ({"name": name, "pid": pid,
+              "private_mb": round(fit[0][1][(pid, name)] / 2**20, 1),
+              "private_trend_mb": round(
+                  _slope([(t, procs[(pid, name)]) for t, procs in fit]) * hold / 2**20, 1)}
+             for pid, name in start),
+            key=lambda p: (-p["private_trend_mb"], p["name"], p["pid"]))
+    if reason:
+        out["not_measured"] = reason
+        return out
+    out["private_trend_mb"] = round(slope * hold / 2**20, 1)
+    if minutes >= LEAK_BUDGET_MINUTES:          # the budget is per 30 minutes
+        out["private_growth_mb"] = round(slope * LEAK_BUDGET_MINUTES * 60 / 2**20, 1)
+    return out
 
 
 def worst_worker(runs):
@@ -1500,17 +1601,31 @@ def one_run(args, settle, window, leak_minutes=0, display=None, refresh_hz=None,
     def leak():                      # in the Meetings view, before any recording (plan())
         say("meetings")
         read(STEP_TIMEOUT_S)
-        print(f"  holding the Meetings view for {leak_minutes} minutes (leak check)",
-              flush=True)
+        # The hold's start and end, by the clock, for whoever is at the
+        # machine: nobody touches it in between (the mouse was moved during
+        # v0.5.0-preview.7's hold, #526).
+        begins = time.time() + settle
+        print(f"  leak check: holding the Meetings view for {leak_minutes} minutes, from about "
+              f"{clock(begins)} to about {clock(begins + leak_minutes * 60)}, reading memory "
+              f"every {LEAK_SAMPLE_S} s; do not touch the computer until it ends", flush=True)
         time.sleep(settle)
-        _, first = snapshot(proc.pid)
-        time.sleep(leak_minutes * 60)
-        _, last = snapshot(proc.pid)
-        growth = (sum(s["private"] or 0 for s in last.values())
-                  - sum(s["private"] or 0 for s in first.values())) / 2**20
-        out = {"minutes": leak_minutes, "private_growth_mb_raw": round(growth, 1)}
-        if leak_minutes >= LEAK_BUDGET_MINUTES:          # the budget is per 30 minutes
-            out["private_growth_mb"] = round(growth, 1)
+        readings, t0 = [], time.monotonic()
+        for due in leak_times(leak_minutes):  # the same wall-clock length as one long wait
+            wait = t0 + due - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            try:
+                procs, samples = snapshot(proc.pid)
+            except Unmeasurable:              # a missed reading counts against the hold
+                readings.append(None)
+                continue
+            readings.append((time.monotonic() - t0,
+                             {(p, name): samples[p]["private"] or 0 for p, name in procs}))
+        out = leak_report(readings, leak_minutes)
+        print(f"  leak check: the hold ended at {clock(time.time())}; "
+              + (f"not measured: {out['not_measured']}" if "not_measured" in out else
+                 f"trend {out['private_trend_mb']} MB over the hold from {out['samples']} "
+                 f"readings"), flush=True)
         return out
 
     def look(where):                 # the session and the page's frames, now (#292)
@@ -1747,6 +1862,9 @@ def parent(args):
         print(f"OVER BUDGET: {s} {m} {v} > {b}")
     for s, m in missing:
         print(f"NOT MEASURED: {s} {m}")
+    for r in results:                 # why a hold did not count (leak_report())
+        if (r.get("leak") or {}).get("not_measured"):
+            print(f"Leak check not measured: {r['leak']['not_measured']}.")
     for s in policy_off:
         print(f"{s}: {POLICY_SKIPPED}; managed policy turns microphone recording"
               f"{' or live drafts' if s in DRAFT_STATES else ''} off")
@@ -2368,7 +2486,8 @@ def main():
     parser.add_argument("--settle", type=int, default=RELEASE_SETTLE_S)
     parser.add_argument("--window", type=int, default=RELEASE_WINDOW_S)
     parser.add_argument("--leak-minutes", type=int, default=0,
-                        help="hold the Meetings view this long, once, and report growth")
+                        help="hold the Meetings view this long, once, and report the trend "
+                        "of its private bytes")
     parser.add_argument("--app", help="an installed package's app folder (run with that "
                         "package's Python: runtime\\python.exe -I -B -X disable-remote-debug)")
     parser.add_argument("--zip", help="the package zip installed at --app: records it as release "

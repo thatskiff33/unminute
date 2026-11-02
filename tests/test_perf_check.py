@@ -131,6 +131,138 @@ class BudgetTests(unittest.TestCase):
         self.assertIn(("recording-drafts-minimised", "cpu_percent_of_one_core"), missing)
 
 
+MB = 2**20
+PY, WV = (101, "python.exe"), (202, "msedgewebview2.exe")
+
+
+def scripted_readings(python_mb, webview_mb, minutes=30):
+    """Readings at leak_times(minutes) from two functions of the time (s)
+    giving each process's private bytes in MB: a scripted snapshot sequence."""
+    return [(t, {PY: python_mb(t) * MB, WV: webview_mb(t) * MB})
+            for t in perf_check.leak_times(minutes)]
+
+
+def sawtooth(t, period=300, height=8.0):
+    """Garbage collection's shape: memory climbs, then drops back at once."""
+    return 600 + height * ((t % period) / period)
+
+
+class LeakTrendTests(unittest.TestCase):
+    """The leak check's trend line over its hold (DEC-086, #526)."""
+
+    BUDGET = {"leak": {"private_growth_mb": 10}}
+
+    def gate(self, leak):
+        return perf_check.compare({"leak": leak}, self.BUDGET)
+
+    def test_thirty_minutes_are_read_every_thirty_seconds(self):
+        times = perf_check.leak_times(30)
+        self.assertEqual(61, len(times))
+        self.assertEqual((0, 30, 1800), (times[0], times[1], times[-1]))
+        self.assertEqual([0, 30, 60, 75], perf_check.leak_times(1.25))
+
+    def test_a_steady_leak_above_the_budget_fails(self):
+        leak = perf_check.leak_report(
+            scripted_readings(lambda t: 150 + 12 * t / 1800, lambda t: 600), 30)
+        self.assertEqual(12.0, leak["private_growth_mb"])
+        self.assertEqual(61, leak["samples"])
+        over, missing = self.gate(leak)
+        self.assertEqual([("leak", "private_growth_mb", 12.0, 10)], over)
+        self.assertEqual([], missing)
+
+    def test_a_garbage_collection_sawtooth_with_a_flat_trend_passes(self):
+        leak = perf_check.leak_report(
+            scripted_readings(lambda t: 150, lambda t: sawtooth(t)), 30)
+        self.assertLess(abs(leak["private_growth_mb"]), 2.0)
+        self.assertEqual(([], []), self.gate(leak))
+
+    def test_end_point_noise_passes_only_if_the_trend_is_within_budget(self):
+        # The old figure, the last reading less the first, fails on noise
+        # alone: a trough at the start and a peak at the end.
+        def noisy(trend_mb):
+            def webview(t):
+                bump = -6 if t == 0 else 6 if t == 1800 else 0
+                return 600 + trend_mb * t / 1800 + bump
+            return perf_check.leak_report(scripted_readings(lambda t: 150, webview), 30)
+        flat = noisy(0)
+        self.assertGreater(flat["private_growth_mb_raw"], 10)
+        self.assertLess(flat["private_growth_mb"], 2.0)
+        self.assertEqual(([], []), self.gate(flat))
+        leaking = noisy(11)
+        self.assertGreater(leaking["private_growth_mb"], 10)
+        self.assertEqual(1, len(self.gate(leaking)[0]))
+
+    def test_too_few_readings_are_not_measured_rather_than_passed(self):
+        readings = scripted_readings(lambda t: 150, lambda t: 600)
+        for i in range(1, 20):                       # 19 of 61 unreadable
+            readings[i] = None
+        leak = perf_check.leak_report(readings, 30)
+        self.assertNotIn("private_growth_mb", leak)
+        self.assertIn("too few readings", leak["not_measured"])
+        self.assertEqual((42, 19), (leak["samples"], leak["samples_unreadable"]))
+        self.assertEqual(([], [("leak", "private_growth_mb")]), self.gate(leak))
+
+    def test_a_changed_process_tree_is_not_measured(self):
+        # A process that ends partway: from then on the readings differ.
+        readings = [(t, procs if t < 600 else {PY: procs[PY]}) for t, procs in
+                    scripted_readings(lambda t: 150, lambda t: 600)]
+        leak = perf_check.leak_report(readings, 30)
+        self.assertNotIn("private_growth_mb", leak)
+        self.assertIn("not the one it began with", leak["not_measured"])
+        self.assertEqual(41, leak["samples_other_tree"])
+        self.assertEqual(([], [("leak", "private_growth_mb")]), self.gate(leak))
+
+    def test_a_missed_first_or_last_reading_is_not_measured(self):
+        for i in (0, -1):
+            readings = scripted_readings(lambda t: 150, lambda t: 600)
+            readings[i] = None
+            leak = perf_check.leak_report(readings, 30)
+            self.assertIn("first or last reading", leak["not_measured"])
+            self.assertNotIn("private_growth_mb", leak)
+
+    def test_readings_that_do_not_span_the_hold_are_not_measured(self):
+        readings = [(0.0, procs) for _, procs in scripted_readings(lambda t: 150,
+                                                                   lambda t: 600)]
+        leak = perf_check.leak_report(readings, 30)
+        self.assertIn("span 0 s of the 1800 s hold", leak["not_measured"])
+        self.assertEqual([], perf_check.leak_report([], 30).get("processes", []))
+
+    def test_a_short_lived_extra_process_is_left_out_of_the_line(self):
+        extra = (303, "msedgewebview2.exe")
+        readings = [(t, {**procs, extra: 50 * MB} if 300 <= t < 420 else procs)
+                    for t, procs in scripted_readings(lambda t: 150, lambda t: 600)]
+        leak = perf_check.leak_report(readings, 30)
+        self.assertEqual((57, 4), (leak["samples"], leak["samples_other_tree"]))
+        self.assertEqual(0.0, leak["private_growth_mb"])
+
+    def test_each_process_has_its_own_line_and_they_sum_to_the_total(self):
+        leak = perf_check.leak_report(
+            scripted_readings(lambda t: 150 + 4 * t / 1800, lambda t: sawtooth(t) + 3 * t / 1800),
+            30)
+        procs = {p["name"]: p for p in leak["processes"]}
+        self.assertEqual({"python.exe", "msedgewebview2.exe"}, set(procs))
+        self.assertEqual({"name", "pid", "private_mb", "private_trend_mb"},
+                         set(procs["python.exe"]))
+        self.assertEqual(4.0, procs["python.exe"]["private_trend_mb"])
+        self.assertAlmostEqual(leak["private_trend_mb"],
+                               sum(p["private_trend_mb"] for p in procs.values()), delta=0.16)
+        self.assertEqual(leak["private_growth_mb"], leak["private_trend_mb"])
+
+    def test_a_short_hold_reports_its_trend_but_is_not_gated(self):
+        leak = perf_check.leak_report(
+            scripted_readings(lambda t: 150 + t / 60, lambda t: 600, minutes=5), 5)
+        self.assertEqual(5.0, leak["private_trend_mb"])
+        self.assertNotIn("private_growth_mb", leak)
+        self.assertEqual(11, leak["samples"])
+
+    def test_the_median_keeps_the_figures_and_drops_the_lists(self):
+        leak = perf_check.leak_report(scripted_readings(lambda t: 150, lambda t: 600), 30)
+        median = perf_check.median_report([{"leak": leak}])["leak"]
+        self.assertNotIn("processes", median)
+        self.assertEqual(61, median["samples"])
+        self.assertEqual(0.0, median["private_growth_mb"])
+
+
 class ParentTests(unittest.TestCase):
     def test_a_failing_environment_probe_is_not_measured_not_a_traceback(self):
         import tempfile
@@ -889,7 +1021,10 @@ class OneRunTests(unittest.TestCase):
     READY = {"imports_s": 1.0, "window_to_interactive_s": 1.0, "startup_s": 2.0,
              "recording_allowed": True}
 
-    def run_child(self, child, leak_minutes=0, held=None, display=None, speech=None):
+    def run_child(self, child, leak_minutes=0, held=None, display=None, speech=None,
+                  snapshot=None, clock=None):
+        """snapshot: a scripted perf_check.snapshot; clock: a FakeClock that
+        time.sleep advances and time.monotonic and time.time read."""
         from types import SimpleNamespace
         from unittest import mock
         figures = lambda *a: {"cpu_percent_of_one_core": 1.0, "private_mb": 700}  # noqa: E731
@@ -898,9 +1033,14 @@ class OneRunTests(unittest.TestCase):
         patches = [mock.patch.object(perf_check.subprocess, "Popen", return_value=child),
                    mock.patch.object(perf_check, "Job"),
                    mock.patch.object(perf_check, "measure", side_effect=figures),
-                   mock.patch.object(perf_check, "snapshot", return_value=snap),
-                   mock.patch.object(perf_check.time, "sleep"),
+                   mock.patch.object(perf_check, "snapshot", side_effect=snapshot)
+                   if snapshot else mock.patch.object(perf_check, "snapshot", return_value=snap),
+                   mock.patch.object(perf_check.time, "sleep",
+                                     side_effect=clock.wait if clock else None),
                    mock.patch("builtins.print")]
+        if clock:
+            patches += [mock.patch.object(perf_check.time, "monotonic", side_effect=clock),
+                        mock.patch.object(perf_check.time, "time", side_effect=clock)]
         if held is not None:          # the scripted recording does not really grow
             patches.append(mock.patch.object(perf_check, "check_held", return_value=held))
         started = []
@@ -910,6 +1050,49 @@ class OneRunTests(unittest.TestCase):
         self.popen, self.measured = started[0], started[2]
         display = display or child._display or FakeDisplay()
         return perf_check.one_run(args, 0, 0, leak_minutes, display=display, speech=speech)
+
+    def scripted_hold(self, webview_mb, unreadable=()):
+        """The leak check, alone, against a scripted snapshot sequence: the
+        tree's private bytes as a function of the hold's time. Returns the
+        leak figures and the hold's times at each reading."""
+        clock, seen = FakeClock(), []
+
+        def snapshot(pid):
+            t = clock() - (seen[0] if seen else clock())
+            seen.append(clock())
+            if round(t) in unreadable:
+                raise perf_check.Unmeasurable("could not read 1 process(es): x")
+            return [PY, WV], {PY[0]: {"private": 150 * MB},
+                              WV[0]: {"private": round(webview_mb(t) * MB)}}
+
+        child = FakeChild({**self.READY, "recording_allowed": False}, lambda c: None)
+        with mock.patch.object(perf_check, "plan", return_value=["leak"]):
+            result = self.run_child(child, leak_minutes=30, snapshot=snapshot, clock=clock)
+        return result["leak"], [round(s - seen[0], 3) for s in seen]
+
+    def test_the_hold_reads_every_thirty_seconds_for_thirty_minutes(self):
+        leak, times = self.scripted_hold(lambda t: 600)
+        self.assertEqual([float(t) for t in range(0, 1801, 30)], times)  # same wall clock
+        self.assertEqual((61, 61, 0), (leak["samples_planned"], leak["samples"],
+                                       leak["samples_unreadable"]))
+        self.assertEqual(0.0, leak["private_growth_mb"])
+
+    def test_the_hold_gates_on_the_trend_not_the_end_points(self):
+        # A sawtooth from garbage collection, its trough at the start and its
+        # peak at the end: the old figure was over budget on that alone.
+        leak, _ = self.scripted_hold(lambda t: 600 + 11.5 * ((t % 600) / 600 if t < 1800 else 1))
+        self.assertGreater(leak["private_growth_mb_raw"], 10)
+        self.assertLess(leak["private_growth_mb"], 10)
+        leak, _ = self.scripted_hold(lambda t: 600 + 12 * t / 1800)
+        self.assertEqual(12.0, leak["private_growth_mb"])
+
+    def test_unreadable_readings_in_the_hold_are_counted_not_fatal(self):
+        leak, _ = self.scripted_hold(lambda t: 600, unreadable={30, 60})
+        self.assertEqual((59, 2), (leak["samples"], leak["samples_unreadable"]))
+        self.assertIn("private_growth_mb", leak)
+        leak, _ = self.scripted_hold(lambda t: 600, unreadable=set(range(30, 600, 30)))
+        self.assertNotIn("private_growth_mb", leak)
+        self.assertIn("too few readings", leak["not_measured"])
 
     def test_the_leak_check_runs_before_the_recording_states(self):
         child = FakeChild(self.READY, lambda c: {"state": "recording", "seconds": 61.0})
