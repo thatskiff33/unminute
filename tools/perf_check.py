@@ -108,9 +108,13 @@ LEAK_BUDGET_MINUTES = 30          # the leak budget is growth over this long
 # gates on a least-squares line through the readings (the owner's decision
 # DEC-086, #526): two end-point snapshots swung by more than the budget between
 # runs. A hold counts as measured only if at least this share of its planned
-# readings saw the tree it started with (leak_report()).
+# readings saw the tree it started with, and one of them was taken within the
+# last LEAK_FINAL_S of the hold (leak_report()). Both are fail-safe thresholds
+# set by the writer (#526, #529), not owner figures: each only ever marks a
+# hold not measured.
 LEAK_SAMPLE_S = 30
 LEAK_MIN_SHARE = 0.8
+LEAK_FINAL_S = 120
 # A release run's shape; release evidence needs at least this (tools/evidence.py).
 RELEASE_RUNS = evidence.PERF_RELEASE["runs"]
 RELEASE_SETTLE_S = evidence.PERF_RELEASE["settle_s"]
@@ -150,6 +154,11 @@ IMPORT_TIMEOUT_S = 3600
 COMPARABLE = ("cpu", "cores", "logical_processors", "memory_gb", "power_plan",
               "on_mains_power")
 NOT_COMPARABLE = "not comparable"
+# --compare across the leak check's change of method (#526, DEC-086; #529).
+METHOD_CHANGED = "not comparable: the method changed"
+LEAK_METHOD_NOTE = ("the method changed at #526 (DEC-086): one report's figure is the "
+                    "trend over the hold, the other's the last reading less the first; "
+                    "compare private_growth_mb_raw, the last reading less the first in both")
 DRAWN_DISPLAY = ("on", "dimmed")
 HELP = """
 States, in order: meetings (the Meetings view, 3 synthetic meetings), settings
@@ -214,9 +223,14 @@ It reads the tree's private bytes every 30 s through the hold and fits a
 least-squares line (DEC-086, #526): "private_growth_mb", the budgeted figure,
 is that line's rise over 30 minutes, "private_trend_mb" its rise over the
 hold, "processes" each process's own line, and "private_growth_mb_raw" the
-last reading less the first, for reference only. If too few readings saw the
-tree the hold began with, or the tree at the end differs, the hold is not
-measured ("not_measured" says why) and fails the budget. The leak budget is
+last reading less the first, for reference only. The hold is not measured
+("not_measured" says why) and fails the budget if its first or last reading
+failed; a process it began with is gone at the end; its tree at the end has
+an extra process and no reading of the tree it began with was taken in its
+last 2 minutes; fewer than 80% of the planned readings saw that tree; or those
+readings span under 80% of the hold. A process that is there only at the end
+(one more WebView2 process, say) does not void the hold on its own: the line
+leaves the readings that saw it out (#529). The leak budget is
 for 30 minutes, so a shorter hold is reported but not compared: short-window
 noise cannot be scaled up.
 
@@ -305,6 +319,9 @@ each run proposes. --quick leaves it out.
 (nothing is fetched). Figures present in both reports are listed side by
 side ("compared"), with both machines; if the machines differ in processor,
 cores, memory, power plan or mains power, each figure is "not comparable".
+Against a report from before the leak check's trend (#526, DEC-086), the
+leak check's private_growth_mb has no percentage and a note that the method
+changed: private_growth_mb_raw is the like-for-like row.
 
 Release run (docs/RELEASING.md): 3 runs, 60 s settle, 300 s windows and
 --leak-minutes 30, with --speech and --draft-models, about two and
@@ -395,14 +412,18 @@ def leak_report(readings, minutes):
     collection's swings average out instead of deciding the figure (DEC-086).
     The line uses only the readings that saw the tree the hold began with, so a
     process starting or ending is not taken for growth or shrinkage. The hold
-    counts as measured only if its first and last readings were taken, its
-    last saw that tree, at least LEAK_MIN_SHARE of the planned readings saw it,
-    and they span at least that share of the hold. Otherwise "not_measured"
-    says why and private_growth_mb is left out, which fails the budget rather
-    than passing it. A hold shorter than LEAK_BUDGET_MINUTES reports its trend
-    over the hold (private_trend_mb) but no private_growth_mb: short-window
-    noise cannot be scaled up. "private_growth_mb_raw" is the old figure, the
-    last reading's total less the first's, for reference only. "processes" is
+    counts as measured only if its first and last readings were taken, every
+    process it began with is still there at the last, a reading of that tree
+    was taken within LEAK_FINAL_S of the end, at least LEAK_MIN_SHARE of the
+    planned readings saw it, and they span at least that share of the hold. So
+    an extra process at the end (#529) costs only the readings that saw it,
+    while a process that crashed or restarted can never pass. Otherwise
+    "not_measured" says why and private_growth_mb is left out, which fails
+    the budget rather than passing it. A hold shorter than LEAK_BUDGET_MINUTES
+    reports its trend over the hold (private_trend_mb) but no
+    private_growth_mb: short-window noise cannot be scaled up.
+    "private_growth_mb_raw" is the old figure, the last reading's total less
+    the first's, for reference only. "processes" is
     each process's own line over the same readings (its sum is the total's),
     by exe name and process id: counts and MB, never paths."""
     hold = minutes * 60
@@ -421,8 +442,12 @@ def leak_report(readings, minutes):
     slope = _slope([(t, total(procs)) for t, procs in fit])
     if not readings or readings[0] is None or readings[-1] is None:
         reason = "the first or last reading of the hold could not be taken"
-    elif set(readings[-1][1]) != start:
-        reason = "the process tree at the end of the hold is not the one it began with"
+    elif not start <= set(readings[-1][1]):     # a crash or restart never passes
+        reason = ("the process tree at the end of the hold is not the one it began with: "
+                  "a process it began with is gone")
+    elif set(readings[-1][1]) != start and readings[-1][0] - fit[-1][0] > LEAK_FINAL_S:
+        reason = ("the process tree at the end of the hold is not the one it began with, "
+                  f"and no reading of that tree was taken in the last {LEAK_FINAL_S} s")
     elif len(fit) < needed:
         reason = (f"too few readings saw the process tree the hold began with "
                   f"({len(fit)} of {len(readings)}; {needed} needed)")
@@ -498,18 +523,34 @@ def _figures(report):
     return out
 
 
+def _trend_method(report):
+    """Whether a report's leak figures are a trend (#526, DEC-086): only that
+    method records how often it read the tree (sample_every_s)."""
+    return "sample_every_s" in ((report.get("median") or {}).get("leak") or {})
+
+
 def compare_reports(now, earlier):
     """The figures present in both reports, side by side, and both machines.
-    Each figure is "not comparable" when the machines differ (machines_differ)."""
+    Each figure is "not comparable" when the machines differ (machines_differ).
+    When one report's leak check is a trend and the other's two snapshots
+    (#526, DEC-086), private_growth_mb is not like for like: its row has no
+    percentage and a note saying so, and private_growth_mb_raw, the last
+    reading less the first in both, is the row to compare (#529)."""
     differ = machines_differ(now.get("machine"), earlier.get("machine"))
     a, b = _figures(now), _figures(earlier)
+    method_changed = _trend_method(now) != _trend_method(earlier)
     figures = []
     for key in sorted(set(a) & set(b)):
         row = {"state": key[0], "metric": key[1], "now": a[key], "earlier": b[key]}
+        changed = method_changed and key == ("leak", "private_growth_mb")
         if differ:
             row["change_percent"] = NOT_COMPARABLE
+        elif changed:
+            row["change_percent"] = METHOD_CHANGED
         elif b[key]:
             row["change_percent"] = round((a[key] - b[key]) / b[key] * 100, 1)
+        if changed:
+            row["note"] = LEAK_METHOD_NOTE
         figures.append(row)
     return {"machines_differ_in": differ,
             "machine_now": now.get("machine"), "machine_earlier": earlier.get("machine"),
@@ -1887,6 +1928,10 @@ def parent(args):
     if comparison and comparison["machines_differ_in"]:
         print("Compared with the earlier report: not comparable, the machines differ in "
               + ", ".join(comparison["machines_differ_in"]))
+    for row in (comparison or {}).get("compared", []):
+        if row.get("note"):
+            print(f"Compared with the earlier report: {row['state']} {row['metric']}: "
+                  f"{row['note']}.")
     if not budgets:
         print("NO BUDGETS YET")
     elif not over and not missing and not named:
