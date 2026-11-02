@@ -301,6 +301,223 @@ class ShutdownTests(unittest.TestCase):
         self.assertEqual(len(self.form.FormClosing.handlers), 3)
 
 
+WM_CLOSE, WM_QUERYENDSESSION, WM_ENDSESSION = 0x0010, 0x0011, 0x0016
+NO_REASON = 0                                  # CloseReason.None
+
+
+class WinFormsForm:
+    """A form whose close reason behaves as in dotnet/winforms
+    src/System.Windows.Forms/System/Windows/Forms/Form.cs (commit 05a8326, the
+    same logic as the 2018 port of the .NET Framework source, 195f89a):
+
+    - the reason starts as None and is kept between messages (_closeReason);
+    - WndProc: WM_CLOSE sets TaskManagerClosing only while the reason is None;
+      WM_QUERYENDSESSION and WM_ENDSESSION both set WindowsShutDown;
+    - Close() and the close button (WmSysCommand, SC_CLOSE) set UserClosing,
+      then WM_CLOSE;
+    - WmClose: FormClosing for WM_CLOSE and WM_QUERYENDSESSION; for
+      WM_ENDSESSION no event, the close is cancelled when wParam is 0; the form
+      closes (FormClosed, Dispose) for WM_CLOSE or WM_ENDSESSION not cancelled.
+      Nothing resets the reason for a top-level form shown without ShowDialog.
+
+    `hooks` stand for window subclass procedures (SetWindowSubclass): they see
+    each message before Windows Forms handles it."""
+
+    def __init__(self):
+        self.FormClosing = Event()
+        self.browser = Browser()
+        self.reason = NO_REASON
+        self.closed = False
+        self.hooks = []
+
+    def send(self, msg, wparam=1):
+        """One message to the window; True if it was not cancelled."""
+        for hook in list(self.hooks):
+            hook(msg, wparam)
+        if msg == WM_CLOSE:
+            if self.reason == NO_REASON:
+                self.reason = CLOSE_REASON.TaskManagerClosing
+        elif msg in (WM_QUERYENDSESSION, WM_ENDSESSION):
+            self.reason = CLOSE_REASON.WindowsShutDown
+        else:
+            return True                                # not a close message (WmClose)
+        args = types.SimpleNamespace(Cancel=False, CloseReason=self.reason)
+        if msg != WM_ENDSESSION:
+            for handler in self.FormClosing.handlers:
+                handler(self, args)
+            if msg == WM_QUERYENDSESSION:
+                return not args.Cancel
+        else:
+            args.Cancel = wparam == 0
+        if not args.Cancel:
+            self.closed = True
+        return not args.Cancel
+
+    def close(self):
+        # Form.Close(), or the user's close button (SC_CLOSE).
+        self.reason = CLOSE_REASON.UserClosing
+        return self.send(WM_CLOSE)
+
+
+class CancelledShutdownTests(unittest.TestCase):
+    """#520: Windows Forms keeps CloseReason.WindowsShutDown after a cancelled
+    shutdown, so a later WM_CLOSE from another program reaches FormClosing as
+    WindowsShutDown, not TaskManagerClosing."""
+
+    def setUp(self):
+        backend = types.ModuleType("webview.platforms.edgechromium")
+        backend.EdgeChrome = EdgeChrome
+        self.addCleanup(setattr, EdgeChrome, "clear_user_data",
+                        EdgeChrome.__dict__["clear_user_data"])
+        patcher = mock.patch.dict(sys.modules, {**fake_forms(),
+                                                "webview.platforms.edgechromium": backend})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.form = WinFormsForm()
+        self.window = types.SimpleNamespace(native=self.form)
+        shell.never_block_shutdown(self.window)
+        shell.end_browser_on_close(self.window)
+        end = mock.patch.object(shell, "end_browser")
+        self.end = end.start()
+        self.addCleanup(end.stop)
+        # The window subclass, as the fake form's hooks.
+        watch = mock.patch.object(shell, "_watch_messages",
+                                  side_effect=lambda form, seen: form.hooks.append(seen))
+        self.watch = watch.start()
+        self.addCleanup(watch.stop)
+
+    def cancelled_shutdown(self):
+        # Windows asks (the window lets it through and keeps its browser),
+        # then the shutdown is cancelled: WM_ENDSESSION with wParam 0.
+        self.assertTrue(self.form.send(WM_QUERYENDSESSION))
+        self.end.assert_not_called()
+        self.assertFalse(self.form.send(WM_ENDSESSION, 0))
+        self.assertFalse(self.form.closed)
+
+    def test_the_reason_stays_windows_shutdown_after_a_cancelled_shutdown(self):
+        self.cancelled_shutdown()
+        self.assertEqual(self.form.reason, CLOSE_REASON.WindowsShutDown)
+
+    def test_another_programs_close_after_a_cancelled_shutdown_ends_the_browser(self):
+        self.cancelled_shutdown()
+        self.assertTrue(self.form.send(WM_CLOSE))       # WM_CLOSE from another program
+        self.assertTrue(self.form.closed)
+        self.end.assert_called_once_with(self.form.browser)
+
+    def test_a_new_shutdown_after_a_cancelled_one_is_still_only_a_query(self):
+        self.cancelled_shutdown()
+        self.cancelled_shutdown()                       # asserts the browser was kept
+        self.assertTrue(self.form.send(WM_CLOSE))
+        self.end.assert_called_once_with(self.form.browser)
+
+    def test_a_shutdown_that_goes_ahead_closes_with_its_browser_left_to_windows(self):
+        self.assertTrue(self.form.send(WM_QUERYENDSESSION))
+        self.assertTrue(self.form.send(WM_ENDSESSION, 1))
+        self.assertTrue(self.form.closed)
+        self.end.assert_not_called()                    # T11 residual, unchanged
+
+    def test_the_users_close_after_a_cancelled_shutdown_ends_the_browser(self):
+        self.cancelled_shutdown()
+        self.assertTrue(self.form.close())
+        self.end.assert_called_once_with(self.form.browser)
+
+    def test_watched_only_from_the_first_shutdown_query_and_once(self):
+        self.assertFalse(self.form.send(WM_ENDSESSION, 0))           # no query yet: no event
+        self.watch.assert_not_called()
+        self.cancelled_shutdown()
+        self.cancelled_shutdown()
+        self.watch.assert_called_once()
+        self.assertEqual(len(self.form.hooks), 1)
+
+    def test_no_watch_on_an_ordinary_close(self):
+        self.assertTrue(self.form.close())
+        self.watch.assert_not_called()
+        self.end.assert_called_once_with(self.form.browser)
+
+    def test_a_watch_that_cannot_be_installed_keeps_the_browser(self):
+        # The behaviour before #520: the close goes ahead, the browser is
+        # left to its own shutdown, and nothing fails.
+        self.watch.side_effect = OSError("no subclass")
+        self.cancelled_shutdown()
+        self.assertTrue(self.form.send(WM_CLOSE))
+        self.end.assert_not_called()
+
+    def test_a_destroyed_window_handle_forgets_the_cancel_and_watches_again(self):
+        self.cancelled_shutdown()
+        self.form.send(shell.WM_NCDESTROY)               # handle recreated: watch removed
+        self.form.hooks.clear()
+        self.assertTrue(self.form.send(WM_CLOSE))         # stale reason, cancel not known
+        self.end.assert_not_called()
+        self.form.closed = False
+        self.cancelled_shutdown()                         # the next query watches again
+        self.assertEqual(self.watch.call_count, 2)
+        self.assertTrue(self.form.send(WM_CLOSE))
+        self.end.assert_called_once_with(self.form.browser)
+
+
+class EndSessionTests(unittest.TestCase):
+    def test_messages(self):
+        self.assertEqual((shell.WM_QUERYENDSESSION, shell.WM_ENDSESSION),
+                         (WM_QUERYENDSESSION, WM_ENDSESSION))
+        session = shell.EndSession()
+        self.assertFalse(session.cancelled)
+        session.seen(WM_ENDSESSION, 1)                   # the session ends
+        self.assertFalse(session.cancelled)
+        session.seen(WM_ENDSESSION, 0)
+        self.assertTrue(session.cancelled)
+        session.seen(WM_CLOSE, 0)
+        self.assertTrue(session.cancelled)
+        session.seen(WM_QUERYENDSESSION, 0)
+        self.assertFalse(session.cancelled)
+        session.watching = True
+        session.seen(WM_ENDSESSION, 0)
+        session.seen(shell.WM_NCDESTROY, 0)
+        self.assertEqual((session.cancelled, session.watching), (False, False))
+
+
+class SubclassProcTests(unittest.TestCase):
+    def proc(self, seen=None, remove=None):
+        self.defaults, self.removed = [], []
+
+        def default(*message):
+            self.defaults.append(message)
+            return 7
+
+        return shell.subclass_proc(seen or (lambda msg, wparam: None), default,
+                                   remove or (lambda hwnd, uid: self.removed.append((hwnd, uid))))
+
+    def test_every_message_is_handed_on_unchanged(self):
+        seen = []
+        proc = self.proc(seen=lambda msg, wparam: seen.append((msg, wparam)))
+        self.assertEqual(proc(11, WM_ENDSESSION, 0, 5, shell.WATCH_ID, 0), 7)
+        self.assertEqual(seen, [(WM_ENDSESSION, 0)])
+        self.assertEqual(self.defaults, [(11, WM_ENDSESSION, 0, 5)])
+        self.assertEqual(self.removed, [])
+
+    def test_a_failure_never_changes_the_answer(self):
+        def boom(*_):
+            raise RuntimeError("x")
+        proc = self.proc(seen=boom, remove=boom)
+        self.assertEqual(proc(11, WM_QUERYENDSESSION, 0, 0, shell.WATCH_ID, 0), 7)
+        self.assertEqual(proc(11, shell.WM_NCDESTROY, 0, 0, shell.WATCH_ID, 0), 7)
+        self.assertEqual(len(self.defaults), 2)
+
+    def test_removed_when_the_window_is_destroyed(self):
+        proc = self.proc()
+        proc(11, shell.WM_NCDESTROY, 0, 0, shell.WATCH_ID, 0)
+        self.assertEqual(self.removed, [(11, shell.WATCH_ID)])
+
+    @unittest.skipUnless(sys.platform == "win32", "comctl32 is a Windows library")
+    def test_the_native_calls_load(self):
+        # No window: comctl32 refuses a null window handle, so nothing is
+        # subclassed, but the function types and exports are checked.
+        form = types.SimpleNamespace(Handle=types.SimpleNamespace(ToInt64=lambda: 0))
+        before = len(shell._watch_procs)
+        self.assertFalse(shell._watch_messages(form, lambda msg, wparam: None))
+        self.assertEqual(len(shell._watch_procs), before + 1)
+        del shell._watch_procs[before:]
+
+
 WEBVIEW = importlib.util.find_spec("webview")
 
 
