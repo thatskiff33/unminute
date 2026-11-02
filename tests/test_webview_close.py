@@ -230,6 +230,77 @@ class EndOnCloseTests(unittest.TestCase):
             self.assertTrue(Path(tmp).exists())
 
 
+class ShutdownTests(unittest.TestCase):
+    """#512: the form's FormClosing handlers in the real order, pywebview's
+    first (it asks the app's closing handler, __main__.closing), then
+    shell.never_block_shutdown, then shell.end_browser_on_close. Windows Forms
+    (Form.WndProc and WmClose) raises FormClosing for WM_QUERYENDSESSION with
+    CloseReason.WindowsShutDown, closes the form at WM_ENDSESSION when its
+    wParam is non-zero, and for a cancelled shutdown (wParam 0) raises nothing
+    at all; a later click on the close button is CloseReason.UserClosing."""
+
+    def setUp(self):
+        backend = types.ModuleType("webview.platforms.edgechromium")
+        backend.EdgeChrome = EdgeChrome
+        self.addCleanup(setattr, EdgeChrome, "clear_user_data",
+                        EdgeChrome.__dict__["clear_user_data"])
+        patcher = mock.patch.dict(sys.modules, {**fake_forms(),
+                                                "webview.platforms.edgechromium": backend})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.form = types.SimpleNamespace(FormClosing=Event(), browser=Browser())
+        self.window = types.SimpleNamespace(native=self.form)
+        self.recording, self.asked = True, 0
+        self.form.FormClosing += self.pywebview_on_closing
+        shell.never_block_shutdown(self.window)
+        shell.end_browser_on_close(self.window)
+
+    def app_closing(self):
+        # __main__.closing, without its 10-second second-close rule (the test
+        # closes more than 10 s apart): True lets the close go ahead.
+        if getattr(self.window, "unminute_may_close", False) or not self.recording:
+            return True
+        self.asked += 1                       # the page shows the recording question
+        return False
+
+    def pywebview_on_closing(self, sender, args):
+        # pywebview 6.2.1 BrowserForm.on_closing: cancel when a handler says so.
+        if not self.app_closing():
+            args.Cancel = True
+
+    def close(self, reason):
+        """One FormClosing, as WinForms raises it; True if the close goes ahead."""
+        args = types.SimpleNamespace(Cancel=False, CloseReason=reason)
+        with mock.patch.object(shell, "end_browser"):
+            for handler in self.form.FormClosing.handlers:
+                handler(self.form, args)
+        return not args.Cancel
+
+    def test_a_shutdown_or_task_manager_close_goes_ahead_while_recording(self):
+        self.assertTrue(self.close(CLOSE_REASON.WindowsShutDown))
+        self.assertTrue(self.close(CLOSE_REASON.TaskManagerClosing))
+
+    def test_a_user_close_while_recording_waits_for_the_question(self):
+        self.assertFalse(self.close(CLOSE_REASON.UserClosing))
+        self.assertEqual(self.asked, 1)
+
+    def test_a_cancelled_shutdown_still_asks_before_ending_a_recording(self):
+        # Windows asks whether it may end the session (WM_QUERYENDSESSION);
+        # the window lets it through.
+        self.assertTrue(self.close(CLOSE_REASON.WindowsShutDown))
+        # Another app, or the user at "these apps are preventing shutdown",
+        # cancels it: WM_ENDSESSION with wParam 0, for which WinForms raises
+        # no event. The window stays open and the recording carries on.
+        # A later close by the user must still ask first (R1).
+        self.assertFalse(self.close(CLOSE_REASON.UserClosing))
+        self.assertFalse(getattr(self.window, "unminute_may_close", False))
+        self.assertEqual(self.asked, 2)       # at the query (as before), and now
+
+    def test_hooked_once(self):
+        shell.never_block_shutdown(self.window)
+        self.assertEqual(len(self.form.FormClosing.handlers), 3)
+
+
 WEBVIEW = importlib.util.find_spec("webview")
 
 
@@ -274,6 +345,17 @@ class StartWiringTests(unittest.TestCase):
         self.assertLess(shown.index("never_block_shutdown"), shown.index("end_browser_on_close"))
         source = ast.unparse(tree)
         self.assertIn("shell.end_browser_on_close(window)", source)
+        self.assertIn("shell.never_block_shutdown(window)", source)
+
+    def test_the_closing_handler_reads_the_allowance_the_tests_model(self):
+        # ShutdownTests.app_closing stands in for __main__.closing: it lets a
+        # close go ahead when the window is marked closable or nothing records.
+        tree = ast.parse((ROOT / "workspace" / "__main__.py").read_text(encoding="utf-8"))
+        closing = [node for node in ast.walk(tree)
+                   if isinstance(node, ast.FunctionDef) and node.name == "closing"]
+        self.assertEqual(len(closing), 1)
+        self.assertIn("if getattr(window, 'unminute_may_close', False) or not "
+                      "ws.recording_active():\n        return True", ast.unparse(closing[0]))
 
 
 if __name__ == "__main__":

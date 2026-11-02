@@ -562,6 +562,37 @@ def _close_now(window):
         os._exit(3)              # cannot even close it: end the process, never run unlocked
 
 
+# -- letting a Windows shutdown, sign-out or Task Manager close through --------
+# While a recording is open, the app's closing handler (__main__) cancels a
+# close and lets the page ask first (Stop and save, Discard, Keep recording;
+# R1). A Windows shutdown or sign-out, and Task Manager, must not wait for that
+# question: this handler, added after pywebview's, lets those closes through,
+# and ws.close() then stops and saves the recording.
+# It answers only the close in hand and never marks the window closable
+# (unminute_may_close) for later (#512). Windows Forms raises the shutdown's
+# FormClosing at its query stage (WM_QUERYENDSESSION) and closes the form only
+# once the session ends (WM_ENDSESSION, wParam non-zero); a cancelled shutdown
+# (wParam 0) raises nothing. A mark set at the query would outlive a cancelled
+# shutdown, and the user's next close while recording would skip the question.
+
+
+def never_block_shutdown(window):
+    """Let a Windows shutdown or sign-out (CloseReason.WindowsShutDown) and a
+    Task Manager close (CloseReason.TaskManagerClosing) through, even while a
+    recording is open, without marking the window closable for any later
+    close. Call once the window is shown, after pywebview has added its own
+    FormClosing handler, so this one answers after it."""
+    if getattr(window, "_shutdown_hooked", False):
+        return
+    window._shutdown_hooked = True
+    from System.Windows.Forms import CloseReason, FormClosingEventHandler
+
+    def on_form_closing(sender, args):     # WinForms raises this on the UI thread
+        if args.CloseReason in (CloseReason.WindowsShutDown, CloseReason.TaskManagerClosing):
+            args.Cancel = False
+    window.native.FormClosing += FormClosingEventHandler(on_form_closing)
+
+
 # -- ending WebView2's browser process when the window closes (#509) -------------
 # On a PC signed in with a work (Entra ID) or Microsoft account, the WebView2
 # Runtime's browser process can load Microsoft's account library (oneauth.dll)

@@ -334,7 +334,11 @@ real time, and remove it when the cause is fixed.
   longer runs, the profile stays until the next start's `storage_folder` clean-up). A Windows
   shutdown or sign-out is left alone (`CloseReason.WindowsShutDown`): Windows Forms raises
   FormClosing at `WM_QUERYENDSESSION` but closes the form only at `WM_ENDSESSION`, so a
-  cancelled shutdown would otherwise leave the window open without its browser. With the fix the
+  cancelled shutdown would otherwise leave the window open without its browser. For the same
+  reason `shell.never_block_shutdown`, which lets a shutdown's close through while recording,
+  never marks the window closable (`unminute_may_close`): a cancelled shutdown (`WM_ENDSESSION`
+  with wParam 0) raises no Windows Forms event, so a mark set at the query would outlive it and
+  the user's next close would skip the recording question (#512). With the fix the
   browser and its children were gone within 0.1 s of the close, the profile folder was removed,
   no crash report was written, and the real start closed with exit code 0. The internal feature
   names come from the runtime's `msedge.dll` and are not documented: do not ship them as
