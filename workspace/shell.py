@@ -685,8 +685,8 @@ class EndSession:
 def subclass_proc(seen, default, remove):
     """The body of a window subclass procedure (SUBCLASSPROC): tell `seen`
     each message and its wParam (a failure there never affects the message),
-    remove the subclass when the window is destroyed (WM_NCDESTROY, as
-    Microsoft's "Subclassing Controls" advises), and always hand the message
+    remove the subclass when the window is destroyed (WM_NCDESTROY, its last
+    message), so none outlives its window, and always hand the message
     on unchanged (`default`, DefSubclassProc), so Windows Forms answers it
     exactly as before."""
     def proc(hwnd, msg, wparam, lparam, uid, ref):
