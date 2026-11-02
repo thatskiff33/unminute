@@ -464,10 +464,16 @@ def session_problem(body):
     return None
 
 
-def fallback_readings(body):
-    """How many of a window check's session readings came from the input
-    desktop's name rather than the WTS flag, as its well-formed "session"
-    block records them (0 otherwise: session_problem names any other gap).
+def _tally(value):
+    """value when it is a non-negative int (not a bool), else None."""
+    return value if type(value) is int and value >= 0 else None
+
+
+def non_wts_readings(body):
+    """How many of a window check's session readings did not come from the
+    WTS flag (from the input desktop's name, or unread), from its "session"
+    block's readings and wts counts when both are ints (0 otherwise:
+    session_problem names any other gap). It does not validate the block.
     stamp() fails a report with any (#514, DEC-084; review of e9c10f6, N1)."""
     record = body.get("session") if isinstance(body, dict) else None
     if not isinstance(record, dict):
@@ -476,6 +482,39 @@ def fallback_readings(body):
     if type(readings) is not int or type(wts) is not int or wts >= readings:
         return 0
     return readings - wts
+
+
+def fallback_readings(body):
+    """How many of a window check's session readings came from the input
+    desktop's name: its "session" block's input_desktop count when that is a
+    non-negative int, so an unread reading is not counted as one (#516).
+    Otherwise every reading not from the WTS flag (non_wts_readings), as
+    before. It does not validate the block: session_problem does."""
+    record = body.get("session") if isinstance(body, dict) else None
+    if not isinstance(record, dict):
+        return 0
+    desktop = _tally(record.get("input_desktop"))
+    return non_wts_readings(body) if desktop is None else desktop
+
+
+def session_note(body):
+    """The EVIDENCE line's clause on a window check's session readings that
+    are not release evidence (empty when there are none): those from the
+    input desktop's name, and any others not from the WTS flag (unread),
+    each counted against the block's readings when that is a count."""
+    fallback = fallback_readings(body)
+    other = max(0, non_wts_readings(body) - fallback)
+    if not (fallback or other):
+        return ""
+    readings = _tally(body["session"].get("readings"))
+    of = "" if readings is None else f" of {readings}"
+    parts = []
+    if fallback:
+        parts.append(f"{fallback}{of} session readings came from the input desktop's name, "
+                     "not the WTS flag")
+    if other:
+        parts.append(f"{other}{of} session readings were not made")
+    return "; " + " and ".join(parts) + ", so it is not release evidence (#514, DEC-084)"
 
 
 def listed(items):
@@ -527,9 +566,12 @@ def stamp(report, kind, zpath, version_dir, passed, before=None, run=None):
           "check_passed": bool(passed)}
     if run is not None:
         ev["run"] = run
-    fallback = fallback_readings(report) if kind in SESSION_KINDS else 0
+    # Any reading not from the WTS flag fails it: from the input desktop's
+    # name, unread, or a count the block's other counts do not explain.
+    not_wts = (fallback_readings(report) or non_wts_readings(report)
+               if kind in SESSION_KINDS else 0)
     ev["pass"] = (ev["check_passed"] and ev["folder_matches_package"]
-                  and ev["folder_matched_before"] and not fallback)
+                  and ev["folder_matched_before"] and not not_wts)
     report["evidence"] = ev
     return ev
 
@@ -547,7 +589,7 @@ def stamp_file(report_path, kind, zpath, version_dir, passed, before=None, run=N
     path = Path(report_path)
     report = json.loads(path.read_text(encoding="utf-8"))
     ev = stamp(report, kind, zpath, version_dir, passed, before, run)
-    fallback = fallback_readings(report) if kind in SESSION_KINDS else 0
+    note = session_note(report) if kind in SESSION_KINDS else ""
     written = residue.guarded(report, environ)
     named = written is not report
     if named:
@@ -558,9 +600,7 @@ def stamp_file(report_path, kind, zpath, version_dir, passed, before=None, run=N
           f"(SHA-256 {ev['package_sha256']})"
           + ("" if ev["folder_matches_package"]
              else f"; the folder differs from the package in {ev['folder_differences']} places")
-          + (f"; {fallback} of {report['session']['readings']} session readings came from "
-             "the input desktop's name, not the WTS flag, so it is not release evidence "
-             "(#514, DEC-084)" if fallback else "")
+          + note
           + (f"; {residue.CARRIES_USER_NAME}" if named else ""))
     return ev
 
