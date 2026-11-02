@@ -235,6 +235,53 @@ class LeakTrendTests(unittest.TestCase):
         self.assertEqual((57, 4), (leak["samples"], leak["samples_other_tree"]))
         self.assertEqual(0.0, leak["private_growth_mb"])
 
+    # A process that is there only at the end of the hold (#529): a reviewer's
+    # probe of #528 showed one extra 5 MB WebView2 process at t=1800 s voiding
+    # a hold whose other 60 readings fitted.
+    EXTRA = (404, "msedgewebview2.exe")
+
+    def extra_from(self, since, python_mb=lambda t: 150):
+        return [(t, {**procs, self.EXTRA: 5 * MB} if t >= since else procs)
+                for t, procs in scripted_readings(python_mb, lambda t: 600)]
+
+    def test_an_extra_process_at_the_end_is_measured_from_the_readings_before_it(self):
+        for since, fitted in ((1800, 60), (1710, 57)):     # the last fitted at 1770, 1680 s
+            with self.subTest(since=since):
+                leak = perf_check.leak_report(self.extra_from(since), 30)
+                self.assertNotIn("not_measured", leak)
+                self.assertEqual((fitted, 61 - fitted),
+                                 (leak["samples"], leak["samples_other_tree"]))
+                self.assertEqual(0.0, leak["private_growth_mb"])
+                self.assertEqual(([], []), self.gate(leak))
+
+    def test_an_extra_process_with_no_fitted_reading_in_the_last_two_minutes_is_not_measured(
+            self):
+        leak = perf_check.leak_report(self.extra_from(1680), 30)   # the last fitted at 1650 s
+        self.assertNotIn("private_growth_mb", leak)
+        self.assertIn("no reading of that tree was taken in the last 120 s",
+                      leak["not_measured"])
+        self.assertEqual(([], [("leak", "private_growth_mb")]), self.gate(leak))
+
+    def test_an_above_budget_trend_with_an_extra_process_at_the_end_still_fails(self):
+        leak = perf_check.leak_report(self.extra_from(1800, lambda t: 150 + 12 * t / 1800), 30)
+        self.assertEqual(12.0, leak["private_growth_mb"])
+        self.assertEqual([("leak", "private_growth_mb", 12.0, 10)], self.gate(leak)[0])
+
+    def test_a_process_the_hold_began_with_gone_at_the_end_is_not_measured(self):
+        # Gone only at the last reading, alone or replaced by a new process of
+        # the same name (a restart): a crash or restart never passes.
+        restarted = (505, WV[1])
+        for label, last in (("gone", lambda procs: {PY: procs[PY]}),
+                            ("restarted", lambda procs: {PY: procs[PY], restarted: procs[WV]})):
+            with self.subTest(label):
+                readings = scripted_readings(lambda t: 150, lambda t: 600)
+                t, procs = readings[-1]
+                readings[-1] = (t, last(procs))
+                leak = perf_check.leak_report(readings, 30)
+                self.assertNotIn("private_growth_mb", leak)
+                self.assertIn("a process it began with is gone", leak["not_measured"])
+                self.assertEqual(([], [("leak", "private_growth_mb")]), self.gate(leak))
+
     def test_each_process_has_its_own_line_and_they_sum_to_the_total(self):
         leak = perf_check.leak_report(
             scripted_readings(lambda t: 150 + 4 * t / 1800, lambda t: sawtooth(t) + 3 * t / 1800),
@@ -2497,6 +2544,45 @@ class CompareTests(unittest.TestCase):
                 self.assertTrue(all(r["change_percent"] == perf_check.NOT_COMPARABLE
                                     for r in out["compared"]))
                 self.assertEqual(self.MACHINE, out["machine_earlier"])
+
+    # The leak block as each method reports it: preview.7's two snapshots
+    # (both figures the same) and the trend since #526 (DEC-086).
+    TWO_POINT = {"minutes": 30, "private_growth_mb_raw": 11.2, "private_growth_mb": 11.2}
+    TREND = {"minutes": 30, "sample_every_s": 30, "samples": 61, "private_growth_mb_raw": 9.0,
+             "private_trend_mb": 2.0, "private_growth_mb": 2.0}
+
+    def with_leak(self, leak, machine=None):
+        report = self.report(machine)
+        report["median"]["leak"] = dict(leak)
+        return report
+
+    def test_the_leak_row_across_the_method_change_is_noted_not_given_a_percentage(self):
+        out = perf_check.compare_reports(self.with_leak(self.TREND), self.with_leak(self.TWO_POINT))
+        rows = {(r["state"], r["metric"]): r for r in out["compared"]}
+        gated = rows[("leak", "private_growth_mb")]
+        self.assertEqual((2.0, 11.2), (gated["now"], gated["earlier"]))
+        self.assertEqual(perf_check.METHOD_CHANGED, gated["change_percent"])
+        self.assertIn("#526 (DEC-086)", gated["note"])
+        self.assertIn("private_growth_mb_raw", gated["note"])
+        raw = rows[("leak", "private_growth_mb_raw")]          # like for like in both
+        self.assertEqual(-19.6, raw["change_percent"])
+        self.assertNotIn("note", raw)
+        self.assertEqual([r for r in out["compared"] if "note" in r], [gated])
+        # Other machines: still "not comparable", with the note.
+        out = perf_check.compare_reports(self.with_leak(self.TREND, {"memory_gb": 15.6}),
+                                         self.with_leak(self.TWO_POINT))
+        gated = {(r["state"], r["metric"]): r for r in out["compared"]}[
+            ("leak", "private_growth_mb")]
+        self.assertEqual(perf_check.NOT_COMPARABLE, gated["change_percent"])
+        self.assertIn("#526 (DEC-086)", gated["note"])
+
+    def test_two_trend_reports_compare_the_leak_row_as_usual(self):
+        earlier = dict(self.TREND, private_growth_mb=4.0)
+        out = perf_check.compare_reports(self.with_leak(self.TREND), self.with_leak(earlier))
+        gated = {(r["state"], r["metric"]): r for r in out["compared"]}[
+            ("leak", "private_growth_mb")]
+        self.assertEqual(-50.0, gated["change_percent"])
+        self.assertFalse([r for r in out["compared"] if "note" in r])
 
     def test_a_bad_file_stops_before_the_run(self):
         import tempfile
