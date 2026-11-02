@@ -534,8 +534,9 @@ class SubclassProcTests(unittest.TestCase):
         self.assertEqual(len(self.defaults), 2)
 
     def test_a_failure_handing_on_never_refuses_to_end_the_session(self):
-        # #522: if DefSubclassProc raised, the ctypes callback would answer 0,
-        # which for WM_QUERYENDSESSION refuses to end the session.
+        # #522: if DefSubclassProc raised, the ctypes callback could answer 0
+        # (observed, not documented by Python), which for WM_QUERYENDSESSION
+        # refuses to end the session.
         def default(*message):
             raise OSError("exception: access violation")
         proc = shell.subclass_proc(lambda msg, wparam: None, default, lambda hwnd, uid: None)
