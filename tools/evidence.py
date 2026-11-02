@@ -21,7 +21,10 @@
 #     session stayed unlocked: its "session" block (tools/session_state.py,
 #     SESSION_RECORD; #507) read the lock state at each window step and never
 #     found it locked or unreadable. A report with no such block, made by an
-#     earlier tool whose lock test missed a lock on Windows 11, is refused.
+#     earlier tool whose lock test missed a lock on Windows 11, is refused, and
+#     so is one with any reading made from the input desktop's name, not the
+#     session's WTS lock flag: that fallback missed a lock on Windows 11 (the
+#     owner's decision DEC-084, 2 Nov 2026, #514); a --zip run stamps it FAIL.
 # The Release workflow refuses to publish unless one passing report of each kind
 # is attached, each naming the zip it publishes and made by a clean checkout of
 # the commit the zip was built from:
@@ -432,8 +435,11 @@ def accessibility_views_missing(body):
 def session_problem(body):
     """Why a window check's report does not show the session unlocked
     throughout (None when it does): its "session" block of SESSION_RECORD,
-    with every reading made (by the WTS flag or the input desktop's name),
-    none unread, and no lock."""
+    with every reading made, none unread, no lock, and every reading made
+    from the session's WTS lock flag. A reading from the input desktop's
+    name (session_state's fallback, which missed a lock on Windows 11, #507)
+    is refused: release evidence counts only WTS readings (the owner's
+    decision DEC-084, 2 Nov 2026, #514)."""
     record = body.get("session") if isinstance(body, dict) else None
     counts = ("readings", "wts", "input_desktop", "unread")
     if not (isinstance(record, dict) and record.get("record") == SESSION_RECORD
@@ -449,7 +455,27 @@ def session_problem(body):
     if (record["readings"] < 1 or record["unread"] != 0
             or record["wts"] + record["input_desktop"] != record["readings"]):
         return "records readings of the session's state that were not made"
+    if record["wts"] < record["readings"]:
+        return (f"records {record['input_desktop']} of its {record['readings']} readings of "
+                "the session's state from the input desktop's name, not Windows' session lock "
+                "flag (WTS), and that fallback can miss a lock (#507). Release evidence counts "
+                "only WTS readings (owner decision DEC-084, 2 Nov 2026, #514): run the check "
+                "again where the WTS flag can be read")
     return None
+
+
+def fallback_readings(body):
+    """How many of a window check's session readings came from the input
+    desktop's name rather than the WTS flag, as its well-formed "session"
+    block records them (0 otherwise: session_problem names any other gap).
+    stamp() fails a report with any (#514, DEC-084; review of e9c10f6, N1)."""
+    record = body.get("session") if isinstance(body, dict) else None
+    if not isinstance(record, dict):
+        return 0
+    readings, wts = record.get("readings"), record.get("wts")
+    if type(readings) is not int or type(wts) is not int or wts >= readings:
+        return 0
+    return readings - wts
 
 
 def listed(items):
@@ -491,7 +517,9 @@ def accessibility_not_both(body):
 def stamp(report, kind, zpath, version_dir, passed, before=None, run=None):
     """Add the evidence block to a check's report and return it. It counts only
     if the check passed and the folder held exactly the package before and
-    after the run."""
+    after the run, and, for a window check (SESSION_KINDS), every session
+    reading came from the WTS flag (#514, DEC-084): "check" refuses any other,
+    so a --zip run fails at once rather than at publish."""
     if kind not in KINDS:
         raise ValueError(f"unknown evidence kind {kind!r}")
     ev = {"kind": kind, **identity(zpath, version_dir), **tools_identity(),
@@ -499,8 +527,9 @@ def stamp(report, kind, zpath, version_dir, passed, before=None, run=None):
           "check_passed": bool(passed)}
     if run is not None:
         ev["run"] = run
+    fallback = fallback_readings(report) if kind in SESSION_KINDS else 0
     ev["pass"] = (ev["check_passed"] and ev["folder_matches_package"]
-                  and ev["folder_matched_before"])
+                  and ev["folder_matched_before"] and not fallback)
     report["evidence"] = ev
     return ev
 
@@ -518,6 +547,7 @@ def stamp_file(report_path, kind, zpath, version_dir, passed, before=None, run=N
     path = Path(report_path)
     report = json.loads(path.read_text(encoding="utf-8"))
     ev = stamp(report, kind, zpath, version_dir, passed, before, run)
+    fallback = fallback_readings(report) if kind in SESSION_KINDS else 0
     written = residue.guarded(report, environ)
     named = written is not report
     if named:
@@ -528,6 +558,9 @@ def stamp_file(report_path, kind, zpath, version_dir, passed, before=None, run=N
           f"(SHA-256 {ev['package_sha256']})"
           + ("" if ev["folder_matches_package"]
              else f"; the folder differs from the package in {ev['folder_differences']} places")
+          + (f"; {fallback} of {report['session']['readings']} session readings came from "
+             "the input desktop's name, not the WTS flag, so it is not release evidence "
+             "(#514, DEC-084)" if fallback else "")
           + (f"; {residue.CARRIES_USER_NAME}" if named else ""))
     return ev
 

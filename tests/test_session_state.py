@@ -179,6 +179,59 @@ class WatchTests(unittest.TestCase):
         merged.merge(unread.record())
         self.assertIn("or its state could not be read", session_state.stopped_message(merged))
 
+    def test_a_fallback_reading_is_said_once(self):
+        # #514: a development run may use the input desktop's name, but the
+        # check says so, once, naming the step (a fixed name, P3).
+        said = []
+        states = iter([{"locked": False, "how": session_state.WTS},
+                       {"locked": False, "how": session_state.DESKTOP},
+                       {"locked": False, "how": session_state.DESKTOP}])
+        watch = session_state.Watch(lambda: next(states), say=said.append)
+        watch.check("as the check started")
+        self.assertEqual([], said)
+        watch.check("before the view meetings")
+        watch.check("after the view meetings")
+        self.assertEqual([session_state.FALLBACK.format(where="before the view meetings")], said)
+        self.assertIn("not Windows' session lock flag (WTS)", said[0])
+        self.assertIn("refuses its report as release evidence", said[0])
+        self.assertFalse(watch.stopped)                 # the run goes on
+        self.assertEqual((3, 1, 2), (watch.record()["readings"], watch.record()["wts"],
+                                     watch.record()["input_desktop"]))
+        # All by WTS: nothing said.
+        quiet = []
+        session_state.Watch(reader(False), say=quiet.append).check("as the check started")
+        self.assertEqual([], quiet)
+
+    def test_a_fallback_reading_in_the_child_process_is_said(self):
+        # The child's own note goes to its captured output, so the parent says it.
+        child = session_state.Watch(lambda: {"locked": False, "how": session_state.DESKTOP},
+                                    say=lambda text: None)
+        child.reading("before the locked screen")
+        said = []
+        parent = session_state.Watch(reader(False), say=said.append)
+        parent.reading("as the check started")
+        parent.merge(child.record())
+        self.assertEqual([session_state.FALLBACK.format(
+            where="in the check's own child process")], said)
+        parent.merge(child.record())                    # said once a run
+        self.assertEqual(1, len(said))
+        # A child all by WTS: nothing said.
+        quiet = []
+        clean = session_state.Watch(reader(False))
+        clean.reading("before the locked screen")
+        session_state.Watch(reader(False), say=quiet.append).merge(clean.record())
+        self.assertEqual([], quiet)
+
+    def test_the_default_note_goes_to_stderr(self):
+        # Standard output keeps the report and the verdict as before.
+        err, out = io.StringIO(), io.StringIO()
+        watch = session_state.Watch(lambda: {"locked": False, "how": session_state.DESKTOP})
+        with redirect_stdout(out), mock.patch.object(sys, "stderr", err):
+            watch.reading("as the check started")
+        self.assertEqual("", out.getvalue())
+        self.assertIn("NOTE: the session's lock state was read from the input desktop's name",
+                      err.getvalue())
+
     def test_the_record_version_is_the_one_evidence_checks(self):
         self.assertEqual(session_state.RECORD, evidence.SESSION_RECORD)
 
@@ -358,7 +411,7 @@ class EvidenceTests(unittest.TestCase):
     """tools/evidence.py check refuses a window check's report that records a
     lock, or no session state."""
 
-    UNLOCKED = {"record": evidence.SESSION_RECORD, "readings": 4, "wts": 3, "input_desktop": 1,
+    UNLOCKED = {"record": evidence.SESSION_RECORD, "readings": 4, "wts": 4, "input_desktop": 0,
                 "unread": 0, "locked": False, "locked_at": None}
 
     def test_the_window_checks_are_the_ones_that_record_it(self):
@@ -385,6 +438,20 @@ class EvidenceTests(unittest.TestCase):
                 self.assertIsNotNone(evidence.session_problem(body))
         self.assertIn("after the view meetings", evidence.session_problem({"session": locked}))
         self.assertIn("no record of the session's state", evidence.session_problem({}))
+
+    def test_a_reading_from_the_input_desktop_is_refused(self):
+        # #514 (the owner's decision DEC-084, 2 Nov 2026): the input desktop's name
+        # missed a lock on Windows 11 (#507), so release evidence counts only
+        # WTS readings. One fallback reading among many is enough to refuse.
+        for wts, desktop in ((3, 1), (0, 4), (39, 1)):
+            body = {"session": dict(self.UNLOCKED, readings=wts + desktop, wts=wts,
+                                    input_desktop=desktop)}
+            with self.subTest(wts=wts, desktop=desktop):
+                problem = evidence.session_problem(body)
+                self.assertIsNotNone(problem)
+                self.assertIn(f"records {desktop} of its {wts + desktop} readings of the "
+                              "session's state from the input desktop's name", problem)
+                self.assertIn("counts only WTS readings", problem)
 
 
 if __name__ == "__main__":

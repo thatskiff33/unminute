@@ -619,7 +619,9 @@ real time, and remove it when the cause is fixed.
   `tools/packaged_check.py` and `tools/perf_check.py` do, and stop with exit 2, "the session
   locked", never a pass or a failure (#507). Do not test for a lock by the input desktop's name
   alone: on Windows 11 26H2 `OpenInputDesktop` still returned "Default" while the session was
-  locked. A confirmation left open for 20 s on an unlocked session is still closed, and fails
+  locked. They use that name only when the flag cannot be read, and then print a `NOTE` on
+  standard error; `tools/evidence.py check` refuses such a report as release evidence (#514).
+  A confirmation left open for 20 s on an unlocked session is still closed, and fails
   ("is the screen locked?").
 - **`PrivacyDraftTests`** in `tests/test_consistency.py` fails on any Markdown file (all but
   `CHANGELOG.md` and `changelog.d/`; `docs/history/` included) that uses a word in

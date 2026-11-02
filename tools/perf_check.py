@@ -239,7 +239,9 @@ locks or the screen saver starts. Whether the session is locked is read from
 its own lock flag (tools/session_state.py; #507): on Windows 11 the input
 desktop can still be "Default" while it is locked. The report's "session"
 block records each reading (counts, and where a lock was seen), and release
-evidence refuses a report whose block shows a lock, or that has none.
+evidence refuses a report whose block shows a lock, or that has none. Only
+when the flag cannot be read is the input desktop's name used: the run says
+so (NOTE on stderr), and release evidence refuses that report too (#514).
 
 Output: a JSON report with the machine's specification ("machine": processor,
 cores and logical processors, memory, Windows build, power plan, mains or
