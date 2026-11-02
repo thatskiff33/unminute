@@ -4,7 +4,7 @@ Unminute turns a meeting recording into a reviewed transcript on your own comput
 
 It is a temporary workspace, not an archive. Your final documents live wherever your organisation files them.
 
-This guide covers the packaged workspace, as it is in the project's latest code. The newest release is 0.5.0-preview.7 (3 November 2026); what is newer than that release is listed in the README, under "Not yet in a release", and in the changelog.
+This guide covers the packaged workspace, as it is in the project's latest code. The newest release is 0.5.0-preview.7 (3 November 2026); what is newer than that release is listed in the README, under "Not yet in a release"; its change notes wait in the `changelog.d` folder until the next release adds them to the changelog.
 
 **What you will do**
 
