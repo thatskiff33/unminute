@@ -261,6 +261,22 @@ Describe "New-ModelPackage.ps1" {
         ([regex]::Matches($text, "NVIDIA-Open-Model-License.txt")).Count | Should -Be 1
     }
 
+    It "stops before copying any model when the NVIDIA agreement is missing (#539 review)" {
+        # A repository copy without the agreement stops the run at once, not after
+        # the model files (the encoder alone is 650 MB) have been copied and hashed.
+        $scripts = Join-Path $TestDrive "scripts-without-agreement"
+        [void][IO.Directory]::CreateDirectory($scripts)
+        Copy-Item -LiteralPath (Join-Path $script:Repo "packaging\models\Install-Models.ps1") -Destination $scripts
+        Mock Get-ScriptsFolder { $scripts }
+        Mock Copy-Model { throw "a model was copied" }
+        $script:Entries[0].licence = "NVIDIA Open Model License"
+        $script:Zip = New-TestZip $script:Entries
+        $Options.ReleaseZip = $script:Zip.Path; $Options.ExpectedSha256 = $script:Zip.Sha
+        { Invoke-NewModelPackage } | Should -Throw "STOP NVIDIA-Open-Model-License.txt was not found in packaging\models.*"
+        Should -Invoke Copy-Model -Times 0
+        Test-Path -LiteralPath $script:Out | Should -BeFalse
+    }
+
     It "writes no NVIDIA agreement or notice without such a model" {
         Invoke-NewModelPackage
         Test-Path -LiteralPath (Join-Path $script:Out "NOTICE.txt") | Should -BeFalse

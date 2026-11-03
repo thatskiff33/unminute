@@ -339,6 +339,13 @@ function Invoke-NewModelPackage {
         Write-Host "WARNING: this copy of the repository is version '$repository', not the release's $($release.Version). Install-Models.ps1 is taken from it; use a copy at the release's tag."
     }
     $chosen = Select-Model $release.Models $from @($Options.Model)
+    # Checked before any model is copied (#539 review): a missing agreement stops
+    # the run at once, not after the encoder's 650 MB have been copied and hashed.
+    $nvidia = [bool]@($chosen | Where-Object { Test-NvidiaModel $_ }).Count
+    $agreement = [IO.Path]::Combine($scripts, $NvidiaAgreementFile)
+    if ($nvidia -and -not [IO.File]::Exists($agreement)) {
+        Stop-Package "$NvidiaAgreementFile was not found in packaging\models. Run this script from a copy of the repository at the release's tag."
+    }
     [void][IO.Directory]::CreateDirectory($out)
     # Whatever stops the run from here (a refusal, an error), what it wrote goes: the
     # folder was new or empty. An exit runs this finally too.
@@ -353,11 +360,7 @@ function Invoke-NewModelPackage {
         $sha = Get-FileSha256 ([IO.Path]::Combine($out, "models.json"))
         [IO.File]::Copy([IO.Path]::Combine($scripts, "Install-Models.ps1"), [IO.Path]::Combine($out, "Install-Models.ps1"), $false)
         Write-Text ([IO.Path]::Combine($out, "LICENCES.txt")) (Get-LicenceText $release.Version $chosen)
-        if (@($chosen | Where-Object { Test-NvidiaModel $_ }).Count) {
-            $agreement = [IO.Path]::Combine($scripts, $NvidiaAgreementFile)
-            if (-not [IO.File]::Exists($agreement)) {
-                Stop-Package "$NvidiaAgreementFile was not found in packaging\models. Run this script from a copy of the repository at the release's tag."
-            }
+        if ($nvidia) {
             [IO.File]::Copy($agreement, [IO.Path]::Combine($out, $NvidiaAgreementFile), $false)
             Write-Text ([IO.Path]::Combine($out, "NOTICE.txt")) "$NvidiaNotice`n"
         }
