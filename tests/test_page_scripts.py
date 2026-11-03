@@ -765,10 +765,17 @@ class PageErrorPlaceTests(unittest.TestCase):
             "err.stack = String(err) + " + frames(f"f ({BASE}meetings.js:40:3)") + ";\n"
             "onRejection({ reason: err });\n"
             "onRejection({ reason: 'text' });\n"
-            "console.log(JSON.stringify([sent, cleared]));\n")
+            # On the virtual host (#488): for the error a guard threw on, the
+            # browser's line is the guard's own throw, so the guard's place wins.
+            "const thrown = new Error('hidden');\n"
+            f"caughtAt = [{meetings + 38}, 9]; caughtErr = thrown;\n"
+            "onError({ filename: " + json.dumps(BASE + "main.js") + ", lineno: 82, colno: 9,"
+            " error: thrown });\n"
+            "console.log(JSON.stringify([sent, cleared, caughtErr]));\n")
         self.assertEqual(out, [[["error", meetings + 38, 9], ["error", 0, 0],
                                 ["error", self.number("core.js") * 100000 + 4, 2],
-                                ["rejection", meetings + 40, 3], ["rejection", 0, 0]], None])
+                                ["rejection", meetings + 40, 3], ["rejection", 0, 0],
+                                ["error", meetings + 38, 9]], None, None])
 
     def test_callbacks_are_guarded_before_any_listener_is_added(self):
         # main.js guards the browser's ways to call the page before its first

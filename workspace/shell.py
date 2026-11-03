@@ -493,6 +493,12 @@ def _permission_refuser():
 
     def refuse(sender, args):
         args.State = deny
+        # Not kept in the profile (#488): on the virtual host's https origin
+        # WebView2 would otherwise remember the refusal for the origin and
+        # answer the next request (a frame's) itself, without this handler.
+        # Refused either way; this keeps each refusal the app's own.
+        if hasattr(args, "SavesInProfile"):
+            args.SavesInProfile = False
         blocked_calls.append(f"permission {args.PermissionKind}")
     return refuse
 

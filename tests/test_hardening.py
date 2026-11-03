@@ -736,9 +736,13 @@ class AlertGuardTests(unittest.TestCase):
         class Request:                        # the page asks for the microphone
             PermissionKind = "Microphone"
             State = "Default"
+            SavesInProfile = True
         request = Request()
         refuse_permission(None, request)
         self.assertEqual(request.State, "DENY")
+        # Not remembered for the origin (#488): a frame's request reaches the
+        # handler too (real window, 4 Nov 2026).
+        self.assertIs(request.SavesInProfile, False)
         self.assertIn("permission Microphone", shell.blocked_calls)
 
         class Capture:                        # the page asks to capture the screen

@@ -48,6 +48,7 @@ function scriptLine(url, line) {
 // message are cut off unread (they could quote meeting text) and no file name
 // or path is sent (docs/DEVELOPER_NOTES.md, "Page scripts").
 let caughtAt = null;                  // [line, col] of the error now being reported
+let caughtErr = null;                 // the error a guard noted it for, and threw on
 const sentPromises = new WeakSet();   // the promises a guard rejected on after sending them
 const handled = new WeakSet();        // the promises then (catch, finally) was called on
 const watched = new WeakSet();        // the promises a guard watches, each once
@@ -79,6 +80,7 @@ function guarded(fn) {
         value = fn.apply(this, args);
       } catch (err) {
         caughtAt = stackPlace(err);
+        caughtErr = err;
         throw err;
       }
       // The browser does not wait for a callback's promise; the page may.
@@ -375,10 +377,14 @@ document.addEventListener("visibilitychange", () => {
 // instead (#491). The promise a guard rejected on after
 // sending its rejection is not sent again (#501); any other is sent with its
 // reason's place, when it is an Error with a stack.
+// On the virtual host the browser gives a line, but for an error a guard threw
+// on it is the guard's own throw in main.js (real window, 4 Nov 2026, #488), so
+// the place the guard noted from the error's stack is sent for that error.
 window.addEventListener("error", (e) => {
-  const caught = caughtAt;
-  caughtAt = null;
-  if (e.filename) reportUiError("error", scriptLine(e.filename, e.lineno), e.colno);
+  const caught = caughtAt, err = caughtErr;
+  caughtAt = caughtErr = null;
+  if (caught && err !== null && e.error === err) reportUiError("error", ...caught);
+  else if (e.filename) reportUiError("error", scriptLine(e.filename, e.lineno), e.colno);
   else reportUiError("error", ...(caught || [0, 0]));
 });
 window.addEventListener("unhandledrejection", (e) => {
