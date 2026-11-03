@@ -71,7 +71,24 @@ real time, and remove it when the cause is fixed.
   pull request. The baseline has no line numbers, so moving code leaves it alone. mypy reads
   no installed package (`no_site_packages`: third-party imports are typed `Any`) and checks
   the Windows branches (`platform = win32`), so every machine gets the same result, and it
-  writes no cache. Making it a gate needs the owner. The page has no type check yet.
+  writes no cache. Making it a gate needs the owner. The page's scripts have their own
+  check, below.
+- **The page's type check (report only, #489; the owner's decision DEC-089).**
+  `python tools/ts_check.py` runs what the same CI job runs next: TypeScript's checker over
+  `workspace/ui/*.js` with `tsconfig.json`, compared with the committed baseline
+  `tools/ts_baseline.txt`, reported and updated as the mypy check is. Install TypeScript
+  first with `npm ci --ignore-scripts --no-audit --no-fund` (Node.js on the PATH): it is
+  pinned by exact version and integrity hash in `package.json` and `package-lock.json`,
+  goes into `node_modules/` (ignored by git) and is a development tool only, under the
+  Apache License 2.0, never in the package. `.npmrc` turns off install scripts, the audit
+  and funding calls and the update check. Only scripts with a `// @ts-check` line before
+  `"use strict";` are checked (`checkJs` is off); the rest are still read, as the scripts
+  share one global scope. Type notes are JSDoc comments only, so the shipped code does not
+  change; `tools/page_globals.d.ts` declares what the page uses but does not declare (the
+  pywebview bridge). To opt a script in, add the line, run `python tools/ts_check.py
+  --update` and commit the baseline; fix an error rather than add it where that is cheap.
+  A new major TypeScript version is a pull request of its own (Dependabot proposes minor
+  and patch versions only).
 - **Quality report (report only, #365).** `python tools/quality_report.py` runs what CI's
   "Quality report (report only)" job runs: the line count of each tracked code file and its
   growth since the committed baseline `tools/quality_baseline.json`, the largest Python

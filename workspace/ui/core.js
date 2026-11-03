@@ -4,8 +4,10 @@
 // dialog or a native drop, handled in Python.
 // One of the page's ordered scripts (index.html, #414): it only declares.
 // main.js, the last, runs the page.
+// @ts-check: the type notes below are comments; CI checks them (report only, #489).
 "use strict";
 
+/** @param {string} id */
 const $ = (id) => document.getElementById(id);
 const DAY = 86400;
 const POLL_MS = 2000;        // while something is happening (docs/RELEASE_STANDARD.md, section 3)
@@ -38,9 +40,15 @@ const state = {
 // Python, so no stack trace (with file paths) reaches the page. kind (#416)
 // says what a refusal is ("error" or "info"); an answer without a known kind
 // counts as an error.
+/**
+ * @param {string} name  a method in API_METHODS (workspace/api.py)
+ * @param {...unknown} args
+ * @returns {Promise<any>}
+ */
 async function call(name, ...args) {
   const r = await window.pywebview.api[name](...args);
   if (!r || !r.ok) {
+    /** @type {Error & {kind?: string}} */
     const err = new Error((r && r.error) || "The request failed.");
     err.kind = r && r.kind === "info" ? "info" : "error";
     throw err;
@@ -145,11 +153,13 @@ function pollError(where, err) {
 function pollOk(where) { delete pollErrors[where]; }
 
 // -- formatting -------------------------------------------------------------
+/** @param {number} t  seconds */
 function fmtTime(t) {
   const s = Math.floor(t), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
   const ss = String(s % 60).padStart(2, "0");
   return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
 }
+/** @param {number} epoch  seconds since 1970 (UTC) */
 function fmtDate(epoch) { return new Date(epoch * 1000).toLocaleString(); }
 function el(tag, props = {}, ...children) {
   const e = document.createElement(tag);

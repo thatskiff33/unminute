@@ -972,6 +972,20 @@
    "workspace/speakers.py",
    "workspace/worker.py"
   ],
+  "test_ts_check": [
+   ".github/dependabot.yml",
+   ".gitignore",
+   ".npmrc",
+   "package-lock.json",
+   "package.json",
+   "packaging/app-allowlist.json",
+   "tools/page_globals.d.ts",
+   "tools/ts_baseline.txt",
+   "tools/ts_check.py",
+   "tools/type_check.py",
+   "tsconfig.json",
+   "workspace/ui/**"
+  ],
   "test_two_track": [
    "tools/audit.py",
    "tools/windows_powershell.py",

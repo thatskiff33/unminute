@@ -1,13 +1,22 @@
 # Security alerts and security updates are always on (repo setting). This file
-# controls routine version bumps: GitHub Actions only, monthly, grouped into one
-# PR, and only once a version has been public for 7 days, which gives time for a
-# compromised or broken release to be found and pulled.
+# controls routine version bumps: GitHub Actions and the npm development tool
+# only, monthly, each grouped into one PR, and only once a version has been
+# public for 7 days, which gives time for a compromised or broken release to be
+# found and pulled.
 #
 # Python dependencies are hash-locked (#111 B1): requirements.in is the input,
 # and tools/lock.py writes requirements.txt with the same 7-day cooldown.
 # Routine Python updates are a monthly re-lock by hand (docs/RELEASING.md),
 # never automatic: the torch family is ABI-coupled and needs an end-to-end test
 # on a real recording. tools/audit.py (daily) reports known vulnerabilities.
+#
+# npm holds one development tool (#489): TypeScript, for the report-only type
+# check of the page's scripts in CI, never in the package. It is pinned by
+# exact version and integrity hash in package.json and package-lock.json, and
+# moves like the actions: monthly, after the same 7-day cooldown. A new major
+# version is left to a pull request of its own (TypeScript 7 is a native
+# rewrite that adds a package for each platform), so routine bumps take minor
+# and patch versions only.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -18,4 +27,17 @@ updates:
       default-days: 7
     groups:
       actions:
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    versioning-strategy: increase
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      npm:
         patterns: ["*"]

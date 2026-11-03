@@ -106,6 +106,8 @@ class ReportOnlyTests(unittest.TestCase):
         self.assertIn("new since the baseline: 4", out)
         self.assertIn("::warning file=workspace/app.py,line=90,title=mypy (report only)::", out)
         self.assertIn("new since the baseline: 4", summary)
+        # The run reads the baseline it was given (one line), not the committed one.
+        self.assertIn("(baseline 1)", out)
 
     def test_a_mypy_that_cannot_run_fails(self):
         code, _, _ = self.run_main("mypy: error: bad config\n", 2, {"GITHUB_ACTIONS": "false"})
@@ -169,6 +171,13 @@ class BaselineAndWorkflowTests(unittest.TestCase):
         self.assertEqual(coverage["run"]["source"], "workspace")
         self.assertNotIn("fail_under", coverage["report"])
         self.assertIn("python -m coverage combine", workflow)
+
+
+class AnnotationEscapeTests(unittest.TestCase):
+    def test_a_property_escapes_its_separators(self):
+        # #536 review: a file name with ":" or "," must not end the property.
+        self.assertEqual(tc.escape_property("a:b,c%d\n"), "a%3Ab%2Cc%25d%0A")
+        self.assertEqual(tc.escape_property("workspace/app.py"), "workspace/app.py")
 
 
 if __name__ == "__main__":

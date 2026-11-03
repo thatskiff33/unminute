@@ -1,0 +1,15 @@
+# TypeScript errors in the page's scripts accepted for now (#489), one per line
+# without its line and column, written by: python tools/ts_check.py --update
+workspace/ui/confirm.js: error TS2339: Property 'checked' does not exist on type 'HTMLElement'.
+workspace/ui/confirm.js: error TS2339: Property 'disabled' does not exist on type 'HTMLElement'.
+workspace/ui/confirm.js: error TS2339: Property 'returnValue' does not exist on type 'HTMLElement'.
+workspace/ui/confirm.js: error TS2339: Property 'returnValue' does not exist on type 'HTMLElement'.
+workspace/ui/confirm.js: error TS2339: Property 'returnValue' does not exist on type 'HTMLElement'.
+workspace/ui/confirm.js: error TS2339: Property 'returnValue' does not exist on type 'HTMLElement'.
+workspace/ui/confirm.js: error TS2339: Property 'returnValue' does not exist on type 'HTMLElement'.
+workspace/ui/confirm.js: error TS2339: Property 'showModal' does not exist on type 'HTMLElement'.
+workspace/ui/confirm.js: error TS2339: Property 'showModal' does not exist on type 'HTMLElement'.
+workspace/ui/navigation.js: error TS2339: Property 'dataset' does not exist on type 'Element'.
+workspace/ui/navigation.js: error TS2339: Property 'load' does not exist on type 'HTMLElement'.
+workspace/ui/navigation.js: error TS2339: Property 'value' does not exist on type 'HTMLElement'.
+workspace/ui/navigation.js: error TS2345: Argument of type 'string | number' is not assignable to parameter of type 'string'.

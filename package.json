@@ -1,0 +1,9 @@
+{
+  "name": "unminute-dev-tools",
+  "private": true,
+  "description": "Development tools only, never in the package: TypeScript checks the page's scripts in CI (report only, #489).",
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}
