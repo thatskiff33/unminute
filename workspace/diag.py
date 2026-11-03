@@ -2,7 +2,7 @@
 # Local, content-free diagnostics (R9, #130; docs/RELEASE_STANDARD.md,
 # sections 5 and 6). Each process writes its own small rotating log in the
 # workspace's logs\ folder (app.log, worker.log, gpu-worker.log,
-# draft-worker.log, setup.log).
+# draft-worker.log, instant-worker.log, setup.log).
 # There is no telemetry: nothing leaves the computer unless the user copies it.
 #
 # A record is one JSON line holding only what this module allows. Each field
@@ -66,6 +66,8 @@ KINDS = {"start", "stop", "timing", "incident", "crash", "worker_exit", "native_
          "templates_unreadable",
          # #104: a live draft session ended (counts and seconds only, never text)
          "drafts",
+         # #105: its instant words ended (counts and seconds only, never text)
+         "instant",
          # #311: a state file (STATE_FILES) not written, even after the retries
          "state_unwritten",
          # #111 B5b: a version's first-start or full check (check, part, role,
@@ -92,8 +94,9 @@ STATE_RETRIES_S = (0.02, 0.05, 0.1, 0.2, 0.4)   # _write_state's pauses while a 
 NUMBERS = {"line", "col", "count", "exitcode", "hung", "earlier", "truncated",
            "previous_run_unclean", "imports_s", "workspace_s", "page_loaded_s",
            "winerror", "phrases", "restarts", "skipped_s", "dropped_s", "load_s",
-           "computer_dropped_s", "bytes"}
-LOG_NAME = re.compile(r"(app|worker|gpu-worker|draft-worker|setup)(\.[0-9])?")  # a log's stem
+           "computer_dropped_s", "bytes", "words"}
+LOG_NAME = re.compile(r"(app|worker|gpu-worker|draft-worker|instant-worker|setup)"
+                      r"(\.[0-9])?")  # a log's stem
 # The workspace's own files and folders (the lid's restore record is
 # power.RESTORE_FILE). Here, in a module with no heavy or app imports, so the
 # window (workspace/app.py), the support options that open no window
@@ -151,9 +154,9 @@ FIELDS = {
                  "worker_start", "setup", "uncaught", "thread", "page", "open",
                  "audit",                        # #111 C5: an audit write or check
                  "drafts"),                      # #104: live drafts while recording
-    "process": _set("app", "worker", "gpu-worker", "draft-worker", "setup"),
+    "process": _set("app", "worker", "gpu-worker", "draft-worker", "instant-worker", "setup"),
     "job": _set("transcribe", "speakers", "rerun", "cleanup"),
-    "op": _set("load", "transcribe", "diarize", "exit", "draft"),
+    "op": _set("load", "transcribe", "diarize", "exit", "draft", "instant"),
     "stream": _set("stdout", "stderr"),
     "event": _set("error", "rejection"),  # a page error (report_ui_error)
     "result": _set("ok", "failed", "skipped", "continued"),   # a database check (R11)

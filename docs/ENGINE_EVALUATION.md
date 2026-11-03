@@ -187,9 +187,23 @@ The delay runs from the end of each word in the AMI reference to when its last t
 **Reading the results.**
 - Accuracy: the direct decoder was as accurate as sherpa-onnx on both clips (1 to 1.6 points better against the AMI reference), and 3 to 5% of its words differ from sherpa-onnx's.
 - CPU and delay: about the same as sherpa-onnx, and in line with the 16 October trial (17% of one core; 0.6 s and 0.9 s to words appearing).
-- Memory: building the sessions from bytes keeps about 0.6 GB more than loading the same encoder from its path (a load-only check: 1.76 GB against 1.15 GB private). Turning off prepacking, the memory arena or graph optimisation, or compacting the heap, did not change it. The user's decision DEC-092 keeps verified bytes, so #105's second pull request looks for an ONNX Runtime setting that releases the copy first, and otherwise accepts the cost. No memory budget covers recording with drafts on (`docs/perf-budgets.json` budgets CPU only for those states).
+- Memory: building the sessions from bytes keeps about 0.6 GB more than loading the same encoder from its path (a load-only check: 1.76 GB against 1.15 GB private). Turning off prepacking, the memory arena or graph optimisation, or compacting the heap, did not change it. The user's decision DEC-092 keeps verified bytes. The cause was found in #105's second pull request: ONNX Runtime's Python `InferenceSession` keeps the bytes it was built from (`_model_bytes`, onnxruntime 1.30), only to build the session again on another execution provider after an error. The engine runs on the processor alone and lets them go after each session is built (`instant_engine._release`): the load-only check then gave 1.15 GB private, the same as loading from the path. The bytes are still read and hashed once, so the peak while loading stays higher (about 2.4 GB private for a moment). No memory budget covers recording with drafts on (`docs/perf-budgets.json` budgets CPU only for those states).
 
 **Limits.** The laptop was not idle: other sessions kept it at about 30 to 45% of total CPU during the real-time runs (and about 75 to 87% during two earlier sherpa-onnx runs, discarded, which measured 36 to 37% of one core). One run of each, one meeting, headset mix audio only, the decoder alone. The acceptance figures (grey words within 1 s, both draft workers together under 30% of one core with the window visible, no recorder gaps) are measured in the app on an idle laptop, in #105's later pull requests.
+
+**In the app's own path (#105's second pull request).** `tools/live_trial.py run --instant` on the same clip (1:00 to 5:00), fed at real time as the recorder's 0.1 s blocks at 48 kHz, through the app's draft session, its draft worker (Parakeet v2, 10 s cut) and the instant-words worker (`workspace/instant_engine.py`, from verified bytes), one run on 4 November 2026 at about 01:17, under the shared lock for heavy runs. The laptop was not idle: other sessions kept it at about 20 to 33% of total CPU around the run.
+
+| Measure | Result |
+| --- | --- |
+| Instant words, delay from the end of each word to it being complete in the app (median / 90th percentile) | 0.52 s / 0.85 s |
+| The same, to its first piece appearing | 0.47 s / 0.79 s |
+| Instant words' word error rate against the AMI reference | 12.7% (300 words) |
+| Instant-words worker's CPU (% of one core) | 17.8% |
+| Both draft workers together (% of one core) | 22.3% |
+| Instant-words worker's peak working set | 2.09 GB (while loading; see Memory above) |
+| Audio let go to keep up | 0 s |
+
+The delay leaves out the page: it polls the app every 100 ms. An earlier run with the feeder's 0.5 s batches gave 0.70 s and 1.19 s (and, through a fault in the harness's word counting since fixed, a word error rate of 15.5%), so with instant words on the feeder now sends each 0.1 s block as it comes. The error rate is 0.6 points above the decoder alone, which read the 16 kHz file directly; here the audio is first raised to 48 kHz and the draft worker's resampler brings it back down, as a microphone's would be. The acceptance runs are the overnight ones on an idle laptop.
 
 ## Short clips (first screen)
 

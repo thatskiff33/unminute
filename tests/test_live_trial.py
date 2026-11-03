@@ -193,6 +193,43 @@ class LiveRunTests(unittest.TestCase):
         self.assertEqual(row["cpu_pct_one_core"], 10.0)
 
 
+class InstantRunTests(unittest.TestCase):
+    """--instant (#105): the instant-words worker beside the draft worker, with
+    fake engines, fed faster than real time (its delays mean nothing)."""
+
+    def test_instant_words_are_timed_and_both_workers_measured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pcm = (_tone(4.0) * 32767).astype(np.int16)
+            run = live_trial.run_cut(pcm, 16000, 2.0, cache=tmp,
+                                     model=FAKE + "draft_phrases", allow_test=True,
+                                     speed=4.0, quiet_s=1.5,
+                                     instant_model=FAKE + "instant_words")
+        inst = run["instant"]
+        self.assertEqual(inst["state"], "running")
+        self.assertGreaterEqual(len(inst["words"]), 6, inst)
+        for w in inst["words"]:
+            self.assertLessEqual(w["first"], w["at"])
+        self.assertEqual(inst["restarts"], 0)
+
+    def test_instant_results_carry_counts_and_times_never_text(self):
+        runs = [{"cut_s": 10.0, "phrases": [], "load_s": 1.0, "cpu_s": 2.0, "wall_s": 20.0,
+                 "peak_gb": 0.9, "skipped_s": 0.0, "dropped_s": 0.0, "state": "running",
+                 "instant": {"state": "running", "load_s": 2.0, "restarts": 0,
+                             "dropped_s": 0.0, "peak_gb": 0.8, "cpu_s": 3.0,
+                             "words": [{"start": 0.1, "text": "secret", "first": 0.6,
+                                        "at": 0.9}]}}]
+        spoken = [(0.0, 0.5, "secret")]
+        report = live_trial.report(runs, final_words=None, ref_words=spoken,
+                                   config={"seconds": 1.0})
+        self.assertNotIn("secret", repr(report))
+        self.assertNotIn("secret", live_trial.table(report))
+        got = report["runs"][0]["instant"]
+        self.assertEqual((got["words"], got["wer_pct"], got["delay_median_s"],
+                          got["first_median_s"]), (1, 0.0, 0.4, 0.1))
+        self.assertEqual((got["cpu_pct_one_core"], got["both_workers_cpu_pct_one_core"]),
+                         (15.0, 25.0))
+
+
 class CommandLineTests(unittest.TestCase):
     def test_audio_is_fed_in_the_recorders_blocks(self):
         from workspace import recorder

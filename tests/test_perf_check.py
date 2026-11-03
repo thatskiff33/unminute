@@ -2610,3 +2610,109 @@ class CompareTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InstantWordsStateTests(unittest.TestCase):
+    """#105: --instant measures a third recording with live drafts and instant
+    words on, the window visible, and each draft worker's own CPU. Optional:
+    not a release state (STATES), so it needs no budget and changes no release
+    evidence."""
+
+    def test_it_is_apart_from_the_release_states(self):
+        self.assertEqual(("recording-drafts-instant",), perf_check.INSTANT_STATES)
+        self.assertNotIn("recording-drafts-instant", perf_check.STATES)
+        self.assertNotIn("recording-drafts-instant", perf_check.VISIBLE_STATES)
+        self.assertNotIn("recording-drafts-instant", perf_check.DRAWING_STATES)
+        # It shows the level display too, so its window must have drawn it.
+        problems = perf_check.drawing_report(
+            "recording-drafts-instant", ["on"], [None, None],
+            {"visibility": "visible", "frames": 0, "draws": 0, "undrawn_ms": 0, "now": 0,
+             "ping": 0},
+            {"visibility": "visible", "frames": 600, "draws": 0, "undrawn_ms": 0,
+             "now": 10000, "ping": 10000}, 60)["problems"]
+        self.assertTrue(any("level display" in p for p in problems), problems)
+        self.assertIn("recording-drafts-instant", perf_check.HELP)
+
+    def test_it_comes_last_and_only_when_asked_for_with_drafts(self):
+        base = perf_check.plan(0, True, True)
+        self.assertEqual(base + ["recording-drafts-instant"], perf_check.plan(0, True, True, True))
+        self.assertEqual(perf_check.plan(0, True), perf_check.plan(0, True, False, True))
+        self.assertEqual(perf_check.plan(0, False, True), perf_check.plan(0, False, True, True))
+
+    def test_it_records_afresh_and_waits_for_both_workers(self):
+        steps = perf_check.steps
+        self.assertEqual(["restore", "discard", "show:meetings", "record:instant"],
+                         steps("recording-drafts-instant", True, True))
+        self.assertEqual(["restore", "show:meetings", "record:instant"],
+                         steps("recording-drafts-instant", False))
+        self.assertEqual(["restore", "show:meetings"],
+                         steps("recording-drafts-instant", True, "instant"))
+        with self.assertRaises(perf_check.LostRecording):
+            steps("recording-drafts-minimised", True, "instant")
+        self.assertEqual(["discard"], steps("quit", True, "instant"))
+        self.assertGreaterEqual(perf_check.step_timeout("recording-drafts-instant"),
+                                perf_check.step_timeout("recording-drafts")
+                                + perf_check.DRAFT_WAIT_S)
+
+    def test_a_full_run_with_instant_words_records_three_times(self):
+        recording, drafts, opened = False, False, []
+        for action in (*perf_check.plan(0, True, True, True), "quit"):
+            for step in perf_check.steps(action, recording, drafts):
+                if step.startswith("record"):
+                    recording = True
+                    drafts = {"record": False, "record:drafts": True,
+                              "record:instant": "instant"}[step]
+                    opened.append(step)
+                elif step == "discard":
+                    recording, drafts = False, False
+        self.assertEqual(["record", "record:drafts", "record:instant"], opened)
+        self.assertFalse(recording)
+
+    @staticmethod
+    def report(words, state="running", pid=42):
+        return {"state": "recording", "seconds": 10.0, "draft_pid": 41,
+                "draft": {"state": "running", "count": 3, "generation": 1},
+                "instant": {"state": state, "words": words, "pid": pid}}
+
+    def test_instant_words_must_run_and_make_words_in_the_window(self):
+        self.assertEqual(9, perf_check.check_instant("s", self.report(3), self.report(12)))
+        from workspace import instant
+        self.assertEqual(instant.RUNNING, perf_check.INSTANT_RUNNING)
+        cases = [(self.report(3, "starting"), self.report(9), "were starting, not running"),
+                 (self.report(3), self.report(9, "failed"), "were failed, not running, after"),
+                 ({"state": "recording"}, self.report(9), "were off"),
+                 (self.report(3), self.report(3), "made no words"),
+                 (self.report(3), self.report(9, pid=43), "started again"),
+                 (self.report(None), self.report(9), "gave no count")]
+        for before, after, why in cases:
+            with self.subTest(why=why), self.assertRaises(perf_check.Unmeasurable) as caught:
+                perf_check.check_instant("s", before, after)
+            self.assertIn(why, str(caught.exception))
+
+    def test_each_worker_and_both_together(self):
+        before = {41: {"cpu_s": 10.0}, 42: {"cpu_s": 5.0}, 7: {"cpu_s": 1.0}}
+        after = {41: {"cpu_s": 13.0}, 42: {"cpu_s": 17.0}, 7: {"cpu_s": 50.0}}
+        got = perf_check.worker_cpu(before, after, {"draft": 41, "instant": 42}, 60.0)
+        self.assertEqual({"draft": 5.0, "instant": 20.0, "draft_workers": 25.0}, got)
+        got = perf_check.worker_cpu(before, {41: {"cpu_s": 13.0}}, {"draft": 41, "instant": 42},
+                                    60.0)
+        self.assertEqual({"draft": 5.0, "instant": None, "draft_workers": None}, got)
+
+    def test_recorder_gaps_during_a_window_are_counted(self):
+        self.assertEqual(2, perf_check.recorder_gaps({"gaps": 1}, {"gaps": 3}))
+        self.assertIsNone(perf_check.recorder_gaps({"gaps": 1}, {"seconds": 3}))
+        self.assertIsNone(perf_check.recorder_gaps(None, {"gaps": 3}))
+
+    def test_it_needs_the_drafts_input(self):
+        import tempfile
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual("--instant needs --speech and --draft-models",
+                             perf_check.drafts_input_problem(SimpleNamespace(
+                                 quick=True, speech=None, draft_models=None, speech_start=0.0,
+                                 speech_seconds=120.0, instant=True)))
+            wav = Path(tmp) / "public.wav"
+            wav.write_bytes(b"RIFF")
+            self.assertIsNone(perf_check.drafts_input_problem(SimpleNamespace(
+                quick=True, speech=str(wav), draft_models=tmp, speech_start=0.0,
+                speech_seconds=120.0, instant=True)))

@@ -514,3 +514,106 @@ def draft_scoring_fails(threads):
     """Scoring the audio for speech fails (not a phrase): an error in the
     draft worker's own loop."""
     return _DraftScoringFails()
+
+
+# -- fake instant-words engines (#105): load_instant_engine("test:fake_worker_engines:<name>")
+# Each 0.5 s of loud 16 kHz audio (a tone) gives one word naming its number in
+# the stream and the stream's number, never anything heard. A stream starts
+# afresh where audio does not follow on, so a word's time is from its stream's
+# start (the worker adds where that stream began in the recording).
+
+class _InstantStream:
+    def __init__(self, engine):
+        self.engine = engine
+        engine.streams += 1
+        self.number, self.samples, self.loud, self.words = engine.streams, 0, 0, 0
+
+    def accept(self, audio):
+        import numpy as np
+        out = []
+        for i in range(0, len(audio), 1600):           # 0.1 s at a time
+            piece = audio[i:i + 1600]
+            if float(np.sqrt(np.mean(np.square(piece)))) > DRAFT_SPEECH_RMS:
+                self.loud += len(piece)
+                if self.loud >= SR // 2:
+                    self.loud -= SR // 2
+                    self.words += 1
+                    if self.engine.fail:
+                        self.engine.fail(self.words)
+                    out.append((round((self.samples + i) / SR, 3),
+                                f" {self.engine.word}{self.words}s{self.number}"))
+            self.engine.fed += len(piece)
+        self.samples += len(audio)
+        return out
+
+
+class _InstantEngine:
+    def __init__(self, word="w", fail=None):
+        self.word, self.fail, self.streams, self.fed = word, fail, 0, 0
+        self.description = f"fake instant engine (test) pid={os.getpid()}"
+
+    def stream(self):
+        return _InstantStream(self)
+
+
+def instant_words(threads):
+    return _InstantEngine()
+
+
+def instant_crash_once(threads):
+    """The first instant-words worker crashes at its first word; the next one works."""
+    marker = os.environ["UNMINUTE_TEST_INSTANT_MARKER"]
+
+    def fail(n):
+        if not os.path.exists(marker):
+            open(marker, "w").close()
+            os._exit(3)
+    return _InstantEngine(fail=fail)
+
+
+def instant_crash_always(threads):
+    def fail(n):
+        os._exit(3)
+    return _InstantEngine(fail=fail)
+
+
+def instant_load_fails(threads):
+    raise RuntimeError("model files failed verification")
+
+
+def instant_raises(threads):
+    def fail(n):
+        raise RuntimeError("decoding failed")
+    return _InstantEngine(fail=fail)
+
+
+def instant_network(threads):
+    """Each word says whether a connection got out of the instant-words worker
+    (N1), and its torch.load switch."""
+    def word():
+        try:
+            socket.create_connection(("192.0.2.1", 443), timeout=2)
+            got = "connected"
+        except OSError as exc:
+            got = f"blocked{type(exc).__name__}"
+        return f"{got}weights{os.environ.get('TORCH_FORCE_WEIGHTS_ONLY_LOAD')}"
+    engine = _InstantEngine()
+    engine.word = word()
+    return engine
+
+
+def instant_counts_audio(threads):
+    """Writes how much audio it was fed to the file the test names, after each
+    piece (pause-while-hidden tests)."""
+    path = os.environ["UNMINUTE_TEST_INSTANT_FED"]
+    engine = _InstantEngine()
+    real = _InstantStream.accept
+
+    class Counting(_InstantStream):
+        def accept(self, audio):
+            out = real(self, audio)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(str(engine.fed))
+            return out
+    engine.stream = lambda: Counting(engine)
+    return engine

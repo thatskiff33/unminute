@@ -365,6 +365,22 @@
    "workspace/watched_ws.py",
    "workspace/worker.py"
   ],
+  "test_instant": [
+   "workspace/app.py",
+   "workspace/asr_engines.py",
+   "workspace/consent.py",
+   "workspace/diag.py",
+   "workspace/drafts.py",
+   "workspace/engines.py",
+   "workspace/instant.py",
+   "workspace/instant_engine.py",
+   "workspace/power.py",
+   "workspace/recorder.py",
+   "workspace/recording_ws.py",
+   "workspace/resources.py",
+   "workspace/shell.py",
+   "workspace/worker.py"
+  ],
   "test_event_text": [
    "workspace/mixdown.py",
    "workspace/recorder.py",
@@ -730,6 +746,7 @@
    "workspace/handoff.py",
    "workspace/handoff_ws.py",
    "workspace/instance.py",
+   "workspace/instant.py",
    "workspace/media.py",
    "workspace/power.py",
    "workspace/recorder.py",

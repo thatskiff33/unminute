@@ -21,6 +21,21 @@
 #                - the draft worker's processor time while the audio was fed,
 #                  as % of one core, its peak memory, and phrases, skipped and
 #                  lost seconds.
+#   run --instant (#105): instant words too. Each draft session also runs the
+#              instant-words worker (workspace/instant.py, the streaming model
+#              from --cache, 1 thread), started as the app starts it, once the
+#              draft worker is ready, and fed the same audio. Reports, per cut,
+#              besides the above:
+#                - instant delay: when each correctly recognised word was
+#                  complete in the instant session (checked every POLL_S; the
+#                  page's polling is not counted), minus when it finished being
+#                  spoken (AMI word times, else the full pass's), median and
+#                  90th percentile; and when its first piece appeared;
+#                - the instant words' word error rate against the reference;
+#                - the instant-words worker's processor time while the audio
+#                  was fed, as % of one core, and both draft workers' together
+#                  (the acceptance figure: under 30% of one core), its peak
+#                  memory, and audio it let go to keep up.
 #   manifest:  a compare_engines manifest for AMI recordings, with each
 #              meeting's reference built from its word files (every speaker's
 #              words in time order), for compare_engines.py run --draft-cut.
@@ -187,6 +202,23 @@ def report(runs, final_words, ref_words, config, final=None):
                                     if got["wer_pct"] is not None else None)
         if ref_words:
             row["draft_wer_pct"] = score(phrases, ref_words)["wer_pct"]
+        inst = run.get("instant")
+        if inst is not None:
+            got = {k: inst.get(k) for k in ("state", "load_s", "restarts", "dropped_s",
+                                            "peak_gb", "cpu_s")}
+            got["words"] = len(inst["words"])
+            icpu = inst.get("cpu_s")
+            wall = run["wall_s"]
+            got["cpu_pct_one_core"] = round(100 * icpu / wall, 1) if icpu is not None \
+                and wall else None
+            got["both_workers_cpu_pct_one_core"] = (
+                round(100 * (icpu + run["cpu_s"]) / wall, 1)
+                if icpu is not None and run["cpu_s"] is not None and wall else None)
+            if timing:
+                got.update(score_instant(inst["words"], timing))
+            if ref_words:
+                got["wer_pct"] = score_instant(inst["words"], ref_words)["wer_pct"]
+            row["instant"] = got
         rows.append(row)
     out = {"config": dict(config), "timing": ("AMI word times" if ref_words else
                                               "full-pass word times" if final_words else None),
@@ -219,6 +251,24 @@ def table(rep):
             f" | {cell(r['cpu_pct_one_core'], '{:.1f}', '%')}"
             f" | {cell(r['peak_gb'], '{:.2f}', ' GB')}"
             f" | {r['skipped_s']:.1f} s / {r['dropped_s']:.1f} s |")
+    instant_rows = [r for r in rep["runs"] if r.get("instant")]
+    if instant_rows:
+        lines += ["", "| Cut | Instant words | Delay median / 90% (complete) | First piece "
+                  "median / 90% | Instant WER | Instant CPU | Both workers' CPU | Peak memory "
+                  "| Let go |", "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+        for r in instant_rows:
+            i = r["instant"]
+            lines.append(
+                f"| {r['cut_s']:g} s | {i['words']} ({i['state']})"
+                f" | {cell(i.get('delay_median_s'), '{:.2f}', ' s')} / "
+                f"{cell(i.get('delay_p90_s'), '{:.2f}', ' s')}"
+                f" | {cell(i.get('first_median_s'), '{:.2f}', ' s')} / "
+                f"{cell(i.get('first_p90_s'), '{:.2f}', ' s')}"
+                f" | {cell(i.get('wer_pct'), '{:.1f}', '%')}"
+                f" | {cell(i.get('cpu_pct_one_core'), '{:.1f}', '%')}"
+                f" | {cell(i.get('both_workers_cpu_pct_one_core'), '{:.1f}', '%')}"
+                f" | {cell(i.get('peak_gb'), '{:.2f}', ' GB')}"
+                f" | {cell(i.get('dropped_s'), '{:.1f}', ' s')} |")
     final = rep.get("final")
     if final:
         lines.append("")
@@ -308,7 +358,7 @@ def peak_memory_gb(pid):
 
 
 def run_cut(pcm, rate, cut_s, *, cache, model=None, allow_test=False, threads=None,
-            speed=1.0, quiet_s=10.0, progress=None):
+            speed=1.0, quiet_s=10.0, progress=None, instant_model=None):
     """Feed 16-bit audio at `rate` to a fresh DraftSession whose worker cuts
     at cut_s, in the recorder's blocks at real time (times speed), as the
     recorder's writer thread does, ending with a pause's flush. Returns the
@@ -316,26 +366,41 @@ def run_cut(pcm, rate, cut_s, *, cache, model=None, allow_test=False, threads=No
     draft session, in seconds of the recording) and the session's figures."""
     import numpy as np
 
-    from workspace import drafts
+    from workspace import drafts, instant
     with draft_cut(cut_s):                   # refuses a bad cut here, in this process
         pass
+    inst = None
+    if instant_model:
+        inst = instant.InstantSession(rate, str(cache), model=instant_model,
+                                      allow_test_engines=allow_test)
     session = drafts.DraftSession(
         "trial", rate, str(cache), model=model or drafts.DRAFT_MODEL,
         threads=threads or drafts.DRAFT_THREADS, allow_test_engines=allow_test,
-        target=functools.partial(_draft_main, float(cut_s)))
+        target=functools.partial(_draft_main, float(cut_s)), instant=inst)
     phrases, seen = [], 0
     figures = {"cut_s": float(cut_s), "load_s": None, "cpu_s": None, "wall_s": None,
                "peak_gb": None, "skipped_s": 0.0, "dropped_s": 0.0}
+    words = {}                 # instant words: number -> [text, first, complete, start]
     try:
         session.start()
         loading = time.monotonic()
-        while session.state == drafts.STARTING and \
-                time.monotonic() - loading < drafts.LOAD_TIMEOUT_S:
+
+        def loading_now():
+            if session.state == drafts.STARTING:
+                return True
+            return (inst is not None and session.state == drafts.RUNNING
+                    and inst.state == instant.STARTING)
+        while loading_now() and time.monotonic() - loading < drafts.LOAD_TIMEOUT_S:
             time.sleep(0.05)
-        if session.state != drafts.RUNNING:
+        if session.state != drafts.RUNNING or (inst is not None
+                                               and inst.state != instant.RUNNING):
             figures.update(state=session.state, phrases=[])
+            if inst is not None:
+                figures["instant"] = {"state": inst.state, "words": [], "cpu_s": None}
             return figures
         pid = session.pid
+        ipid = inst.pid if inst is not None else None
+        icpu_start = process_cpu_s(ipid)
         block = max(1, round(rate * BLOCK_S))
         pcm = np.asarray(pcm, dtype=np.int16)
         fed = threading.Event()
@@ -354,6 +419,7 @@ def run_cut(pcm, rate, cut_s, *, cache, model=None, allow_test=False, threads=No
             session.tap(len(pcm), None)          # a pause: the last phrase ends
             fed_at["wall"] = time.perf_counter() - t0
             fed_at["cpu"] = process_cpu_s(pid)
+            fed_at["icpu"] = process_cpu_s(ipid)
             fed.set()
 
         feeder = threading.Thread(target=feed, name="trial-feed", daemon=True)
@@ -370,6 +436,16 @@ def run_cut(pcm, rate, cut_s, *, cache, model=None, allow_test=False, threads=No
             if snap["phrases"]:
                 seen = snap["since"] + len(snap["phrases"])
                 last_new = now
+            if inst is not None:
+                at = round((now - t0) * speed, 3)
+                with inst._lock:
+                    current = [tuple(w) for w in inst._words]
+                for start, text, number in current:
+                    known = words.get(number)
+                    if known is None:
+                        words[number] = [text, at, at, start]
+                    elif known[0] != text:
+                        known[0], known[2] = text, at
             if snap["state"] != drafts.RUNNING:
                 break
             if fed.is_set() and now - max(last_new, t0 + fed_at["wall"]) > quiet_s:
@@ -387,10 +463,34 @@ def run_cut(pcm, rate, cut_s, *, cache, model=None, allow_test=False, threads=No
         figures.update(state=snap["state"], load_s=session.load_s,
                        skipped_s=round(session.skipped_s, 1),
                        dropped_s=round(session.dropped_s, 1))
+        if inst is not None:
+            got = {"state": inst.state, "load_s": inst.load_s, "restarts": inst.restarts,
+                   "dropped_s": round(inst.dropped_s, 1), "peak_gb": peak_memory_gb(ipid),
+                   "cpu_s": None}
+            if fed_at.get("icpu") is not None and icpu_start is not None:
+                got["cpu_s"] = round(fed_at["icpu"] - icpu_start, 2)
+            got["words"] = [{"start": w[3], "text": w[0], "first": w[1], "at": w[2]}
+                            for _, w in sorted(words.items())]
+            figures["instant"] = got
     finally:
         session.stop()
     figures["phrases"] = phrases
     return figures
+
+
+def score_instant(words, spoken):
+    """Instant words ({start, text, first, at}: when the word first appeared
+    and when it was complete, in seconds of the recording) against spoken
+    words: word error rate and each matched word's delays."""
+    ref = [(tok, end) for _, end, text in spoken for tok in normalise(text)]
+    hyp = [(tok, w["first"], w["at"]) for w in words for tok in normalise(w["text"])]
+    errors, pairs = align([t for t, _ in ref], [t for t, _, _ in hyp])
+    done = [round(hyp[j][2] - ref[i][1], 3) for i, j in pairs]
+    first = [round(hyp[j][1] - ref[i][1], 3) for i, j in pairs]
+    n = len(ref)
+    return {"wer_pct": round(100 * errors / n, 2) if n else None, "matched": len(pairs),
+            "delay_median_s": percentile(done, 50), "delay_p90_s": percentile(done, 90),
+            "first_median_s": percentile(first, 50), "first_p90_s": percentile(first, 90)}
 
 
 # --- run -------------------------------------------------------------------------
@@ -475,7 +575,8 @@ def cmd_run(args):
             time.sleep(args.rest)            # let the previous worker's memory go
         say(f"cut {cut:g} s")
         run = run_cut(pcm, args.device_rate, cut, cache=args.cache, speed=args.speed,
-                      progress=say)
+                      progress=say,
+                      instant_model=asr_engines.INSTANT_MODEL.name if args.instant else None)
         say(f"cut {cut:g} s: {run['state']}, {len(run['phrases'])} phrases")
         runs.append(run)
 
@@ -504,7 +605,8 @@ def cmd_run(args):
               "draft_model": drafts.DRAFT_MODEL, "draft_threads": drafts.DRAFT_THREADS,
               "commit": _git_head(), "processor": platform.processor(),
               "logical_processors": os.cpu_count(),
-              "end_silence_s": drafts.END_SILENCE_S, "pre_roll_s": drafts.PRE_ROLL_S}
+              "end_silence_s": drafts.END_SILENCE_S, "pre_roll_s": drafts.PRE_ROLL_S,
+              "instant_model": asr_engines.INSTANT_MODEL.name if args.instant else None}
     rep = report(runs, final_words, ref, config, final)
     Path(args.out).write_text(json.dumps(rep, indent=1), encoding="utf-8")
     print(table(rep))
@@ -543,6 +645,8 @@ def main(argv=None):
     r.add_argument("--speed", type=float, default=1.0,
                    help="feed this many times real time (tests only; default 1)")
     r.add_argument("--rest", type=float, default=10.0, help="seconds between runs")
+    r.add_argument("--instant", action="store_true",
+                   help="run instant words too (#105); --cache must hold their model")
     m = sub.add_parser("manifest", help="compare_engines manifest with AMI references")
     m.add_argument("wav", nargs="+")
     m.add_argument("--ami-words", required=True)
