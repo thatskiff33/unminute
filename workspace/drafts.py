@@ -749,8 +749,12 @@ class DraftSession:
                  instant=None):
         self.recording_id, self.rate, self.generation = recording_id, int(rate), generation
         # Instant words (#105), or None: its worker starts once this one is
-        # ready (one model loading at a time) and ends with this session.
+        # ready (one model loading at a time) and ends with this session. A
+        # restarted one waits for this worker to be ready too (gate).
         self.instant = instant
+        self._instant_due = False
+        if instant is not None:
+            instant.gate = lambda: self._ready.is_set() and self._conn is not None
         self.cache_dir, self.model, self.threads = str(cache_dir), model, threads
         self.log, self.allow_test_engines = log, bool(allow_test_engines)
         self._target = target            # tests: another process target
@@ -926,7 +930,10 @@ class DraftSession:
         with self._lock:
             already = self._stopped
         if already:
-            self._ended.wait(self._end_wait() + STOP_JOIN_S * (len(self._threads) + 1))
+            # As long as the first stop may take, its instant words' end too (D4).
+            instant = self.instant
+            self._ended.wait(self._end_wait() + STOP_JOIN_S * (len(self._threads) + 1)
+                             + (instant.end_budget() if instant is not None else 0.0))
             return
         with self._lock:
             if self._stopped:
@@ -1010,8 +1017,7 @@ class DraftSession:
         batch, batch_start, batch_frames = [], None, 0
         # With instant words the audio goes on a block at a time: a 0.5 s
         # batch would hold their first piece back by up to that long (#105).
-        limit = max(1, int(self.rate * (INSTANT_BATCH_S if self.instant is not None
-                                        else BATCH_S)))
+        limit = self._batch_frames()
         comp = _ComputerBatch(self)
         taken = -math.inf                # end of the microphone audio taken (frames)
         while True:
@@ -1057,6 +1063,13 @@ class DraftSession:
             if flush:
                 comp.send()
                 self._send((FLUSH,))
+
+    def _batch_frames(self):
+        """Frames the feeder sends at a time: BATCH_S, or with instant words a
+        block at a time (INSTANT_BATCH_S), so a 0.5 s batch does not hold
+        their first piece back by up to that long (#105)."""
+        seconds = INSTANT_BATCH_S if self.instant is not None else BATCH_S
+        return max(1, int(self.rate * seconds))
 
     def _send_batch(self, start, blocks):
         pcm = np.concatenate(blocks).astype("<i2")
@@ -1114,9 +1127,14 @@ class DraftSession:
                 if self._stopped or self._conn is not conn:
                     return                   # stopped or replaced: a late result is dropped
                 self._take(msg)
-                if self.state not in (UNAVAILABLE, FAILED):
-                    continue
-                self._proc = self._conn = None      # it reported it cannot go on: end it
+                start_instant, self._instant_due = self._instant_due, False
+                ended = self.state in (UNAVAILABLE, FAILED)
+                if ended:
+                    self._proc = self._conn = None  # it reported it cannot go on: end it
+            if start_instant and self.instant is not None:
+                self.instant.start()         # after the lock: starting a process takes time
+            if not ended:
+                continue
             self._end_process(proc, conn)
             return
 
@@ -1132,8 +1150,7 @@ class DraftSession:
                 and not isinstance(msg[2], bool) and math.isfinite(msg[2]) else None
             self.state = RUNNING
             self._ready.set()
-            if self.instant is not None:
-                self.instant.start()         # after this worker loaded: one at a time (D4)
+            self._instant_due = True         # after this worker loaded: one at a time (D4)
         elif kind == "phrase" and len(msg) == 4 and isinstance(msg[3], str) \
                 and all(isinstance(x, (int, float)) and math.isfinite(x) for x in msg[1:3]):
             self._keep({"kind": "phrase", "text": clean_text(msg[3]),

@@ -13,6 +13,7 @@ import math
 import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -108,7 +109,7 @@ class FeatureTests(unittest.TestCase):
         self.assertTrue((banks.max(axis=1) > 0).all())     # no empty band
 
     def test_tokens_keep_the_word_marker_as_a_space_and_drop_special_ones(self):
-        data = "<unk> 0\n▁the 1\ning 2\n<blk> 3\n".encode()
+        data = "<unk> 0\n\u2581the 1\ning 2\n<blk> 3\n".encode()
         self.assertEqual(instant_engine.read_tokens(data), {1: " the", 2: "ing"})
 
 
@@ -204,7 +205,11 @@ class EngineLoadTests(unittest.TestCase):
         class Session:
             def __init__(self, data, options, providers):
                 self._model_bytes = data
+                self.fallback = True
                 made.append((data, providers))
+
+            def disable_fallback(self):
+                self.fallback = False
 
             def get_modelmeta(self):
                 meta = {"window_size": "65", "chunk_shift": "56", "subsampling_factor": "8",
@@ -221,7 +226,7 @@ class EngineLoadTests(unittest.TestCase):
         rt = mock.Mock(InferenceSession=Session, SessionOptions=mock.Mock,
                        ExecutionMode=mock.Mock(ORT_SEQUENTIAL=0))
         blobs = {"encoder.int8.onnx": b"E", "decoder.int8.onnx": b"D",
-                 "joiner.int8.onnx": b"J", "tokens.txt": "▁a 0\n".encode()}
+                 "joiner.int8.onnx": b"J", "tokens.txt": "\u2581a 0\n".encode()}
         with mock.patch.dict(sys.modules, {"onnxruntime": rt}), \
                 mock.patch.object(asr_engines, "read_verified",
                                   return_value=dict(blobs)) as read:
@@ -229,7 +234,7 @@ class EngineLoadTests(unittest.TestCase):
         read.assert_called_once_with(asr_engines.INSTANT_MODEL, "cache")
         self.assertEqual([d for d, _ in made], [b"E", b"D", b"J"])
         self.assertTrue(all(p == ["CPUExecutionProvider"] for _, p in made))
-        self.assertTrue(all(s._model_bytes is None
+        self.assertTrue(all(s._model_bytes is None and s.fallback is False
                             for s in (engine._enc, engine._dec, engine._join)))
         rt.disable_telemetry_events.assert_called_once_with()
         self.assertEqual(engine.tokens, {0: " a"})
@@ -243,18 +248,28 @@ class EngineLoadTests(unittest.TestCase):
     def test_the_model_bytes_are_let_go(self):
         # onnxruntime 1.30's InferenceSession keeps the bytes it was built from
         # (_model_bytes) for a retry on another provider; about 0.6 GB here.
+        # With them gone, its retry after an error in run() would find none:
+        # the retry is turned off first (review of abdda9c).
         class Session:
             _model_bytes = b"x" * 10
+            fallback = True
+
+            def disable_fallback(self):
+                self.fallback = False
         s = Session()
         instant_engine._release(s)
         self.assertIsNone(s._model_bytes)
-        instant_engine._release(object())          # a later runtime without it: nothing
+        self.assertFalse(s.fallback)
+        instant_engine._release(object())          # a later runtime without them: nothing
         if importlib.util.find_spec("onnxruntime"):
             import inspect
 
+            import onnxruntime
             from onnxruntime.capi import onnxruntime_inference_collection as oic
-            # If this fails, a new onnxruntime renamed it: check _release again.
+            # If these fail, a new onnxruntime renamed them: check _release again.
             self.assertIn("self._model_bytes = path_or_bytes", inspect.getsource(oic))
+            self.assertTrue(callable(getattr(onnxruntime.InferenceSession, "disable_fallback",
+                                             None)))
 
     def test_one_thread_and_no_onnxruntime_in_the_window(self):
         self.assertEqual((instant.THREADS, instant_engine.THREADS), (1, 1))
@@ -397,6 +412,69 @@ class SessionTests(unittest.TestCase):
         self.play(s2, tone(0.5), start=10 * SR)                 # after it stopped: let go
         self.assertEqual(len(s2._queue), 0)
 
+    def test_a_restarted_worker_waits_for_the_draft_worker(self):
+        # Review of abdda9c: two models never load at the same moment, also
+        # after a crash (the draft worker may be restarting too).
+        marker = self.root / "crashed"
+        ready = threading.Event()
+        with mock.patch.dict(os.environ, {"UNMINUTE_TEST_INSTANT_MARKER": str(marker)}):
+            s = self.session("instant_crash_once")
+            s.gate = ready.is_set
+            self.assertTrue(wait_for(lambda: s.state == instant.RUNNING))
+            self.play(s, tone(0.5))
+            self.assertTrue(wait_for(lambda: s.restarts == 1))
+            time.sleep(1.5)
+            self.assertEqual((s.state, s.pid), (instant.STARTING, None))   # waiting
+            ready.set()
+            self.assertTrue(wait_for(lambda: s.state == instant.RUNNING))
+
+    def test_no_lock_is_held_while_a_worker_process_starts(self):
+        # Review of abdda9c: put() and set_visible() never wait for a process
+        # to start. No stop() at clean-up unless start() returned: a stuck
+        # start keeps the lock, and stop() would wait for it.
+        s = instant.InstantSession(SR, self.root, model=FAKE + "instant_words",
+                                   allow_test_engines=True)
+        held = []
+
+        def start():
+            # put() takes this lock: a held lock would keep it waiting. A
+            # bounded try, so a lock held here fails the test, never hangs it.
+            free = s._lock.acquire(timeout=1.0)
+            if free:
+                s._lock.release()
+                s.put(("audio", 0, tone(0.1).tobytes()))
+            held.append(not free)
+            raise RuntimeError("no process in this test")
+
+        class Context:
+            @staticmethod
+            def Pipe():
+                from multiprocessing.connection import Pipe
+                return Pipe()
+
+            @staticmethod
+            def Process(**kw):
+                return mock.Mock(start=start)
+        raised = []
+
+        def run():
+            try:
+                s.start()
+            except RuntimeError as exc:
+                raised.append(str(exc))
+        with mock.patch("multiprocessing.get_context", return_value=Context):
+            # In a thread with a bounded wait: a start that kept the lock would
+            # deadlock on its own error path, and must fail the test, not hang it.
+            t = threading.Thread(target=run, daemon=True)
+            t.start()
+            t.join(10)
+        self.assertFalse(t.is_alive(), "start() is stuck on its own lock")
+        self.addCleanup(s.stop)
+        self.assertEqual(raised, ["no process in this test"])
+        self.assertEqual(held, [False])
+        self.assertEqual(len(s._queue), 1)
+        self.assertFalse(s._launching)             # a failed start can be tried again
+
     def test_a_model_that_will_not_load_is_unavailable_not_restarted(self):
         s = self.session("instant_load_fails")
         self.assertTrue(wait_for(lambda: s.state == instant.UNAVAILABLE))
@@ -488,9 +566,13 @@ class InstantStandIn:
 
     def __init__(self):
         self.calls, self.msgs = [], []
+        self.session = None                        # the draft session, to see its lock
+        self.locked_at_start = []
 
     def start(self):
         self.calls.append("start")
+        if self.session is not None:
+            self.locked_at_start.append(self.session._lock.locked())
 
     def put(self, msg):
         self.msgs.append(msg)
@@ -507,6 +589,9 @@ class InstantStandIn:
     def words_after(self, after):
         return f"after {after}"
 
+    def end_budget(self):
+        return 0.0
+
 
 @unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
 class DraftSessionWiringTests(unittest.TestCase):
@@ -521,11 +606,15 @@ class DraftSessionWiringTests(unittest.TestCase):
         stand_in = InstantStandIn()
         s = drafts.DraftSession("rec1", SR, self.root, model=FAKE + "draft_phrases",
                                 allow_test_engines=True, instant=stand_in)
+        stand_in.session = s
         self.addCleanup(s.stop)
         self.assertEqual(stand_in.calls, [])
+        self.assertFalse(stand_in.gate())          # the draft worker is not ready yet
         self.assertTrue(s.start())
         self.assertTrue(wait_for(lambda: s.state == drafts.RUNNING))
-        self.assertEqual(stand_in.calls, ["start"])
+        self.assertTrue(wait_for(lambda: stand_in.calls == ["start"]))
+        self.assertEqual(stand_in.locked_at_start, [False])   # started after the lock
+        self.assertTrue(stand_in.gate())
         pcm = np.concatenate([tone(1.5), silence(1.0)])
         for i in range(0, len(pcm), SR // 10):
             s.tap(i, pcm[i:i + SR // 10])
@@ -547,6 +636,32 @@ class DraftSessionWiringTests(unittest.TestCase):
         s = drafts.DraftSession("rec1", SR, self.root)
         self.assertEqual(s.instant_words(), "")
         s.set_visible(False)                       # nothing to tell
+        self.assertEqual(s._batch_frames(), int(SR * drafts.BATCH_S))   # still 0.5 s
+        self.assertEqual(drafts.BATCH_S, 0.5)
+        with_instant = drafts.DraftSession("rec2", SR, self.root, instant=InstantStandIn())
+        self.assertEqual(with_instant._batch_frames(), SR // 10)
+
+    def test_a_second_stop_waits_for_the_instant_words_too(self):
+        # Review of abdda9c (D4): a second stop, from another thread, returns
+        # only once the first has ended instant words too, however long that
+        # takes within the instant session's own budget.
+        class SlowInstant(InstantStandIn):
+            def stop(self):
+                time.sleep(2.0)
+                super().stop()
+
+            def end_budget(self):
+                return 5.0
+        slow = SlowInstant()
+        s = drafts.DraftSession("rec1", SR, self.root, instant=slow)
+        with mock.patch.object(drafts, "STOP_JOIN_S", 0.05), \
+                mock.patch.object(s, "_end_wait", lambda: 0.0):
+            first = threading.Thread(target=s.stop)
+            first.start()
+            self.assertTrue(wait_for(lambda: s._stopped))
+            s.stop()
+            self.assertIn("stop", slow.calls)      # without the budget: back after 0.1 s
+            first.join(10)
 
 
 @unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")

@@ -20,8 +20,9 @@
 #     over exactly those bytes (asr_engines.read_verified), and the sessions are
 #     built from the same bytes, so no file is opened again after its check.
 #     ONNX Runtime's Python session keeps the bytes it was given for a retry
-#     on another execution provider, which this CPU-only engine never makes;
-#     they are let go (_release), saving about 0.6 GB.
+#     on another execution provider, which this CPU-only engine never makes:
+#     the retry is turned off and the bytes let go (_release), saving about
+#     0.6 GB.
 #   - One intra-op thread, sequential, no spinning (with two threads the
 #     16 October trial's runtime busy-waited for the same output).
 # Standard library and numpy only at module level: onnxruntime is imported by
@@ -119,7 +120,7 @@ class Fbank:
 
 def read_tokens(data):
     """tokens.txt ("<piece> <id>" per line) -> {id: text}, the word marker
-    "▁" as a space and special tokens ("<unk>", "<blk>") left out."""
+    "\u2581" as a space and special tokens ("<unk>", "<blk>") left out."""
     tokens = {}
     for line in data.decode("utf-8").splitlines():
         piece, _, number = line.rpartition(" ")
@@ -127,7 +128,7 @@ def read_tokens(data):
             continue
         if piece.startswith("<") and piece.endswith(">"):
             continue
-        tokens[int(number)] = piece.replace("▁", " ")
+        tokens[int(number)] = piece.replace("\u2581", " ")
     return tokens
 
 
@@ -280,8 +281,13 @@ class InstantEngine:
 def _release(session):
     """ONNX Runtime's InferenceSession keeps the model bytes it was built from
     (onnxruntime 1.30, _model_bytes), only to build the session again on
-    another execution provider after an error. This engine runs on the
-    processor alone, so they are let go. A newer ONNX Runtime without the
+    another execution provider after an error in run(). This engine runs on
+    the processor alone: that retry is turned off (disable_fallback, so an
+    error in run() is raised as it is, not after a rebuild that would find no
+    bytes), then the bytes are let go. A newer ONNX Runtime without the
     attribute changes nothing here (tests/test_instant.py says so)."""
+    disable = getattr(session, "disable_fallback", None)
+    if disable is not None:
+        disable()
     if getattr(session, "_model_bytes", None) is not None:
         session._model_bytes = None

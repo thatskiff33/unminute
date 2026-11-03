@@ -185,12 +185,16 @@ class InstantSession:
         self.hidden_s = 0.0                        # audio not sent while the window was hidden
         self.state, self.reason = STARTING, None
         self.restarts = 0
+        self._launching = False                    # a worker process is being started
         self.load_s = None
         self.description = None
         self._proc = self._conn = None
         self._ready = threading.Event()
         self._stopped = False
         self._threads = []
+        # Whether the draft worker is ready (the draft session sets it): a
+        # restarted worker waits for it, so two models never load at once.
+        self.gate = None
 
     # -- draft session side ---------------------------------------------------------------
 
@@ -228,39 +232,69 @@ class InstantSession:
     # -- control ------------------------------------------------------------------------
 
     def start(self):
-        """Start the worker (again after resume). False once stopped or failed."""
+        """Start the worker (again after resume). False once stopped or failed,
+        or while a start is already under way."""
         with self._lock:
-            if self._stopped or self.state not in (STARTING, BATTERY) or self._proc is not None:
+            if (self._stopped or self.state not in (STARTING, BATTERY) or self._proc is not None
+                    or self._launching):
                 return False
             self.state = STARTING
-            self._start_process()
+            self._launching = True
             if not any(t.name == "instant-sender" and t.is_alive() for t in self._threads):
                 sender = threading.Thread(target=self._send_loop, name="instant-sender",
                                           daemon=True)
                 sender.start()
                 self._threads.append(sender)
-            return True
+        return self._launch()
 
-    def _start_process(self):
-        """Call with _lock held."""
+    def _launch(self):
+        """Start a worker process without holding the lock (put() and
+        set_visible() never wait for it), then take it on, unless the session
+        stopped meanwhile."""
         import multiprocessing as mp
         from workspace import worker
-        ctx = mp.get_context("spawn")
-        parent, child = ctx.Pipe()
-        log_dir = str(self.log.folder) if self.log is not None else None
-        proc = ctx.Process(target=self._target or worker.instant_main,
-                           args=(child, self.cache_dir, self.model, self.threads,
-                                 self.allow_test_engines, log_dir),
-                           daemon=True, name="unminute-instant-worker")
-        proc.start()
-        child.close()
-        parent.send(("start", self.rate))
-        self._ready.clear()
-        self._proc, self._conn = proc, parent
-        reader = threading.Thread(target=self._read_loop, args=(proc, parent),
-                                  name="instant-reader", daemon=True)
-        reader.start()
-        self._threads.append(reader)
+        try:
+            ctx = mp.get_context("spawn")
+            parent, child = ctx.Pipe()
+            log_dir = str(self.log.folder) if self.log is not None else None
+            proc = ctx.Process(target=self._target or worker.instant_main,
+                               args=(child, self.cache_dir, self.model, self.threads,
+                                     self.allow_test_engines, log_dir),
+                               daemon=True, name="unminute-instant-worker")
+            proc.start()
+            child.close()
+            parent.send(("start", self.rate))
+        except BaseException:
+            with self._lock:
+                self._launching = False
+            raise
+        with self._lock:
+            self._launching = False
+            gone = self._stopped or self.state == BATTERY
+            if not gone:
+                self._ready.clear()
+                self._proc, self._conn = proc, parent
+                reader = threading.Thread(target=self._read_loop, args=(proc, parent),
+                                          name="instant-reader", daemon=True)
+                reader.start()
+                self._threads.append(reader)
+        if gone:                                  # stopped or suspended while it started
+            self._end_process(proc, parent)
+            return False
+        return True
+
+    def end_budget(self):
+        """At most how long stop() takes (its worker's end and thread joins):
+        the draft session's second stop waits this long too (D4)."""
+        from workspace.worker import END_WAIT_S
+        return END_WAIT_S + STOP_JOIN_S * (len(self._threads) + 1)
+
+    def _gate_open(self):
+        gate = self.gate
+        try:
+            return gate is None or bool(gate())
+        except Exception:
+            return False
 
     def suspend(self):
         """On battery with the draft session: the worker ends (memory freed),
@@ -434,14 +468,27 @@ class InstantSession:
         with self._lock:
             if self._stopped or self._proc is not None or self.state == BATTERY:
                 return
-            if self.restarts < MAX_RESTARTS:
-                self.restarts += 1
-                self.state = STARTING
-                self._start_process()
-            else:
+            if self.restarts >= MAX_RESTARTS:
                 self.state, self.reason = FAILED, "crashed"
                 self._queue.clear()
                 self._queued_s = 0.0
+                return
+            self.restarts += 1
+            self.state = STARTING
+        # The draft worker first (it may be restarting too): two models never
+        # load at the same moment (D4). Then the process starts, outside the lock.
+        waited = time.monotonic()
+        while not self._gate_open():
+            if self._stopped or self.state != STARTING \
+                    or time.monotonic() - waited > LOAD_TIMEOUT_S:
+                return
+            time.sleep(0.2)
+        with self._lock:
+            if self._stopped or self.state != STARTING or self._proc is not None \
+                    or self._launching:
+                return
+            self._launching = True
+        self._launch()
 
     # -- reading (for the page, #105's last pull request) ---------------------------------
 

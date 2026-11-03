@@ -65,9 +65,9 @@ Network, secrets and integrity
   speaker model is read once, re-hashed in full and built from those bytes in memory with
   weights-only unpickling and fixed classes (`workspace/speaker_load.py`), and so is the instant
   words model, from its ONNX bytes (`workspace/instant_engine.py`, the user's decision DEC-092);
-  the others are checked against their verified marker (size and modification time). A machine install's copies from IT
-  are checked only against the record IT's install script wrote, or hashed in full, and the app
-  never writes there (#111 B7a, the owner's decision DEC-068). Guard:
+  the others are checked against their verified marker (size and modification time). A machine
+  install's copies from IT are checked only against the record IT's install script wrote, or
+  hashed in full, and the app never writes there (#111 B7a, the owner's decision DEC-068). Guard:
   `tests/test_model_integrity.py`, `tests/test_asr_engines.py`, `tests/test_machine_models.py`,
   `tests/test_instant.py`.
 - **I2** Untrusted media is decoded only in the sandboxed decode process, within its format,
