@@ -171,7 +171,9 @@ task's branch and squash-merge its own PR when:
 Arming auto-merge pinned to the reviewed head, once all but the required checks hold, counts as
 merging: GitHub waits for them. Never push to `main` or force-push a branch another agent works
 on. An agent may comment on its issues (decisions, progress) and close one once its PRs have
-merged and every acceptance criterion is met, saying which PRs did it. Do follow-ups and
+merged and every acceptance criterion is met, saying which PRs did it. It may tick a checkbox
+in an issue's body once the work is merged or its evidence recorded, with the PR or evidence
+link beside each tick (the user's decision DEC-087, 3 November 2026). Do follow-ups and
 carry-forwards in the same PR where possible; otherwise raise a new issue linked to where it came
 from (agents may open these), never leaving it only in a comment.
 
