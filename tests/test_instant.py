@@ -470,10 +470,115 @@ class SessionTests(unittest.TestCase):
             t.join(10)
         self.assertFalse(t.is_alive(), "start() is stuck on its own lock")
         self.addCleanup(s.stop)
-        self.assertEqual(raised, ["no process in this test"])
+        self.assertEqual(raised, [])                # caught, and instant words stopped
+        self.assertEqual(s.state, instant.FAILED)
         self.assertEqual(held, [False])
         self.assertEqual(len(s._queue), 1)
         self.assertFalse(s._launching)             # a failed start can be tried again
+
+    @staticmethod
+    def context(start=None, send=None):
+        """A stand-in for multiprocessing's spawn context: Process.start runs
+        start (if given) and the process then lives until terminated."""
+        class Proc:
+            def __init__(self, **kw):
+                self.pid, self.alive, self.terminated, self.exitcode = None, False, False, None
+
+            def start(self):
+                if start is not None:
+                    start()
+                self.pid, self.alive = 4242, True
+
+            def is_alive(self):
+                return self.alive
+
+            def terminate(self):
+                self.terminated, self.alive = True, False
+
+            def join(self, timeout=None):
+                pass
+        made = []
+
+        class Conn:
+            def send(self, msg):
+                if send is not None:
+                    send(msg)
+
+            def close(self):
+                pass
+
+            def poll(self, timeout=None):
+                time.sleep(timeout or 0)
+                return False
+
+        class Context:
+            @staticmethod
+            def Pipe():
+                return Conn(), Conn()
+
+            @staticmethod
+            def Process(**kw):
+                made.append(Proc(**kw))
+                return made[-1]
+        return Context, made
+
+    def test_a_stop_during_a_launch_waits_for_its_process_to_end(self):
+        # Review of 0f35a5c (D4): a stop while a process is being started
+        # returns only once that process has ended.
+        go = threading.Event()
+        context, made = self.context(start=lambda: go.wait(10))
+        s = instant.InstantSession(SR, self.root, model=FAKE + "instant_words",
+                                   allow_test_engines=True)
+        with mock.patch("multiprocessing.get_context", return_value=context):
+            starter = threading.Thread(target=s.start, daemon=True)
+            starter.start()
+            self.assertTrue(wait_for(lambda: made))
+            stopper = threading.Thread(target=s.stop, daemon=True)
+            stopper.start()
+            time.sleep(0.5)
+            self.assertTrue(stopper.is_alive(), "stop() returned while a process was starting")
+            go.set()
+            stopper.join(10)
+            starter.join(10)
+        self.assertFalse(stopper.is_alive())
+        self.assertTrue(made[0].terminated)
+        self.assertEqual((s.state, s.pid), (instant.STOPPED, None))
+
+    def test_a_process_that_cannot_start_stops_instant_words_without_raising(self):
+        # Review of 0f35a5c: an error starting the process never reaches the
+        # caller (the draft's reader thread), and instant words say they stopped.
+        def fail():
+            raise OSError("CreateProcess failed")
+        context, made = self.context(start=fail)
+        s = self.session(start=False)
+        with mock.patch("multiprocessing.get_context", return_value=context):
+            self.assertFalse(s.start())
+        self.assertEqual((s.state, s.reason, s._launching), (instant.FAILED, "start", False))
+        self.assertFalse(made[0].alive)
+
+    def test_a_first_message_that_fails_ends_the_started_process(self):
+        # Review of 0f35a5c: no orphan process when the start message fails.
+        def fail(msg):
+            raise OSError("the pipe broke")
+        context, made = self.context(send=fail)
+        s = self.session(start=False)
+        with mock.patch("multiprocessing.get_context", return_value=context):
+            self.assertFalse(s.start())
+        self.assertTrue(made[0].terminated)
+        self.assertEqual((s.state, s.reason, s.pid), (instant.FAILED, "start", None))
+
+    def test_a_draft_worker_that_never_gets_ready_leaves_instant_words_unavailable(self):
+        # Review of 0f35a5c: the restart's wait for the draft worker gives up
+        # with a fixed reason, never stuck "starting" with no process.
+        marker = self.root / "crashed"
+        with mock.patch.dict(os.environ, {"UNMINUTE_TEST_INSTANT_MARKER": str(marker)}), \
+                mock.patch.object(instant, "LOAD_TIMEOUT_S", 1.0):
+            s = self.session("instant_crash_once")
+            self.assertTrue(wait_for(lambda: s.state == instant.RUNNING))
+            s.gate = lambda: False
+            self.play(s, tone(0.5))
+            self.assertTrue(wait_for(lambda: s.state == instant.UNAVAILABLE, timeout=30))
+        self.assertEqual((s.reason, s.pid, s.restarts), ("draft_not_ready", None, 1))
 
     def test_a_model_that_will_not_load_is_unavailable_not_restarted(self):
         s = self.session("instant_load_fails")
@@ -631,6 +736,33 @@ class DraftSessionWiringTests(unittest.TestCase):
         s.suspend()
         s.stop()
         self.assertEqual(stand_in.calls, ["start", ("visible", False), "suspend", "stop"])
+
+    def test_an_instant_start_that_fails_never_stops_the_draft(self):
+        # Review of 0f35a5c: an error in instant words' start is caught in the
+        # draft's reader thread, which carries on: phrases keep coming.
+        class Broken(InstantStandIn):
+            def start(self):
+                super().start()
+                raise RuntimeError("could not start")
+        from workspace import diag
+        log = diag.Log(self.root / "logs", "app")
+        broken = Broken()
+        s = drafts.DraftSession("rec1", SR, self.root, model=FAKE + "draft_phrases",
+                                allow_test_engines=True, instant=broken, log=log)
+        self.addCleanup(s.stop)
+        self.assertTrue(s.start())
+        self.assertTrue(wait_for(lambda: broken.calls == ["start"]))
+        pcm = np.concatenate([tone(1.5), silence(1.0)] * 2)
+        for i in range(0, len(pcm), SR // 10):
+            s.tap(i, pcm[i:i + SR // 10])
+        self.assertTrue(wait_for(lambda: len([p for p in s.snapshot()["phrases"]
+                                              if p["kind"] == "phrase"]) == 2))
+        self.assertEqual(s.state, drafts.RUNNING)
+        records = diag.shareable_records(self.root / "logs")
+        self.assertTrue(any(r.get("kind") == "incident" and r.get("area") == "drafts"
+                            for r in records))
+        self.assertNotIn("could not start", (self.root / "logs" / "app.log").read_text(
+            encoding="utf-8"))
 
     def test_without_instant_words_nothing_changes(self):
         s = drafts.DraftSession("rec1", SR, self.root)

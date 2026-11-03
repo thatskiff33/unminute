@@ -1132,7 +1132,13 @@ class DraftSession:
                 if ended:
                     self._proc = self._conn = None  # it reported it cannot go on: end it
             if start_instant and self.instant is not None:
-                self.instant.start()         # after the lock: starting a process takes time
+                # After the lock: starting a process takes time. Whatever goes
+                # wrong there, this reader (and so the draft) carries on.
+                try:
+                    self.instant.start()
+                except Exception as exc:
+                    if self.log is not None:
+                        self.log.incident("drafts", exc)   # type name and frames only (P3)
             if not ended:
                 continue
             self._end_process(proc, conn)

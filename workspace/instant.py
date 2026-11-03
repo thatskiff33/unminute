@@ -50,6 +50,7 @@ MAX_TOKENS = 400                 # pieces in one reply
 MAX_RESTARTS = 1
 LOAD_TIMEOUT_S = 300.0
 STOP_JOIN_S = 5.0
+LAUNCH_WAIT_S = 30.0             # stop() waits this long at most for a process being started
 
 STARTING, RUNNING, FAILED, UNAVAILABLE, STOPPED, BATTERY = (
     "starting", "running", "failed", "unavailable", "stopped", "battery")
@@ -250,9 +251,14 @@ class InstantSession:
     def _launch(self):
         """Start a worker process without holding the lock (put() and
         set_visible() never wait for it), then take it on, unless the session
-        stopped meanwhile."""
+        stopped meanwhile. Never raises: a process that cannot be started, or
+        whose first message fails, is ended and instant words stop (FAILED,
+        "start"); the draft that started them is never affected. _launching
+        stays set until a process that is not taken on has ended, so stop()
+        returns only after that (D4)."""
         import multiprocessing as mp
         from workspace import worker
+        proc = parent = None
         try:
             ctx = mp.get_context("spawn")
             parent, child = ctx.Pipe()
@@ -264,30 +270,44 @@ class InstantSession:
             proc.start()
             child.close()
             parent.send(("start", self.rate))
-        except BaseException:
-            with self._lock:
-                self._launching = False
-            raise
+        except Exception as exc:
+            if self.log is not None:
+                self.log.incident("drafts", exc)   # its type name and frames, never text (P3)
+            try:
+                self._end_process(proc if proc is not None and proc.pid else None, parent)
+            finally:
+                with self._lock:
+                    self._launching = False
+                    if not self._stopped and self.state != BATTERY:
+                        self.state, self.reason = FAILED, "start"
+                    self._wake.notify_all()
+            return False
         with self._lock:
-            self._launching = False
             gone = self._stopped or self.state == BATTERY
             if not gone:
+                self._launching = False
                 self._ready.clear()
                 self._proc, self._conn = proc, parent
                 reader = threading.Thread(target=self._read_loop, args=(proc, parent),
                                           name="instant-reader", daemon=True)
                 reader.start()
                 self._threads.append(reader)
-        if gone:                                  # stopped or suspended while it started
+                self._wake.notify_all()
+                return True
+        try:                                      # stopped or suspended while it started
             self._end_process(proc, parent)
-            return False
-        return True
+        finally:
+            with self._lock:
+                self._launching = False
+                self._wake.notify_all()
+        return False
 
     def end_budget(self):
-        """At most how long stop() takes (its worker's end and thread joins):
-        the draft session's second stop waits this long too (D4)."""
+        """At most how long stop() takes (a process being started, its
+        worker's end and thread joins): the draft session's second stop waits
+        this long too (D4)."""
         from workspace.worker import END_WAIT_S
-        return END_WAIT_S + STOP_JOIN_S * (len(self._threads) + 1)
+        return LAUNCH_WAIT_S + END_WAIT_S + STOP_JOIN_S * (len(self._threads) + 1)
 
     def _gate_open(self):
         gate = self.gate
@@ -324,6 +344,12 @@ class InstantSession:
             self._words, self._queue = [], collections.deque()
             self._queued_s = 0.0
             self._wake.notify_all()
+            # A process being started (_launch) is ended by that thread, which
+            # then clears _launching: waited for, bounded, so no instant-words
+            # child outlives this stop (D4).
+            end = time.monotonic() + LAUNCH_WAIT_S
+            while self._launching and time.monotonic() < end:
+                self._wake.wait(max(0.0, end - time.monotonic()))
         self._end_process(proc, conn)
         for t in self._threads:
             if t is not threading.current_thread():
@@ -479,8 +505,12 @@ class InstantSession:
         # load at the same moment (D4). Then the process starts, outside the lock.
         waited = time.monotonic()
         while not self._gate_open():
-            if self._stopped or self.state != STARTING \
-                    or time.monotonic() - waited > LOAD_TIMEOUT_S:
+            if self._stopped or self.state != STARTING:
+                return
+            if time.monotonic() - waited > LOAD_TIMEOUT_S:
+                with self._lock:             # the draft worker never became ready
+                    if not self._stopped and self.state == STARTING:
+                        self.state, self.reason = UNAVAILABLE, "draft_not_ready"
                 return
             time.sleep(0.2)
         with self._lock:
