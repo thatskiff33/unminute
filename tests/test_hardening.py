@@ -275,7 +275,24 @@ class NavigationTests(unittest.TestCase):
         self.assertEqual(directives, {
             "default-src": ["'none'"], "script-src": ["'self'"], "style-src": ["'self'"],
             "img-src": ["'self'", "data:"], "media-src": ["data:"], "connect-src": ["'none'"],
-            "font-src": ["'self'"], "base-uri": ["'none'"], "form-action": ["'none'"]})
+            "font-src": ["'self'"], "worker-src": ["'none'"], "base-uri": ["'none'"],
+            "form-action": ["'none'"]})
+
+    def test_the_page_may_start_no_worker(self):
+        # #488 review: on the virtual host's https origin, without worker-src
+        # (which falls back to script-src 'self'), a page script could start a
+        # Worker and register a service worker; a WebView2 probe on 3 Nov 2026
+        # did both (from file:// neither worked). worker-src 'none' refuses
+        # them, and the page uses no worker.
+        import re
+        html = (ROOT / "workspace" / "ui" / "index.html").read_text(encoding="utf-8")
+        [policy] = re.findall(r'<meta http-equiv="Content-Security-Policy"\s+content="([^"]*)"',
+                              html)
+        self.assertIn("worker-src 'none'", [part.strip() for part in policy.split(";")])
+        script = page_scripts.every_source()
+        for pattern in (r"\bWorker\b", r"\bSharedWorker\b", r"\bserviceWorker\b",
+                        r"\bimportScripts\b", r"\bWorklet\b", r"\baudioWorklet\b"):
+            self.assertIsNone(re.search(pattern, script), pattern)
 
     def test_the_page_names_no_assistant_until_the_app_does(self):
         # #109 review: before the preview arrived (or if it failed), the page

@@ -278,7 +278,13 @@ real time, and remove it when the cause is fixed.
   the bundled page): origin `https://unminute.invalid`, a secure context, all scripts, both
   stylesheets, the Archivo font and the logo loaded, `fetch` of the page's own file refused
   (`connect-src 'none'`), a page of another origin could not load the logo (with DenyCors,
-  the control, it could), and no listening socket in the process tree. Headless Edge has no
+  the control, it could), and no listening socket in the process tree. The same kind of probe
+  (review of #537) found the page a secure context from `file://` too, with the same browser
+  APIs (pickers, device choosers, WebAuthn, media, clipboard, location) from both addresses,
+  although Microsoft's page on local content says `file://` lacks them; but only the virtual
+  host let page script start a `Worker` and register a service worker (Microsoft's reference
+  says the mapping does not apply to service worker scripts, yet the registration of a mapped
+  script succeeded), so the policy has `worker-src 'none'`. Headless Edge has no
   such mapping: `tools/ui_idle_check.py` and the design check serve the page from their own
   local HTTP server, as before. pythonnet needs an enum member, not its number
   (`DockStyle.Fill`, not 5), and `CoreWebView2CreationProperties` is in
