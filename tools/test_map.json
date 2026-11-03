@@ -664,6 +664,7 @@
    "packaging/identity.json",
    "packaging/install.ps1",
    "packaging/models/Install-Models.ps1",
+   "packaging/models/NVIDIA-Open-Model-License.txt",
    "packaging/uninstall.ps1",
    "tools/intune/New-ModelPackage.ps1",
    "tools/windows_powershell.py",

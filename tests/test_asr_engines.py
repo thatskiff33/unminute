@@ -801,6 +801,47 @@ class SpeakerModelAndManifestDocTests(unittest.TestCase):
             self.assertEqual(state, "invalid")
             self.assertIn("embedding/pytorch_model.bin is missing", detail)
 
+    def test_instant_words_model_is_pinned_public_and_never_a_speech_model(self):
+        # #105 (the user's decisions of 4 Nov 2026): the sherpa-onnx project's int8
+        # export at revision 52056fd, its four files pinned by SHA-256 (all four
+        # checked against Hugging Face's LFS SHA-256 and the k2-fsa GitHub archive).
+        s = ae.INSTANT_MODEL
+        self.assertEqual(s.repo, "csukuangfj2/sherpa-onnx-nemotron-speech-streaming-en-0.6b-"
+                                 "560ms-int8-2026-04-25")
+        self.assertEqual(s.revision, "52056fdc070914a48dcd68b31b44d6a6f5b85902")
+        self.assertFalse(s.gated)
+        self.assertEqual(s.hub_repos, ())
+        self.assertEqual(s.family, "nemotron")
+        self.assertEqual({f.name: f.size for f in s.files},
+                         {"encoder.int8.onnx": 652916849, "decoder.int8.onnx": 7257753,
+                          "joiner.int8.onnx": 1735862, "tokens.txt": 8952})
+        for f in s.files:
+            self.assertRegex(f.sha256, r"^[0-9a-f]{64}$")
+        self.assertIn(s.name, ae.MANAGED_MODELS)
+        self.assertIn(s, ae.MANIFEST_SPECS)
+        self.assertTrue(ae.is_instant(s.name))
+        self.assertFalse(ae.is_parakeet(s.name) or ae.is_whisper(s.name))
+        self.assertNotIn(s.name, ae.LABELS)            # never a meeting's speech model
+        self.assertEqual(ae.label(s.name), "Nemotron streaming")
+        self.assertEqual(ae.LICENCES[s.name][0], ae.NVIDIA_OPEN_MODEL_LICENSE)
+        self.assertEqual(ae.machine_damaged(s),
+                         "Your IT team's copy of the instant words model is damaged. Ask your "
+                         "IT team to repair it.")
+
+    def test_instant_words_model_status_follows_its_files(self):
+        # Missing, then damaged (a synthetic short file), by the same quick checks
+        # as every other model: no hashing, nothing downloaded.
+        s = ae.INSTANT_MODEL
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(ae.hub_model_status(s.name, tmp), ("missing", "not installed"))
+            folder = ae.model_dir(s, tmp)
+            folder.mkdir(parents=True)
+            (folder / "tokens.txt").write_bytes(b"synthetic")
+            state, detail = ae.hub_model_status(s.name, tmp)
+            self.assertEqual(state, "invalid")
+            self.assertIn("encoder.int8.onnx is missing", detail)
+            self.assertIn("tokens.txt has the wrong size", detail)
+
     def test_docs_manifest_matches_code(self):
         doc = Path(__file__).resolve().parents[1] / "docs" / "MODEL_MANIFEST.md"
         self.assertEqual(doc.read_text(encoding="utf-8").replace("\r\n", "\n"),

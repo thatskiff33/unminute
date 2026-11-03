@@ -257,6 +257,8 @@ Redistributing the model files inside your organisation, including the gated spe
 - Hongji Wang, Chengdong Liang, Shuai Wang, Zhengyang Chen, Binbin Zhang, Xu Xiang, Yanlei Deng and Yanmin Qian. Wespeaker: A research and production oriented speaker embedding learning toolkit. ICASSP 2023, IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP), pages 1-5. IEEE, 2023.
 - Federico Landini, Ján Profant, Mireia Diez and Lukáš Burget. Bayesian HMM clustering of x-vector sequences (VBx) in speaker diarization: theory, implementation and analysis on standard tasks. Computer Speech & Language, 2022.
 
+The instant words model (nemotron-speech-streaming-en-0.6b-560ms, #105) is under the NVIDIA Open Model License. With it, the package also holds the agreement (`NVIDIA-Open-Model-License.txt`) and `NOTICE.txt`, with the notice "Licensed by NVIDIA Corporation under the NVIDIA Open Model License", as the agreement's section 3.1 asks of anyone who distributes the model; its `LICENCES.txt` entry names both and says the files are unmodified. The app does not offer this model yet: it is in the release's model list so a package can carry it once it does.
+
 Details are in [PACKAGING.md](PACKAGING.md), "Models installed by IT". Running the package through Intune on a managed device, with a standard user and no token, is still to be checked (#189).
 
 ## Managed policy

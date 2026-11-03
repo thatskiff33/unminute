@@ -140,6 +140,64 @@ class SetupTests(unittest.TestCase):
                 card = next(c for c in self.ws.setup_state()["cards"] if c["name"] == name)
                 self.assertEqual((card["state"], card["removable"]), ("missing", False))
 
+    def test_instant_words_model_is_not_offered_until_the_app_uses_it(self):
+        # #105 PR A: the model is pinned and downloadable by the same path as the
+        # others, but Setup and Downloads offer it only once the engine, the
+        # setting and the policy key exist (setup.OFFER_INSTANT). Until then the
+        # bridge refuses every action on it, so nothing downloads a model that
+        # nothing uses.
+        name = asr_engines.INSTANT_MODEL.name
+        self.assertFalse(setup.OFFER_INSTANT)
+        self.assertNotIn(name, [c["name"] for c in self.ws.setup_state()["cards"]])
+        self.assertFalse(setup.known(name))
+        for action in (self.ws.download_model, self.ws.verify_model, self.ws.remove_model,
+                       self.ws.cancel_download):
+            with self.subTest(action=action.__name__):
+                with self.assertRaisesRegex(WorkspaceError, "Unknown model"):
+                    action(name)
+        self.assertEqual(self.ws.downloads.state.get(name), None)
+
+    def test_instant_words_model_downloads_checks_repairs_and_removes_once_offered(self):
+        # The card, sized from the pinned files, under the NVIDIA Open Model
+        # License, public (no token), never a speech model or the recommended one.
+        spec = asr_engines.INSTANT_MODEL
+        name = spec.name
+        with mock.patch.object(setup, "OFFER_INSTANT", True):
+            self.ws._forget_display()
+            cards = self.ws.setup_state()["cards"]
+            card = next(c for c in cards if c["name"] == name)
+            self.assertEqual((card["role"], card["label"], card["state"], card["licence"],
+                              card["revision"], card["needs_token"], card["recommended"]),
+                             ("instant", "Instant words", "missing",
+                              "NVIDIA Open Model License", "52056fd", False, False))
+            self.assertEqual(card["size_gb"], round(spec.download_bytes / 1e9, 2))
+            self.assertEqual(card["size_gb"], 0.66)
+            self.assertIn("NVIDIA Open Model License", card["about"])
+            self.assertNotIn(name, [c["name"] for c in cards if c["role"] == "speech"])
+            self.ws.download_model(name)                       # Download (the fake)
+            st = wait_for(self.ws.downloads, name)
+            self.assertEqual(st["state"], "ready")
+            self.assertFalse(st["result"]["token_received"])   # public: never a token
+            self.ws.verify_model(name)                         # Check every file
+            st = wait_for(self.ws.downloads, name)
+            self.assertEqual(st["state"], "failed")            # nothing really installed
+            self.assertIn("Repair", st["message"])
+            folder = asr_engines.model_dir(spec, self.ws.cache_dir)
+            self.assertEqual(folder.relative_to(self.ws.cache_dir).parts,
+                             ("nemotron", "nemotron-speech-streaming-en-0.6b-560ms-int8"))
+            folder.mkdir(parents=True)
+            (folder / "encoder.int8.onnx").write_bytes(b"not a model")   # synthetic damage
+            self.ws._forget_display()
+            card = next(c for c in self.ws.setup_state()["cards"] if c["name"] == name)
+            self.assertEqual((card["state"], card["removable"]), ("invalid", True))
+            self.ws.download_model(name)                       # Repair: download again
+            self.assertEqual(wait_for(self.ws.downloads, name)["state"], "ready")
+            self.ws.remove_model(name)                         # Remove...
+            self.assertFalse(folder.exists())
+            self.ws._forget_display()
+            card = next(c for c in self.ws.setup_state()["cards"] if c["name"] == name)
+            self.assertEqual((card["state"], card["removable"]), ("missing", False))
+
     def test_settings_mark_speech_models_as_the_downloads_page_does(self):
         # #244: each choice carries the state the Downloads page shows, and a
         # model that is not ready carries the note shown beside the picker.

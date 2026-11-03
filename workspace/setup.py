@@ -61,6 +61,25 @@ CARDS = [
      "about": "Works out who spoke when. Downloading it needs a free Hugging Face account "
               "and token; once downloaded it works offline and the token is not needed."},
 ]
+# Instant words while recording (#105): grey words a moment after people speak,
+# replaced by the live draft's text. Optional, for live drafts only.
+INSTANT_CARD = {
+    "name": asr_engines.INSTANT_MODEL.name, "role": "instant", "recommended": False,
+    "label": asr_engines.INSTANT_LABEL, "title": f"{asr_engines.INSTANT_LABEL} (optional)",
+    "about": "Shows words in grey on the recording card moments after people speak, until "
+             "the draft text replaces them. Used only with live drafts. NVIDIA's model, "
+             "under the NVIDIA Open Model License."}
+# Offered in Setup and Downloads only once the app can use it (#105: the engine
+# and worker, then the setting, the policy key AllowInstantWords and the page).
+# Until then it is not offered, and the bridge refuses to download, check or
+# remove it (known), so nothing downloads a model that nothing uses (fail
+# closed, as drafts.ON_PAGE did for #104).
+OFFER_INSTANT = False
+
+
+def offered_cards():
+    """The model cards Setup and Downloads show (instant words only once offered)."""
+    return [*CARDS, INSTANT_CARD] if OFFER_INSTANT else list(CARDS)
 
 
 class SetupError(RuntimeError):
@@ -170,7 +189,7 @@ def whisper_gpu_card(cache_dir):
 
 def cards(cache_dir):
     out = []
-    for c in CARDS:
+    for c in offered_cards():
         state, plain, _ = status(c["name"], cache_dir)
         lic, source = asr_engines.LICENCES[c["name"]]
         spec = asr_engines.MANAGED_MODELS[c["name"]]
@@ -559,6 +578,9 @@ def _fetch(url, dest, expected_size, prefix=gpu.DOWNLOAD_HOST):
 
 
 def known(name):
+    """A model or component the page may download, check, cancel or remove."""
+    if asr_engines.is_instant(name):
+        return OFFER_INSTANT
     return name in asr_engines.MANAGED_MODELS or gpu.component(name) is not None
 
 

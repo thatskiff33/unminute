@@ -15,6 +15,7 @@ small files were checked against Hugging Face's git blob IDs.
 | large-v3-turbo | MIT | OpenAI whisper-large-v3-turbo, CTranslate2 conversion | `dropbox-dash/faster-whisper-large-v3-turbo` | `0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf` |
 | large-v3 | MIT | OpenAI whisper-large-v3, CTranslate2 conversion by Systran | `Systran/faster-whisper-large-v3` | `edaa852ec7e145841d8ffdb056a99866b5f0a478` |
 | speaker-diarization-community-1 | CC BY 4.0 (gated) | pyannoteAI speaker-diarization-community-1; accept terms to download | `pyannote/speaker-diarization-community-1` | `3533c8cf8e369892e6b79ff1bf80f7b0286a54ee` |
+| nemotron-speech-streaming-en-0.6b-560ms | NVIDIA Open Model License | NVIDIA nemotron-speech-streaming-en-0.6b, int8 ONNX export (560 ms chunks) by the sherpa-onnx project | `csukuangfj2/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25` | `52056fdc070914a48dcd68b31b44d6a6f5b85902` |
 
 ## parakeet-tdt-0.6b-v2
 
@@ -70,6 +71,15 @@ small files were checked against Hugging Face's git blob IDs.
 | `plda/plda.npz` | 133852 | `9b77bcd840692710dd3496f62ecfeed8d8e5f002fd991b785079b244eab7d255` |
 | `plda/xvec_transform.npz` | 134376 | `325f1ce8e48f7e55e9c8aa47e05d2766b7c48c4b25b8de8dd751e7a4cc5fbe8f` |
 | `segmentation/pytorch_model.bin` | 5906507 | `7ad24338d844fb95985486eb1a464e32d229f6d7a03c9abe60f978bacf3f816e` |
+
+## nemotron-speech-streaming-en-0.6b-560ms
+
+| File | Bytes | SHA-256 |
+| --- | --- | --- |
+| `decoder.int8.onnx` | 7257753 | `0be9702c2f427a2b6bb241d298e0d3836a558de1f5b9fd3018f1cce6e2b3fa98` |
+| `encoder.int8.onnx` | 652916849 | `7d932213491ad355c6e5576705dc3494731a52af87d7a1b954559340147909d8` |
+| `joiner.int8.onnx` | 1735862 | `a35eac38a22ebceb04d230ed7afe0d68f446ba6914a036b97f14fece95967e23` |
+| `tokens.txt` | 8952 | `dc0b4584ab2e4ddbf888425c076c61b736e7356a015250db7d307e6f1a8188ff` |
 
 ## Copies installed by IT (#111 B7a)
 

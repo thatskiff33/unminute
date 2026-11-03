@@ -185,6 +185,47 @@ class SpeakerAttributionTests(unittest.TestCase):
                     self.assertIn(piece, text)
 
 
+class NvidiaLicenceTests(unittest.TestCase):
+    """The instant words model (#105) is under the NVIDIA Open Model License. Its
+    section 3.1: whoever distributes the model gives recipients a copy of the
+    agreement and the attribution notice in a "Notice" text file. A model package
+    is such a distribution, so it carries both (tests/powershell/Models.Tests.ps1
+    runs the script). The copy is the agreement as NVIDIA's page published it,
+    version of 24 October 2025 (read 3 November 2026), pinned here so it is never
+    edited by accident; a new version of the agreement is a deliberate change."""
+
+    AGREEMENT = ROOT / "packaging" / "models" / "NVIDIA-Open-Model-License.txt"
+    # SHA-256 of the copy with LF line ends (git may check it out with CRLF).
+    AGREEMENT_SHA256 = "40fa3276e91dc659baa34a4d835064634bdbd9838f9396716771cfc6df8e6ad8"
+
+    def test_the_agreement_copy_is_pinned_and_is_that_version(self):
+        data = self.AGREEMENT.read_bytes().replace(b"\r\n", b"\n")
+        self.assertEqual(hashlib.sha256(data).hexdigest(), self.AGREEMENT_SHA256)
+        text = data.decode("utf-8")
+        self.assertTrue(text.startswith("NVIDIA Open Model License Agreement\n"))
+        self.assertIn("Last Modified: October 24, 2025", text)
+        self.assertIn("Version Release Date: October 24, 2025", text)
+        self.assertIn(f"“{ae.NVIDIA_NOTICE}”", text)    # the notice section 3.1 gives
+
+    def test_the_script_uses_the_apps_licence_name_and_the_notice(self):
+        script = read(PACKAGE_SCRIPT)
+        self.assertEqual(ps_string(script, "NvidiaLicence"), ae.NVIDIA_OPEN_MODEL_LICENSE)
+        self.assertEqual(ps_string(script, "NvidiaNotice"), ae.NVIDIA_NOTICE)
+        self.assertEqual(ps_string(script, "NvidiaAgreementFile"), self.AGREEMENT.name)
+        self.assertIn(ae.NVIDIA_OPEN_MODEL_LICENSE_URL, ps_function(script, "Get-LicenceText"))
+        # Exactly the models whose licence says so get it: the instant words model.
+        self.assertEqual([n for n, (lic, _) in ae.LICENCES.items()
+                          if lic == ae.NVIDIA_OPEN_MODEL_LICENSE], [ae.INSTANT_MODEL.name])
+
+    def test_both_it_guides_say_so(self):
+        for doc in ("docs/PACKAGING.md", "docs/IT_DEPLOYMENT.md"):
+            with self.subTest(doc=doc):
+                text = SpeakerAttributionTests.flat(read(ROOT / doc))
+                for piece in (ae.NVIDIA_NOTICE, self.AGREEMENT.name, "NOTICE.txt",
+                              ae.INSTANT_MODEL.name):
+                    self.assertIn(piece, text)
+
+
 @unittest.skipUnless(sys.platform == "win32", "Windows PowerShell writes the record")
 class RecordInteropTests(unittest.TestCase):
     """A record written by Install-Models.ps1's own functions is one the app trusts,

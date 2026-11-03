@@ -20,7 +20,9 @@
       - writes models.json (the chosen models from the zip's list, the release and the
         zip's SHA-256), Install-Models.ps1 (from packaging\models beside this script's
         repository folder), LICENCES.txt and README.txt (the Intune settings, with the
-        detection file's name).
+        detection file's name); with a model under the NVIDIA Open Model License, also
+        that agreement (NVIDIA-Open-Model-License.txt, from packaging\models) and
+        NOTICE.txt with the attribution notice its section 3.1 asks for.
     Prints PACKAGE READY and the SHA-256 of models.json and exits 0. Any problem prints
     NOT READY, removes what it wrote, and exits 1.
 
@@ -249,6 +251,17 @@ function Get-SpeakerCredit {
         "    standard tasks. Computer Speech & Language, 2022.")
 }
 
+# The NVIDIA Open Model License (#105): a redistributor gives recipients a copy of
+# the agreement and this notice in a "Notice" text file (its section 3.1). The copy
+# of the agreement (version of 24 October 2025) is in packaging\models beside
+# Install-Models.ps1; tests/test_model_package.py pins it and this notice.
+$NvidiaLicence = "NVIDIA Open Model License"
+$NvidiaAgreementFile = "NVIDIA-Open-Model-License.txt"
+$NvidiaNotice = "Licensed by NVIDIA Corporation under the NVIDIA Open Model License"
+function Test-NvidiaModel($Entry) {
+    return [string]$Entry.licence -ceq $NvidiaLicence
+}
+
 # The licence and credit for each model, from the release's list (docs/MODEL_MANIFEST.md).
 function Get-LicenceText([string]$Version, $Chosen) {
     $lines = @("Models in this package (Unminute $Version)", "",
@@ -274,6 +287,12 @@ function Get-LicenceText([string]$Version, $Chosen) {
             }
         }
         if ($speaker) { $lines += Get-SpeakerCredit }
+        if (Test-NvidiaModel $entry) {
+            $lines += "  Licence: NVIDIA Open Model License Agreement (version of 24 October 2025), in $NvidiaAgreementFile;"
+            $lines += "  its notice is in NOTICE.txt. https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/"
+            $lines += "  Changes: none. The files are unmodified, byte for byte the files at the revision above,"
+            $lines += "  each checked by its SHA-256."
+        }
         $lines += ""
     }
     return ($lines -join "`n")
@@ -334,6 +353,14 @@ function Invoke-NewModelPackage {
         $sha = Get-FileSha256 ([IO.Path]::Combine($out, "models.json"))
         [IO.File]::Copy([IO.Path]::Combine($scripts, "Install-Models.ps1"), [IO.Path]::Combine($out, "Install-Models.ps1"), $false)
         Write-Text ([IO.Path]::Combine($out, "LICENCES.txt")) (Get-LicenceText $release.Version $chosen)
+        if (@($chosen | Where-Object { Test-NvidiaModel $_ }).Count) {
+            $agreement = [IO.Path]::Combine($scripts, $NvidiaAgreementFile)
+            if (-not [IO.File]::Exists($agreement)) {
+                Stop-Package "$NvidiaAgreementFile was not found in packaging\models. Run this script from a copy of the repository at the release's tag."
+            }
+            [IO.File]::Copy($agreement, [IO.Path]::Combine($out, $NvidiaAgreementFile), $false)
+            Write-Text ([IO.Path]::Combine($out, "NOTICE.txt")) "$NvidiaNotice`n"
+        }
         Write-Text ([IO.Path]::Combine($out, "README.txt")) (Get-ReadmeText $release.Version $sha)
         $done = $true
     } finally {

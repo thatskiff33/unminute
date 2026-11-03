@@ -1477,8 +1477,7 @@ def model_manifest(source):
         exec(compile(Path(source).read_bytes(), str(source), "exec"), ae.__dict__)
     finally:
         sys.modules.pop(ae.__name__, None)
-    specs = [*ae.PARAKEET_MODELS.values(), ae.SILERO_VAD, *ae.WHISPER_MODELS.values(),
-             ae.SPEAKER_MODEL]
+    specs = ae.MANIFEST_SPECS
     # "family" and "folder" say where IT's copy goes on a machine install
     # (<install>\models\<family>\<folder>\<revision>, #111 B7a); "attribution" is
     # the credit the model package's licence file gives.
