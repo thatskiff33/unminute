@@ -281,8 +281,9 @@ class NavigationTests(unittest.TestCase):
     def test_the_page_may_start_no_worker(self):
         # #488 review: on the virtual host's https origin, without worker-src
         # (which falls back to script-src 'self'), a page script could start a
-        # Worker and register a service worker; a WebView2 probe on 3 Nov 2026
-        # did both (from file:// neither worked). worker-src 'none' refuses
+        # Worker or SharedWorker and register a service worker; a WebView2 probe
+        # on 3 Nov 2026 (Runtime 156.0.4314.58) did all three (from file:// none
+        # worked). worker-src 'none' refuses
         # them, and the page uses no worker.
         import re
         html = (ROOT / "workspace" / "ui" / "index.html").read_text(encoding="utf-8")

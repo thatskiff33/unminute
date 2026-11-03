@@ -279,10 +279,10 @@ real time, and remove it when the cause is fixed.
   stylesheets, the Archivo font and the logo loaded, `fetch` of the page's own file refused
   (`connect-src 'none'`), a page of another origin could not load the logo (with DenyCors,
   the control, it could), and no listening socket in the process tree. The same kind of probe
-  (review of #537) found the page a secure context from `file://` too, with the same browser
+  (review of #537, WebView2 Runtime 156.0.4314.58, 3 Nov 2026) found the page a secure context from `file://` too, with the same browser
   APIs (pickers, device choosers, WebAuthn, media, clipboard, location) from both addresses,
   although Microsoft's page on local content says `file://` lacks them; but only the virtual
-  host let page script start a `Worker` and register a service worker (Microsoft's reference
+  host let page script start a `Worker` or `SharedWorker` and register a service worker (Microsoft's reference
   says the mapping does not apply to service worker scripts, yet the registration of a mapped
   script succeeded), so the policy has `worker-src 'none'`. Headless Edge has no
   such mapping: `tools/ui_idle_check.py` and the design check serve the page from their own
