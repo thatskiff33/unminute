@@ -57,7 +57,8 @@ def errors(output):
     return found
 
 
-def read_baseline(path=BASELINE):
+def read_baseline(path=None):
+    path = path or BASELINE                   # read when called, so a test can move it
     if not path.exists():
         return []
     return [line for line in path.read_text(encoding="utf-8").splitlines()

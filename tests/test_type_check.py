@@ -106,6 +106,8 @@ class ReportOnlyTests(unittest.TestCase):
         self.assertIn("new since the baseline: 4", out)
         self.assertIn("::warning file=workspace/app.py,line=90,title=mypy (report only)::", out)
         self.assertIn("new since the baseline: 4", summary)
+        # The run reads the baseline it was given (one line), not the committed one.
+        self.assertIn("(baseline 1)", out)
 
     def test_a_mypy_that_cannot_run_fails(self):
         code, _, _ = self.run_main("mypy: error: bad config\n", 2, {"GITHUB_ACTIONS": "false"})
