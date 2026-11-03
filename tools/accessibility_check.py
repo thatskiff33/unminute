@@ -923,7 +923,7 @@ VIEWS = {
     "meetings import error": "window.workspace.show('meetings'); await wait(1500);"
                              f"showError(errorHome('import'), {json.dumps(IMPORT_ERROR)},"
                              " document.getElementById('import')); await wait(400);",
-    "meeting":"await window.workspace.openMeeting('{mid}'); await wait(1500);",
+    "meeting": "await window.workspace.openMeeting('{mid}'); await wait(1500);",
     "versions tab": "document.querySelector('.wide-tabs [data-tab=versions]').click();"
                     "await wait(300);",
     "holds tab": "document.querySelector('.wide-tabs [data-tab=holds]').click();"
