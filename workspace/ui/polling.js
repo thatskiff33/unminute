@@ -1,6 +1,7 @@
 // Unminute UI: drops, the refresh and polling.
 // One of the page's ordered scripts (index.html, #414): it only declares.
 // main.js, the last, runs the page.
+// @ts-check: the type notes below are comments; CI checks them (report only, #489).
 "use strict";
 
 // While files are dragged over the window, show where to let go. The drop

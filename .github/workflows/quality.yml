@@ -100,8 +100,19 @@ jobs:
     # shipped code with the settings in mypy.ini, compared by tools/type_check.py
     # with the committed baseline, tools/mypy_baseline.txt. An error new since
     # the baseline is a warning on the pull request, never a failure; the job
-    # fails only if mypy cannot run. Making it a gate needs the owner. The page
-    # (workspace/ui) has no type check for now (the same decision).
+    # fails only if mypy cannot run. Making it a gate needs the owner.
+    #
+    # The page's scripts (#489; the owner's decision DEC-089, coded from 3 Nov
+    # 2026 by the user's decision DEC-090) are checked in the same job, so it
+    # adds no runner: TypeScript, pinned by exact version and integrity hash in
+    # package.json and package-lock.json, is installed with npm ci (no install
+    # scripts, no audit or funding calls; the registry is the only host) and
+    # run on the runner image's Node.js by tools/ts_check.py, against
+    # tools/ts_baseline.txt. Only scripts with a // @ts-check line are checked;
+    # the type notes are comments.
+    # It is a development tool under the Apache License 2.0 and is not in the
+    # package. A new error is a warning, never a failure; the step fails only if
+    # npm or tsc cannot run. It runs even when mypy could not.
     name: Type check (report only)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -120,6 +131,15 @@ jobs:
           --require-hashes --no-deps -r requirements/ci-mypy.txt
       - name: Report type errors against the baseline
         run: python tools/type_check.py
+      - name: Install TypeScript from its lock file
+        id: install-ts
+        if: ${{ !cancelled() }}
+        run: |
+          node --version
+          npm ci --ignore-scripts --no-audit --no-fund
+      - name: Report the page's type errors against the baseline
+        if: ${{ !cancelled() && steps.install-ts.outcome == 'success' }}
+        run: python tools/ts_check.py
 
   coverage:
     # Report only: no floor (docs/RELEASE_STANDARD.md, section 7; a floor would

@@ -1,10 +1,15 @@
 // Unminute UI: confirmations.
 // One of the page's ordered scripts (index.html, #414): it only declares.
 // main.js, the last, runs the page.
+// @ts-check: the type notes below are comments; CI checks them (report only, #489).
 "use strict";
 
 // -- confirmations ---------------------------------------------------------------
 // danger: the confirm button is red, for deleting (discard, delete, remove).
+/**
+ * @param {{title: string, body: string, check: string, onConfirm: () => unknown,
+ *   limits?: boolean, limitsText?: string | null, danger?: boolean}} options
+ */
 function confirmDialog({ title, body, check, onConfirm, limits = true, limitsText = null, danger = false }) {
   const dlg = $("confirm");
   $("c-title").textContent = title;

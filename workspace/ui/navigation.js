@@ -1,6 +1,7 @@
 // Unminute UI: navigation and small builders.
 // One of the page's ordered scripts (index.html, #414): it only declares.
 // main.js, the last, runs the page.
+// @ts-check: the type notes below are comments; CI checks them (report only, #489).
 "use strict";
 
 // -- navigation -------------------------------------------------------------
@@ -9,6 +10,7 @@ const VIEWS = ["meetings", "meeting", "handoff", "settings", "downloads", "setup
 const NAV_OF = { meetings: "meetings", meeting: "meetings", handoff: "meetings", settings: "settings",
                  downloads: "settings", setup: "settings", help: "help" };
 
+/** @param {string} view  one of VIEWS (or an earlier name) */
 function show(view) {
   if (state.locked) return;            // only the locked screen (#111 C4b)
   if (view === "inbox" || view === "active") view = "meetings";   // their earlier names
@@ -27,6 +29,7 @@ function show(view) {
   refresh();
 }
 
+/** @param {boolean} open */
 function setMenu(open) {
   document.body.classList.toggle("menu-open", open);
   $("menu").setAttribute("aria-expanded", String(open));
@@ -58,6 +61,10 @@ const ICONS = {
   clock: ["M12 7v5l3 2", "circle:12,12,9"],
   tick: ["M5 12l5 5 9-10"],
 };
+/**
+ * @param {keyof typeof ICONS} name
+ * @param {number} [size]  in pixels
+ */
 function icon(name, size = 20) {
   const s = document.createElementNS(SVG_NS, "svg");
   for (const [k, v] of Object.entries({ width: size, height: size, viewBox: "0 0 24 24", fill: "none",

@@ -44,3 +44,6 @@ __pycache__/
 
 # Package build output (tools/build_package.py --out)
 dist/
+
+# The development tools npm ci installs from package-lock.json (#489, TypeScript).
+node_modules/
