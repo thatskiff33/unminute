@@ -288,6 +288,15 @@ class PinnedToolTests(unittest.TestCase):
         self.assertIn("    directory: /\n", block)
         self.assertIn("      interval: monthly\n", block)
         self.assertIn("      default-days: 7\n", block)
+        # A new major version (TypeScript 6 or the native 7) is its own pull request.
+        self.assertIn('update-types: ["version-update:semver-major"]', block)
+
+
+class AnnotationEscapeTests(unittest.TestCase):
+    def test_a_property_escapes_its_separators(self):
+        # #536 review: a file name with ":" or "," must not end the property.
+        self.assertEqual(ts.escape_property("a:b,c%d\n"), "a%3Ab%2Cc%25d%0A")
+        self.assertEqual(ts.escape_property("workspace/ui/core.js"), "workspace/ui/core.js")
 
 
 if __name__ == "__main__":

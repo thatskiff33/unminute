@@ -146,6 +146,11 @@ def run_tsc():
     return found
 
 
+def escape_property(text):
+    """A workflow command property (its %, newlines, colons and commas escaped)."""
+    return escape(text).replace(":", "%3A").replace(",", "%2C")
+
+
 def escape(text):
     """A GitHub Actions workflow command's message (its % and newlines escaped)."""
     return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
@@ -184,8 +189,8 @@ def main(argv=None):
     print(text)
     if os.environ.get("GITHUB_ACTIONS") == "true":
         for path, line, col, key in new:
-            print(f"::warning file={path},line={line},col={col},title=TypeScript (report only)::"
-                  f"{escape(key.split(': ', 1)[1])}")
+            print(f"::warning file={escape_property(path)},line={line},col={col},"
+                  f"title=TypeScript (report only)::{escape(key.split(': ', 1)[1])}")
         summary = os.environ.get("GITHUB_STEP_SUMMARY")
         if summary:
             with open(summary, "a", encoding="utf-8") as f:
