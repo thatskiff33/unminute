@@ -1,10 +1,18 @@
 # workspace/shell.py
 # Desktop shell: a pywebview (WebView2) window showing the bundled UI.
 #
-# The UI is loaded from a file:// URL. pywebview starts its built-in HTTP
-# server (a localhost listener) for plain local paths, but not for file://
-# URLs or inline HTML, so this keeps the app free of local listeners. The
-# window checks (tools/process_listeners.py) verify that by listing sockets.
+# The UI is served from a WebView2 virtual host (#488): before the first
+# navigation, CoreWebView2.SetVirtualHostNameToFolderMapping maps UI_HOST to the
+# UI folder only, with CoreWebView2HostResourceAccessKind.Deny, and the window
+# opens https://UI_HOST/index.html. WebView2 answers those requests itself from
+# the folder, in its own processes: no DNS lookup, no network and no listening
+# socket. pywebview starts its built-in HTTP server (a localhost listener) only
+# for plain local paths, never for an https:// address (nor for file:// or
+# inline HTML), so the app stays free of local listeners; the window checks
+# (tools/process_listeners.py) verify that by listing sockets. If the mapping
+# cannot be made, no page loads and the window closes (install_alert_guard).
+# The navigation lock allows only that one address: every file:// address is
+# refused. Before #488 the page loaded from file://.
 # private_mode keeps WebView2 from persisting cookies/storage between runs.
 
 import json
@@ -15,6 +23,13 @@ import time
 from pathlib import Path
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
+# The page's own origin (#488): a virtual host WebView2 maps to UI_DIR alone.
+# A special-use name, as Microsoft advises for virtual host names (RFC 6761:
+# queries for .invalid names always get "no such name", and resolvers should
+# answer at once without asking a DNS server); WebView2 does no DNS lookup
+# for a mapped name in any case.
+UI_HOST = "unminute.invalid"
+UI_ORIGIN = "https://" + UI_HOST
 # The window's WebView2 profile folder, inside the workspace (storage_folder);
 # tools/residue.py names it from here for the packaged checks (#418).
 STORAGE_FOLDER = "webview"
@@ -46,7 +61,8 @@ def harden_webview2():
 
 
 def ui_url(page="index.html"):
-    return (UI_DIR / page).as_uri()
+    """The address of a page in the UI folder, on the virtual host (#488)."""
+    return f"{UI_ORIGIN}/{page}"
 
 
 blocked_navigations = []   # URLs the lock refused (for tests/diagnostics; no content)
@@ -56,22 +72,20 @@ blocked_calls = []         # bridge names the dispatch guard refused
 _PYWEBVIEW_INTERNAL = frozenset({"pywebviewAsyncCallback"})
 
 
-def _norm_url(uri):
-    import urllib.parse
-    return urllib.parse.unquote(str(uri)).replace("\\", "/").lower()
-
-
 def _allowed(uri, page="index.html"):
     """Only the window's own bundled page may be shown; everything else is
-    refused, including other files in the UI folder. pywebview injects the
-    bridge into whatever page is loaded, so no other page must ever load. A
-    #fragment or ?query on the page itself is allowed. Both sides are
-    percent-decoded, because Python and Chromium encode characters such as
-    ( ) ' ! differently."""
-    # Cut the fragment and query before decoding, so an encoded "%23" or
-    # "%3F" in the path cannot pass for one.
-    target = _norm_url(str(uri).split("#", 1)[0].split("?", 1)[0])
-    return target == _norm_url(ui_url(page))
+    refused, including other files in the UI folder, the same file by any
+    other spelling, http://, and every file:// address (#488). pywebview
+    injects the bridge into whatever page is loaded, so no other page must
+    ever load. A #fragment or ?query on the page itself is allowed. The rest
+    must equal ui_url(page) exactly, character for character: no decoding,
+    no change of case and no prefix match. WebView2 reports the address in
+    Chromium's canonical form, which for this plain ASCII address is the
+    one ui_url() builds."""
+    # Cut the fragment and query first, so an encoded "%23" or "%3F" in the
+    # path stays in the path and cannot pass for one.
+    target = str(uri).split("#", 1)[0].split("?", 1)[0]
+    return target == ui_url(page)
 
 
 class ShellError(RuntimeError):
@@ -379,10 +393,11 @@ def _page_alert(message):
 
 def install_alert_guard():
     """In the WebView2 backend: drop pywebview's alert message; before the
-    first page loads, turn off WebView2's own alert, confirm and prompt
-    dialogs and refuse every permission request and screen capture. Both
-    handlers are bound when each window is created, so this runs before any
-    window (check_backend calls it)."""
+    first page loads, map the virtual host to the UI folder (#488), turn off
+    WebView2's own alert, confirm and prompt dialogs and refuse every
+    permission request and screen capture. Both handlers are bound when each
+    window is created, so this runs before any window (check_backend calls
+    it)."""
     import importlib
     view = importlib.import_module("webview.platforms.edgechromium").EdgeChrome
     notify = getattr(view.on_script_notify, "__wrapped__", view.on_script_notify)
@@ -413,13 +428,15 @@ def install_alert_guard():
             try:
                 _dialogs_off(core)
                 if not guard["on"]:
+                    _map_ui_folder(core)           # before the first navigation (#488)
                     core.ScriptDialogOpening += _refuse_script_dialog
                     core.PermissionRequested += _permission_refuser()
                     core.ScreenCaptureStarting += _refuse_screen_capture
                     guard["on"] = True
             except Exception:
                 # Never a page that could ask for the microphone or the screen
-                # (an older WebView2 Runtime has no screen-capture event):
+                # (an older WebView2 Runtime has no screen-capture event), nor
+                # an address with no folder behind it (the mapping failed):
                 # nothing loads, and the window closes with a message.
                 guard["failed"] = True
                 _guard_failed(self.pywebview_window)
@@ -445,6 +462,22 @@ def install_alert_guard():
         handler.unminute_guard = True
     view.on_script_notify = on_script_notify
     view.on_webview_ready = on_webview_ready
+
+
+def _host_access_deny():
+    from Microsoft.Web.WebView2.Core import CoreWebView2HostResourceAccessKind
+    return CoreWebView2HostResourceAccessKind.Deny
+
+
+def _map_ui_folder(core):
+    """Serve UI_HOST from the UI folder alone (#488), so the page's origin is
+    https://UI_HOST and 'self' in its policy means that folder. Deny: no other
+    origin may load anything from it, as a script, an image or by fetch
+    (Microsoft: "All cross origin resource access is denied, including normal
+    sub resource access as src of a script or image element"); the page's
+    own loads are same-origin and unaffected. Raises if the call fails: the
+    caller then loads nothing and closes the window."""
+    core.SetVirtualHostNameToFolderMapping(UI_HOST, str(UI_DIR), _host_access_deny())
 
 
 def _permission_deny():
@@ -502,7 +535,8 @@ def quiet_script_dialogs(window):
 
 def lock_navigation(window, page="index.html"):
     """Cancel any navigation away from the window's bundled page (WebView2
-    NavigationStarting). Attached at before_load, i.e. after the first
+    NavigationStarting), https://UI_HOST/index.html (_allowed: every file://
+    address is refused). Attached at before_load, i.e. after the first
     (bundled) page navigation, and stays attached to the control for every
     later navigation and reload."""
     control = window.native.browser.webview
@@ -534,6 +568,9 @@ def create_window(bridge, *, allowed, title="Unminute", hidden=False, harden=Tru
     webview.settings["ALLOW_DOWNLOADS"] = False
     # Otherwise pywebview adds --allow-file-access-from-files to WebView2.
     webview.settings["ALLOW_FILE_URLS"] = False
+    # The virtual host's address (#488): pywebview starts no HTTP server for
+    # an https:// address, and install_alert_guard maps the folder before
+    # pywebview navigates to it.
     window = webview.create_window(title, url=ui_url(), js_api=bridge,
                                    width=1100, height=760, min_size=(640, 480),
                                    hidden=hidden, text_select=True,

@@ -152,8 +152,11 @@ real time, and remove it when the cause is fixed.
 
 - **The page is several ordered classic scripts, not one app.js** (#414 step 3, the owner's
   decision DEC-082). `workspace/ui/index.html` lists them in order, each a plain
-  `<script src>` with no `async`, `defer` or `type="module"`: the window loads the page from
-  a `file://` URL, where Chromium refuses ES modules (origin `null`). They share one global
+  `<script src>` with no `async`, `defer` or `type="module"`: until #488 part A the window
+  loaded the page from a `file://` URL, where Chromium refuses ES modules (origin `null`).
+  It now serves the page from a WebView2 virtual host (`https://unminute.invalid/`, "WebView2
+  virtual host" below), which allows them; turning the scripts into modules is #488's step 4,
+  a later change. They share one global
   scope, as app.js's code did. Only the last, `main.js`, runs anything as the page loads
   (wiring, start-up, the error listeners); the others only declare, so a function can live in
   any of them as long as it loads before `main.js`.
@@ -202,7 +205,10 @@ real time, and remove it when the cause is fixed.
   The largest value fits the bridge's limit of 10,000,000 while there are fewer than 100
   scripts of fewer than 100,000 lines each.
 - **From `file://` the browser hides the page's own errors; the page reads its own stack.**
-  The window opens the page from `file://`, and WebView2 then gives an uncaught error in one
+  This describes the window before #488 part A, which serves the page from a virtual host
+  instead; the guards below stay, and whether WebView2 now gives the file and line itself is
+  to confirm in that change's real-window run. The window opened the page from `file://`,
+  and WebView2 then gave an uncaught error in one
   of the page's scripts to the `error` event as "Script error.", with no file, line 0 and
   no error object, and sends no `unhandledrejection` event at all for one. Measured in the
   real window on 30 Oct 2026 (#491; a throwaway empty workspace, `groupOf(null)` raised from
@@ -252,8 +258,8 @@ real time, and remove it when the cause is fixed.
   listener's and an async callback's error in the real window and needs each line;
   `tests/test_page_scripts.py` (`PageErrorPlaceTests`) runs the functions themselves.
   Served over HTTP the browser's own file and line are used. Loading the page another way
-  (a virtual host instead of `file://`) would make the browser give the details itself;
-  that is #488, after 1.0.
+  (a virtual host instead of `file://`) should make the browser give the details itself;
+  #488 part A does that (the user's decision DEC-090), and the real-window run confirms it.
 
 ## Windows, WebView2 and pythonnet
 
@@ -262,6 +268,21 @@ real time, and remove it when the cause is fixed.
   guidance).
 - **pythonnet returns a new wrapper on every .NET property read**, so `form.Icon is x` is always
   false. Compare handles or values instead.
+- **WebView2 virtual host (#488).** The window maps `https://unminute.invalid/` to
+  `workspace/ui` only (`shell._map_ui_folder`, `CoreWebView2HostResourceAccessKind.Deny`),
+  before pywebview's first navigation; a mapping made later applies only after a reload
+  (Microsoft's reference). WebView2 serves those requests itself, with no DNS lookup, so the
+  host-resolver switch (`MAP * ~NOTFOUND`) does not stop them. Deny blocks only other
+  origins: the page's own scripts, styles, fonts and logo load. Checked 3 Nov 2026 with a
+  WebView2 control in a form never shown (the app's switches, the shell's own mapping call,
+  the bundled page): origin `https://unminute.invalid`, a secure context, all scripts, both
+  stylesheets, the Archivo font and the logo loaded, `fetch` of the page's own file refused
+  (`connect-src 'none'`), a page of another origin could not load the logo (with DenyCors,
+  the control, it could), and no listening socket in the process tree. Headless Edge has no
+  such mapping: `tools/ui_idle_check.py` and the design check serve the page from their own
+  local HTTP server, as before. pythonnet needs an enum member, not its number
+  (`DockStyle.Fill`, not 5), and `CoreWebView2CreationProperties` is in
+  `Microsoft.Web.WebView2.WinForms`, not `.Core`.
 - **Clicking WinForms buttons in UI automation.** Post `WM_LBUTTONDOWN` and `WM_LBUTTONUP` at the
   control's centre, as a real click sends. WinForms turns `BM_CLICK` into the control's Click
   with no mouse or key event (a posted `BM_CLICK` on an off-screen `Button` raised Click only;

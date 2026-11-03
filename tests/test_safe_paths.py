@@ -197,11 +197,15 @@ class DispatchGuardTests(unittest.TestCase):
 
     def test_navigation_allowlist(self):
         from workspace import shell
+        # #488: the page is on the virtual host; its own file:// address,
+        # in any spelling, is refused like any other file.
+        self.assertTrue(shell._allowed("https://unminute.invalid/index.html"))
         base = shell.UI_DIR.as_uri()
-        self.assertTrue(shell._allowed(base + "/index.html"))
-        self.assertTrue(shell._allowed(base.replace("%20", " ") + "/index.html"))
         for bad in ("https://example.com/", "about:blank", "data:text/html,x",
-                    base + "-evil/index.html", "file:///C:/Windows/win.ini"):
+                    base + "/index.html", base.replace("%20", " ") + "/index.html",
+                    base + "-evil/index.html", "file:///C:/Windows/win.ini",
+                    "https://unminute.invalid-evil/index.html",
+                    "https://unminute.invalid/../index.html"):
             self.assertFalse(shell._allowed(bad), bad)
 
 
