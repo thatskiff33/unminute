@@ -5,8 +5,8 @@
 # starts a new run on the new head, which fails until a record names that head.
 #
 # A required status check since the owner added it to the ruleset (#410), after
-# a week of report-only runs (DEC-060, 27 Oct 2026); docs/RELEASING.md and
-# tests/test_consistency.py list it.
+# a week of report-only runs (the owner's decision DEC-060, 27 Oct 2026);
+# docs/RELEASING.md and tests/test_consistency.py list it.
 #
 # What starts a run:
 # - a push, or an edit of the description (its "Writer:" line): pull_request;
