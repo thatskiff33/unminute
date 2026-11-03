@@ -514,14 +514,14 @@ class DocsTests(unittest.TestCase):
     # SUPPORT_JOBS (the test selection, #500): every required job that needs it
     # always runs and fails unless it succeeded
     # (test_support_jobs_stand_behind_required_jobs). review-record.yml's
-    # "Review record" runs on every pull request but is not required yet: the
-    # owner adds it to the ruleset after about a week (#410), and it then moves to
-    # REQUIRED_WORKFLOWS and docs/RELEASING.md's list.
+    # "Review record" is required since the owner added it to the ruleset (#410);
+    # it keeps its own workflow because it also runs when a review is submitted.
     # review-record-rerun.yml only re-runs it when a collaborator comments.
-    REQUIRED_WORKFLOWS = ("ci.yml", "changelog.yml", "audit.yml", "codeql.yml")
+    REQUIRED_WORKFLOWS = ("ci.yml", "changelog.yml", "audit.yml", "codeql.yml",
+                          "review-record.yml")
     SUPPORT_JOBS = {"ci.yml": ("select-tests",)}
     REPORT_ONLY_WORKFLOWS = ("quality.yml", "scorecard.yml")
-    PENDING_REQUIRED_WORKFLOWS = ("review-record.yml",)
+    PENDING_REQUIRED_WORKFLOWS = ()
     OTHER_WORKFLOWS = ("release.yml", "review-record-rerun.yml")
 
     @staticmethod
