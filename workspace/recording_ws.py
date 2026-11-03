@@ -211,7 +211,7 @@ class RecordingMixin:
         choices = self._mic_choices
         if not 0 <= index < len(choices) or choices[index][1] != name:
             raise WorkspaceError("The list of microphones has changed. Choose the "
-                                 "microphone again.")
+                                 "microphone again.", code="devices_changed")
         ident = choices[index][0]
         if ident not in {d["id"] for d in self._windows_microphones()}:
             raise WorkspaceError("That microphone is no longer connected. Choose another.")
@@ -228,7 +228,7 @@ class RecordingMixin:
         choice = next((d for d in self.microphone_devices() if d["index"] == device), None)
         if choice is None or (name is not None and choice["name"] != name):
             raise WorkspaceError("The list of microphones has changed. Choose the "
-                                 "microphone again.")
+                                 "microphone again.", code="devices_changed")
         return choice
 
     def test_microphone(self, device, name=None):

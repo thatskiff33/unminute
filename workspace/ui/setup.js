@@ -322,8 +322,8 @@ function wireSetup() {
     box.textContent = "Listening for 3 seconds…";
     const opt = $("su-device").selectedOptions[0];
     const t = await call("test_microphone", Number($("su-device").value), opt ? opt.dataset.name : "")
-      .catch(async (err) => {             // a changed device list: reload it (#369)
-        if (/changed/.test(String(err && err.message)))
+      .catch(async (err) => {             // a changed device list: reload it (#369, #416)
+        if (err && err.code === "devices_changed")
           await relistMics("su-device", showSuMics).catch(() => {});
         throw err;
       });

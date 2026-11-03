@@ -49,7 +49,8 @@ USB = "USB microphone (sample)"
 # and the window's visibility settable. delay: how long the device list takes;
 # fail: the list cannot be read (the app's error when PortAudio cannot load);
 # changed: Start and Test are refused as the app refuses a device that no
-# longer matches the list.
+# longer matches the list (with its code, #416; or, to show the page goes by
+# the code, the code with other wording, or "changed" without the code).
 BRIDGE = """
 (() => {
   const real = window.pywebview.api;
@@ -83,9 +84,15 @@ BRIDGE = """
                         + "installation. Reinstall the app, or contact support." }
         : { ok: true, value: mics };
     }
+    // The app's refusal says so by its code (#416). "code only" sends the code
+    // with other wording, "wording only" the word "changed" with no code: the
+    // page must act on the code alone.
     if (t.changed && (method === "start_recording" || method === "test_microphone"))
-      return { ok: false,
-               error: "The list of microphones has changed. Choose the microphone again." };
+      return t.changed === "wording only"
+        ? { ok: false, kind: "error", error: "The meeting has changed. Try again." }
+        : { ok: false, kind: "error", code: "devices_changed",
+            error: t.changed === "code only" ? "Choose the microphone again."
+              : "The list of microphones has changed. Choose the microphone again." };
     const r = await real[method](...args);
     if (method === "recording_status" && t.recording && r.ok)
       return { ok: true, value: { ...r.value, recording: { state: t.paused ? "paused" : "recording",
@@ -210,6 +217,16 @@ STEPS = """
       $("rec-start-chosen").click();
       await wait(1500);
       out.changed_start = { calls: n() - c, ...look(sel), toast: $("status").textContent };
+      // By the code, not the wording (#416): reloaded for the code with other
+      // wording, and not for "changed" without the code.
+      out.by_code = {};
+      for (const how of ["code only", "wording only"]) {
+        t.changed = how;
+        c = n();
+        $("rec-test").click();
+        await wait(1500);
+        out.by_code[how] = { calls: n() - c, toast: $("status").textContent };
+      }
       t.changed = false;
     } else if (run === "recording") {
       const sel = $("rec-device");
@@ -316,6 +333,14 @@ STEPS = """
       await wait(1500);
       out.changed_test = { calls: n() - c, ...look(sel), value: sel.value,
                            toast: $("status").textContent };
+      out.by_code = {};
+      for (const how of ["code only", "wording only"]) {
+        t.changed = how;
+        c = n();
+        $("su-test").click();
+        await wait(1500);
+        out.by_code[how] = { calls: n() - c, toast: $("status").textContent };
+      }
       t.changed = false;
       // The list cannot be read: asked once when the step is shown, not on
       // every 2 s poll after.
@@ -479,6 +504,18 @@ class MicrophoneListTests(unittest.TestCase):
         setup = self.result("setup")["changed_test"]
         self.assertEqual((1, HEADSET, "8"), (setup["calls"], setup["chosen"], setup["value"]))
         self.assertIn(changed, setup["toast"])
+
+    def test_the_refusal_s_code_reloads_the_list_not_its_wording(self):
+        # #416 (#473 review nit 6): the code the app sends decides, so other
+        # wording with the code reloads the list, and "changed" without it
+        # does not. Each refusal is still shown.
+        for run in ("meetings", "setup"):
+            with self.subTest(run=run):
+                r = self.result(run)["by_code"]
+                self.assertEqual(1, r["code only"]["calls"], "the code did not reload the list")
+                self.assertIn("Choose the microphone again", r["code only"]["toast"])
+                self.assertEqual(0, r["wording only"]["calls"], "the wording reloaded the list")
+                self.assertIn("The meeting has changed", r["wording only"]["toast"])
 
     def test_setup_does_not_ask_again_on_every_poll_after_a_failure(self):
         r = self.result("setup")["failed"]

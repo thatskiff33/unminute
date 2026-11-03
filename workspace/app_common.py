@@ -20,16 +20,27 @@ MANAGED_OFF = "{what} is turned off by your organisation. Ask your IT team if yo
 # success (tests/test_message_kinds.py).
 ERROR_KINDS = ("error", "info")
 
+# What a refusal asks the page to do, when it asks for more than showing it
+# (#416): a fixed word the page acts on, never its wording. The bridge passes
+# it as "code", and only a value from this list (P3: never free text).
+# workspace/ui/core.js ERROR_CODES lists the same (tests/test_message_kinds.py).
+#   devices_changed: the microphone chosen no longer matches the list the page
+#   was given; the page lists the microphones again.
+ERROR_CODES = ("devices_changed",)
+
 
 class WorkspaceError(ValueError):
     """A refused request. The message is safe to show in the UI; kind is one
-    of ERROR_KINDS."""
+    of ERROR_KINDS, and code None or one of ERROR_CODES."""
 
-    def __init__(self, message="", kind="error"):
+    def __init__(self, message="", kind="error", code=None):
         if kind not in ERROR_KINDS:
             raise ValueError("Unknown message kind.")
+        if code is not None and code not in ERROR_CODES:
+            raise ValueError("Unknown refusal code.")
         super().__init__(message)
         self.kind = kind
+        self.code = code
 
 
 def _expected_import_error(exc):

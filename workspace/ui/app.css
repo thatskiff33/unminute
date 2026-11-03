@@ -440,7 +440,11 @@ body[data-view="meeting"] .drop-overlay { left: 80px; }
 }
 .inline-error > svg { flex: none; color: var(--danger); margin-top: 1px; }
 .inline-error-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.inline-error .link-plain { flex: none; min-height: 0; padding: 0; font-size: 14px; font-weight: 700; }
+.inline-error .link-plain { flex: none; min-height: 0; padding: 0; font-size: 14px; font-weight: 700; position: relative; }
+/* Dismiss's line is 15 px tall: a transparent layer answers clicks 5 px above
+   and below it, so its target is 25 px (WCAG 2.5.8) with nothing drawn, laid
+   out or ringed differently (#416). */
+.inline-error .link-plain::before { content: ""; position: absolute; inset: -5px 0; }
 .error-slot:empty { display: none; }
 .error-slot > .inline-error:first-child { margin-top: 0; }
 .error-slot { margin: 12px 0; }

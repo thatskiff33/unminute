@@ -824,6 +824,10 @@ DRAFT_VIEW = "recording draft"      # draft_scenario.DRAFT_VIEW (a test keeps th
 DRAFT_WAIT_MS = 15000               # the longest the draft view waits for its text (#393)
 YOU_VIEW = "names dialog, you suggestion"   # a two-track meeting's names dialog (#475)
 YOU_WAIT_MS = 10000                 # the longest that view waits for the suggestion
+# The errors the two error views show (#416): synthetic, in the app's own words.
+IMPORT_ERROR = "The file dialog is not available."
+HANDOFF_ERROR = ("The handoff changed since the preview. Check the preview again, "
+                 "then copy or save.")
 
 # The suggestion row as each audit of YOU_VIEW found it: shown inside the
 # dialog with its button. Shapes only, no text (P3).
@@ -910,7 +914,16 @@ VIEWS = {
                        " && b.querySelector('.rec-draft-line')) break; await wait(50); }",
     "settings": "window.workspace.show('settings'); await wait(800);",
     "help": "window.workspace.show('help'); await wait(400);",
-    "meeting": "await window.workspace.openMeeting('{mid}'); await wait(1500);",
+    # An error beside its action (#416), with its Dismiss. Import itself is not
+    # pressed (it would open the native file dialog): the page's own showError
+    # puts a fixed synthetic message where a refused Import puts it (attempt
+    # finds the place with errorHome). Late, after Help, so the microphone
+    # chooser and the recording draft are audited as before; the meeting view
+    # next leaves Meetings.
+    "meetings import error": "window.workspace.show('meetings'); await wait(1500);"
+                             f"showError(errorHome('import'), {json.dumps(IMPORT_ERROR)},"
+                             " document.getElementById('import')); await wait(400);",
+    "meeting":"await window.workspace.openMeeting('{mid}'); await wait(1500);",
     "versions tab": "document.querySelector('.wide-tabs [data-tab=versions]').click();"
                     "await wait(300);",
     "holds tab": "document.querySelector('.wide-tabs [data-tab=holds]').click();"
@@ -935,6 +948,10 @@ VIEWS = {
                     "const c = document.getElementById('confirm');"
                     "c.returnValue = 'ok'; c.close('ok'); await wait(4000);"
                     "document.getElementById('m-primary').click(); await wait(2500);",
+    # Copy's error on the hand off page (#416), placed as handoffFailed places
+    # it, without copying anything.
+    "handoff copy error": f"showError(errorHome('ho-copy'), {json.dumps(HANDOFF_ERROR)},"
+                          " document.getElementById('ho-copy')); await wait(400);",
 }
 
 

@@ -54,6 +54,24 @@ class WorkspaceErrorKindTests(unittest.TestCase):
                 self.assertEqual((type(again), str(again), again.kind),
                                  (app.WorkspaceError, "Refused.", kind))
 
+    def test_a_code_from_the_list_and_none_by_default(self):
+        self.assertIsNone(app.WorkspaceError("Refused.").code)
+        self.assertEqual(app.WorkspaceError("Changed.", code="devices_changed").code,
+                         "devices_changed")
+        for bad in ("", "Devices_changed", "devices changed", "error", 1):
+            with self.subTest(code=bad), self.assertRaises(ValueError):
+                app.WorkspaceError("x", code=bad)
+
+    def test_it_pickles_with_its_code(self):
+        again = pickle.loads(pickle.dumps(app.WorkspaceError("Changed.", code="devices_changed")))
+        self.assertEqual((str(again), again.kind, again.code),
+                         ("Changed.", "error", "devices_changed"))
+
+    def test_the_codes_are_the_pages(self):
+        page = page_scripts.run("console.log(JSON.stringify(ERROR_CODES));")
+        self.assertIsInstance(page, list, "ERROR_CODES is not a list in the page scripts")
+        self.assertEqual(list(app.ERROR_CODES), page)
+
     def test_the_kinds_are_the_pages(self):
         page = page_scripts.run("console.log(JSON.stringify(MESSAGE_KINDS));")
         self.assertIsInstance(page, list, "MESSAGE_KINDS is not a list in the page scripts")
@@ -95,6 +113,38 @@ class BridgeKindTests(unittest.TestCase):
             raise error
         self.assertEqual(self.page(detail=refused).detail("m")["kind"], "error")
 
+    def test_a_refusal_that_asks_the_page_to_act_says_its_code(self):
+        def changed(mid):
+            raise app.WorkspaceError("Choose the microphone again.", code="devices_changed")
+        self.assertEqual(self.page(detail=changed).detail("m"),
+                         {"ok": False, "error": "Choose the microphone again.", "kind": "error",
+                          "code": "devices_changed"})
+
+    def test_a_code_not_on_the_list_is_never_sent(self):
+        # Set after the check, as a bug or a subclass could: only a listed
+        # code leaves the bridge, never free text (P3).
+        for bad in (r"C:\Users\someone\secret.wav", "", "Devices_changed", 7, None,
+                    ["devices_changed"]):
+            error = app.WorkspaceError("Refused.")
+            error.code = bad
+
+            def refused(mid, error=error):
+                raise error
+            with self.subTest(code=bad):
+                self.assertEqual(self.page(detail=refused).detail("m"),
+                                 {"ok": False, "error": "Refused.", "kind": "error"})
+
+    def test_the_recorders_changed_list_refusal_carries_its_code(self):
+        # Both places the app refuses a microphone that no longer matches the
+        # page's list (workspace/recording_ws.py) raise the code; the refusals
+        # themselves run in tests/test_mic_follow.py (Windows).
+        source = (ROOT / "workspace" / "recording_ws.py").read_text(encoding="utf-8")
+        raised = re.findall(r'WorkspaceError\("The list of microphones has changed\.[^)]*\)',
+                            source)
+        self.assertEqual(2, len(raised))
+        for text in raised:
+            self.assertIn('code="devices_changed"', text)
+
     def test_success_is_unchanged(self):
         self.assertEqual(self.page(detail=lambda mid: {"id": mid}).detail("m"),
                          {"ok": True, "value": {"id": "m"}})
@@ -111,6 +161,24 @@ class BridgeKindTests(unittest.TestCase):
         self.assertNotIn("kind", api.API_METHODS)
         self.assertNotIn("message_kind", api.API_METHODS)
 
+
+CODE_CASES = r"""
+window = { pywebview: { api: {} } };
+const out = {};
+(async () => {
+  for (const [name, reply] of [["known", { ok: false, error: "Choose again.", kind: "error",
+                                          code: "devices_changed" }],
+                               ["unknown", { ok: false, error: "Refused.", code: "<b>x</b>" }],
+                               ["wrong type", { ok: false, error: "Refused.",
+                                                code: ["devices_changed"] }],
+                               ["none", { ok: false, error: "The list has changed." }]]) {
+    window.pywebview.api.m = async () => reply;
+    try { await call("m"); out[name] = "no error"; }
+    catch (err) { out[name] = [err.message, "code" in err ? err.code : "(none)"]; }
+  }
+  console.log(JSON.stringify(out));
+})();
+"""
 
 CALL_CASES = r"""
 window = { pywebview: { api: {} } };
@@ -298,6 +366,22 @@ class PageKindTests(unittest.TestCase):
         self.assertEqual(out["unknown"], ["Refused.", "error"])
         self.assertEqual(out["empty"], ["The request failed.", "error"])
         self.assertEqual(out["ok"], 7)
+
+    def test_call_keeps_a_known_code_and_drops_anything_else(self):
+        out = page_scripts.run(CODE_CASES)
+        self.assertEqual(out["known"], ["Choose again.", "devices_changed"])
+        self.assertEqual(out["unknown"], ["Refused.", "(none)"])
+        self.assertEqual(out["wrong type"], ["Refused.", "(none)"])
+        self.assertEqual(out["none"], ["The list has changed.", "(none)"])
+
+    def test_no_wording_decides_what_the_page_does(self):
+        # The microphone lists are reloaded on the refusal's code, not on a
+        # word in its message (#416, #473 review nit 6).
+        self.assertNotRegex(APP_JS, r"\.test\(\s*String\(\s*err\b",
+                            "the page matches the wording of an error")
+        self.assertNotRegex(APP_JS, r"err(?:or)?\.message\)?\.(?:includes|match|startsWith)\(",
+                            "the page matches the wording of an error")
+        self.assertEqual(2, APP_JS.count('err.code === "devices_changed"'))
 
     def test_the_toast_is_styled_by_kind(self):
         out = page_scripts.run(SAY_CASES)

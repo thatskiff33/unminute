@@ -161,9 +161,9 @@ function stopRecTimer() {
 function wireRecorder() {
   const device = () => Number($("rec-device").value);
   // A changed device list means choosing again: reload it, keeping the choice if
-  // that microphone is still there.
+  // that microphone is still there. The refusal says so by its code (#416).
   const relist = async (err) => {
-    if (/changed/.test(String(err && err.message)))
+    if (err && err.code === "devices_changed")
       await relistMics("rec-device", showRecMics).catch(() => {});
     throw err;
   };
