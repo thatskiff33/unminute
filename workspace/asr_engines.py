@@ -120,9 +120,14 @@ LABELS = {PARAKEET_V2: "Parakeet v2", PARAKEET_V3: "Parakeet v3",
           WHISPER_TURBO: "Whisper large-v3 turbo", WHISPER_LARGE: "Whisper large-v3"}
 
 
+# Other models' names in messages (not speech models: never a meeting's model).
+OTHER_LABELS = {"nemotron-speech-streaming-en-0.6b-560ms": "Nemotron streaming"}
+
+
 def label(name):
-    """What the app calls a speech model ("Parakeet v2"); any other name as it is."""
-    return LABELS.get(name, name)
+    """What the app calls a speech model ("Parakeet v2"), or another model it
+    names in messages; any other name as it is."""
+    return LABELS.get(name) or OTHER_LABELS.get(name, name)
 
 
 # Hashes were taken from the pinned revisions. Large files match the LFS
@@ -268,7 +273,51 @@ SPEAKER_MODEL = ModelSpec(
     ),
 )
 
-MANAGED_MODELS = {**PARAKEET_MODELS, **WHISPER_MODELS, SPEAKER_MODEL.name: SPEAKER_MODEL}
+# Instant live words while recording (#105): NVIDIA Nemotron Speech Streaming
+# 0.6B, cache-aware streaming with a 560 ms chunk, int8. It is never a meeting's
+# speech model: only live drafts use it, as grey words that the Parakeet draft
+# phrases replace. The files are the sherpa-onnx project's int8 ONNX export,
+# published on Hugging Face by its maintainer (not by NVIDIA), and identical
+# byte for byte to the k2-fsa/sherpa-onnx GitHub release archive of the same
+# name (checked 3 Nov 2026). The app runs them with its own ONNX Runtime; it
+# does not use sherpa-onnx (the user's decision, 4 Nov 2026, #105). Licence:
+# the NVIDIA Open Model License (version of 24 Oct 2025), whose risk the user
+# accepted on 3 Nov 2026. Not gated: no token.
+INSTANT_MODEL = ModelSpec(
+    name="nemotron-speech-streaming-en-0.6b-560ms",
+    folder="nemotron-speech-streaming-en-0.6b-560ms-int8",
+    family="nemotron",
+    repo="csukuangfj2/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25",
+    revision="52056fdc070914a48dcd68b31b44d6a6f5b85902",
+    quantization="int8",
+    files=(
+        ModelFile("decoder.int8.onnx", 7257753,
+                  "0be9702c2f427a2b6bb241d298e0d3836a558de1f5b9fd3018f1cce6e2b3fa98"),
+        ModelFile("encoder.int8.onnx", 652916849,
+                  "7d932213491ad355c6e5576705dc3494731a52af87d7a1b954559340147909d8"),
+        ModelFile("joiner.int8.onnx", 1735862,
+                  "a35eac38a22ebceb04d230ed7afe0d68f446ba6914a036b97f14fece95967e23"),
+        ModelFile("tokens.txt", 8952,
+                  "dc0b4584ab2e4ddbf888425c076c61b736e7356a015250db7d307e6f1a8188ff"),
+    ),
+)
+INSTANT_LABEL = "Instant words"
+# The licence's own page, and the notice its section 3.1 asks a redistributor to
+# give in a "Notice" text file (tools/intune/New-ModelPackage.ps1 writes both).
+NVIDIA_OPEN_MODEL_LICENSE = "NVIDIA Open Model License"
+NVIDIA_OPEN_MODEL_LICENSE_URL = ("https://www.nvidia.com/en-us/agreements/enterprise-software/"
+                                 "nvidia-open-model-license/")
+NVIDIA_NOTICE = "Licensed by NVIDIA Corporation under the NVIDIA Open Model License"
+
+MANAGED_MODELS = {**PARAKEET_MODELS, **WHISPER_MODELS, SPEAKER_MODEL.name: SPEAKER_MODEL,
+                  INSTANT_MODEL.name: INSTANT_MODEL}
+# Every pinned model, in the order the manifest lists them.
+MANIFEST_SPECS = (*PARAKEET_MODELS.values(), SILERO_VAD, *WHISPER_MODELS.values(),
+                  SPEAKER_MODEL, INSTANT_MODEL)
+
+
+def is_instant(name):
+    return name == INSTANT_MODEL.name
 
 
 def is_parakeet(name):
@@ -318,6 +367,7 @@ _machine_root = []          # machine_root(), worked out once per process
 _machine_failed = {}
 MACHINE_FAILED = "the copy installed by your IT team failed a full check"
 _PART_NAMES = {"silero-vad": "the speech detector",
+               "nemotron-speech-streaming-en-0.6b-560ms": "the instant words model",
                "speaker-diarization-community-1": "the speaker identification model"}
 
 
@@ -985,6 +1035,10 @@ LICENCES = {
     "speaker-diarization-community-1": (
         "CC BY 4.0 (gated)",
         "pyannoteAI speaker-diarization-community-1; accept terms to download"),
+    INSTANT_MODEL.name: (
+        NVIDIA_OPEN_MODEL_LICENSE,
+        "NVIDIA nemotron-speech-streaming-en-0.6b, int8 ONNX export (560 ms chunks) by the "
+        "sherpa-onnx project"),
 }
 
 
@@ -1003,7 +1057,7 @@ def manifest_markdown():
         "| Model | Licence | Source | Repository | Revision |",
         "| --- | --- | --- | --- | --- |",
     ]
-    specs = [*PARAKEET_MODELS.values(), SILERO_VAD, *WHISPER_MODELS.values(), SPEAKER_MODEL]
+    specs = MANIFEST_SPECS
     for s in specs:
         lic, src = LICENCES[s.name]
         lines.append(f"| {s.name} | {lic} | {src} | `{s.repo}` | `{s.revision}` |")

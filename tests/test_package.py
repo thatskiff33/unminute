@@ -310,7 +310,7 @@ class ReproducibleBuildTests(unittest.TestCase):
         self.assertEqual([p.name for p in packaged.parent.iterdir()], ["asr_engines.py"])
         self.assertEqual({x["name"] for x in m["models"]},
                          {*ae.PARAKEET_MODELS, ae.SILERO_VAD.name, *ae.WHISPER_MODELS,
-                          ae.SPEAKER_MODEL.name})
+                          ae.SPEAKER_MODEL.name, ae.INSTANT_MODEL.name})
         for model in m["models"]:
             self.assertTrue(model["files"])
             for f in model["files"]:

@@ -333,6 +333,21 @@ call = async (name, model) => reply;
         self.assertEqual(self.order(), [self.a, self.b, self.c])
         self.assertFalse(self.queue_file(ws2).exists())
 
+    def test_a_saved_queue_never_starts_the_hidden_instant_words_model(self):
+        # #539 review: until the app uses the instant-words model (#105 PR C,
+        # setup.OFFER_INSTANT), a queue file naming it resumes nothing for it,
+        # and the rewritten file no longer names it.
+        self.assertFalse(setup.OFFER_INSTANT)
+        self.ws.close()
+        self.workspaces.remove(self.ws)
+        saved = {"queue": [asr_engines.INSTANT_MODEL.name, self.b]}
+        self.queue_file().write_text(json.dumps(saved), encoding="utf-8")
+        ws2 = self.open(start=True)
+        self.wait_started(self.b)
+        self.assertIsNone(self.state(asr_engines.INSTANT_MODEL.name, ws=ws2))
+        self.assertEqual(self.saved_queue(ws2), [self.b])
+        self.assertNotIn(asr_engines.INSTANT_MODEL.name, self.order())
+
     def test_closing_waits_for_the_download_process_to_exit(self):
         # A quick reopen resumes the queue in the same cache and log folders:
         # the process cut off by the close must be gone when close() returns.

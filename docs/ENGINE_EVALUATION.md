@@ -155,6 +155,42 @@ The draft worker loaded in 2.5 to 2.7 s each time.
 
 **Limits.** One laptop, one run per cut, headset mix audio only (no far-field or business recordings), background load not recorded (see CPU above), and not repeated under a known load or on battery power. The app's own cost (feeder thread, page) is measured separately, against #216's budget.
 
+## Instant live words: Nemotron streaming without sherpa-onnx (#105)
+
+Instant live words (#105) show grey words on the recording card about half a second after people speak, until the live draft's phrase text replaces them. The model is NVIDIA Nemotron Speech Streaming 0.6B, cache-aware streaming with a 560 ms chunk, in the sherpa-onnx project's int8 ONNX export (`asr_engines.INSTANT_MODEL`). The trial in #103 and #105 (16 October 2026) ran it through sherpa-onnx 1.13.8. Its Windows binaries also contain espeak-ng code (from its text-to-speech, under a GPL licence) and a second ONNX Runtime (1.28.2) whose telemetry the app's switch does not reach. So the user chose on 4 November 2026 to run the model with the ONNX Runtime 1.30 and numpy the app already ships, loaded from verified bytes, after a time-boxed spike. This section records that spike. Measured 3 to 4 November 2026 on the laptop above, on mains power.
+
+**Method.** A scratch script, not app code (the engine comes in #105's second pull request):
+- Features: Kaldi-style online filter-bank frames (25 ms window, 10 ms shift, edges reflected), pre-emphasis 0.97, a Hann window, a 512-point FFT, power spectrum, 128 mel bands (librosa's Slaney scale and normalisation, 0 to 8 kHz), then the natural log with NeMo's 2^-24 guard, no normalisation (the export's metadata says none).
+- Encoder: one call per 65 feature frames, moving on by 56 (560 ms), carrying the three cache tensors between calls, as the export's metadata gives them.
+- Decoding: greedy RNN-T, up to 5 tokens per encoder frame, the prediction network's state carried from the step that produced its output.
+- Sessions: 1 intra-op thread, sequential, spinning off. All four files are read once, checked by size and SHA-256, and the sessions are built from those bytes.
+- The same script ran sherpa-onnx 1.13.8 (1 thread, greedy, no end-point resets) on the same audio for comparison, fed the same 0.1 s blocks.
+
+**Accuracy, AMI ES2004a (public, CC BY 4.0), as fast as possible:**
+
+| Clip | Reference words | Direct, WER against AMI | sherpa-onnx, WER against AMI | Direct against sherpa-onnx's output |
+| --- | --- | --- | --- | --- |
+| 1:00 to 5:00 | 322 | 12.1% | 13.7% | 3.4% (302 and 296 words) |
+| 5:00 to 10:00 | 680 | 26.6% | 27.6% | 5.2% (535 and 542 words) |
+
+Changing the features from those above made the match with sherpa-onnx worse on the first clip: a Povey window, a periodic Hann window or a 7.6 kHz top band 4.1%, Kaldi's log floor 4.4%, no mel normalisation 5.7%, no pre-emphasis 6.4%, and one token per encoder frame 25.7%.
+
+**Real time, 1:00 to 5:00, the recorder's 0.1 s blocks, 1 thread** (both runs back to back under the shared lock for heavy runs, 00:37 to 00:45 on 4 November 2026):
+
+| Engine | CPU (% of one core) | Word end to word decoded, median / 90th percentile | Worst lag behind real time | Memory at the end: working set / private |
+| --- | --- | --- | --- | --- |
+| Direct (ONNX Runtime 1.30, from verified bytes) | 17.5% | 0.39 s / 0.73 s | 0.02 s | 1.38 GB / 1.89 GB |
+| sherpa-onnx 1.13.8 | 18.8% | 0.45 s / 0.77 s | 0.1 s | 0.77 GB / 1.25 GB |
+
+The delay runs from the end of each word in the AMI reference to when its last token was decoded, for the words that match the reference. It leaves out the app: the pipe between processes and the page's polling come on top. CPU is the measuring process's own processor time over the run.
+
+**Reading the results.**
+- Accuracy: the direct decoder was as accurate as sherpa-onnx on both clips (1 to 1.6 points better against the AMI reference), and 3 to 5% of its words differ from sherpa-onnx's.
+- CPU and delay: about the same as sherpa-onnx, and in line with the 16 October trial (17% of one core; 0.6 s and 0.9 s to words appearing).
+- Memory: building the sessions from bytes keeps about 0.6 GB more than loading the same encoder from its path (a load-only check: 1.76 GB against 1.15 GB private). Turning off prepacking, the memory arena or graph optimisation, or compacting the heap, did not change it. The user's decision DEC-092 keeps verified bytes, so #105's second pull request looks for an ONNX Runtime setting that releases the copy first, and otherwise accepts the cost. No memory budget covers recording with drafts on (`docs/perf-budgets.json` budgets CPU only for those states).
+
+**Limits.** The laptop was not idle: other sessions kept it at about 30 to 45% of total CPU during the real-time runs (and about 75 to 87% during two earlier sherpa-onnx runs, discarded, which measured 36 to 37% of one core). One run of each, one meeting, headset mix audio only, the decoder alone. The acceptance figures (grey words within 1 s, both draft workers together under 30% of one core with the window visible, no recorder gaps) are measured in the app on an idle laptop, in #105's later pull requests.
+
 ## Short clips (first screen)
 
 148 public clips (21.5 minutes, 3,457 reference words, from AMI, Earnings-22 and EdAcc), scored with `tools/compare_engines.py`:

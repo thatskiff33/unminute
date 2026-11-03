@@ -242,6 +242,47 @@ Describe "New-ModelPackage.ps1" {
         ([regex]::Matches($text, "creativecommons.org")).Count | Should -Be 1
     }
 
+    It "gives a model under the NVIDIA Open Model License its agreement and notice (#105)" {
+        # Section 3.1: recipients get a copy of the agreement and the notice in a
+        # "Notice" text file. Only when such a model is in the package.
+        $script:Entries[0].licence = "NVIDIA Open Model License"
+        $script:Zip = New-TestZip $script:Entries
+        $Options.ReleaseZip = $script:Zip.Path; $Options.ExpectedSha256 = $script:Zip.Sha
+        Invoke-NewModelPackage
+        $text = [IO.File]::ReadAllText((Join-Path $script:Out "LICENCES.txt"), [Text.Encoding]::UTF8)
+        $text | Should -BeLike "*m-one: NVIDIA Open Model License. Synthetic m-one.*"
+        $text | Should -BeLike "*Licence: NVIDIA Open Model License Agreement (version of 24 October 2025), in NVIDIA-Open-Model-License.txt;*its notice is in NOTICE.txt.*"
+        $text | Should -BeLike "*Changes: none. The files are unmodified*"
+        [IO.File]::ReadAllText((Join-Path $script:Out "NOTICE.txt")) |
+            Should -BeExactly "Licensed by NVIDIA Corporation under the NVIDIA Open Model License`r`n"
+        (Get-FileHash -LiteralPath (Join-Path $script:Out "NVIDIA-Open-Model-License.txt")).Hash |
+            Should -BeExactly (Get-FileHash -LiteralPath (Join-Path $script:Repo "packaging\models\NVIDIA-Open-Model-License.txt")).Hash
+        # The speech detector (MIT) is not under it.
+        ([regex]::Matches($text, "NVIDIA-Open-Model-License.txt")).Count | Should -Be 1
+    }
+
+    It "stops before copying any model when the NVIDIA agreement is missing (#539 review)" {
+        # A repository copy without the agreement stops the run at once, not after
+        # the model files (the encoder alone is 650 MB) have been copied and hashed.
+        $scripts = Join-Path $TestDrive "scripts-without-agreement"
+        [void][IO.Directory]::CreateDirectory($scripts)
+        Copy-Item -LiteralPath (Join-Path $script:Repo "packaging\models\Install-Models.ps1") -Destination $scripts
+        Mock Get-ScriptsFolder { $scripts }
+        Mock Copy-Model { throw "a model was copied" }
+        $script:Entries[0].licence = "NVIDIA Open Model License"
+        $script:Zip = New-TestZip $script:Entries
+        $Options.ReleaseZip = $script:Zip.Path; $Options.ExpectedSha256 = $script:Zip.Sha
+        { Invoke-NewModelPackage } | Should -Throw "STOP NVIDIA-Open-Model-License.txt was not found in packaging\models.*"
+        Should -Invoke Copy-Model -Times 0
+        Test-Path -LiteralPath $script:Out | Should -BeFalse
+    }
+
+    It "writes no NVIDIA agreement or notice without such a model" {
+        Invoke-NewModelPackage
+        Test-Path -LiteralPath (Join-Path $script:Out "NOTICE.txt") | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $script:Out "NVIDIA-Open-Model-License.txt") | Should -BeFalse
+    }
+
     It "refuses a zip whose SHA-256 is not the one given, and writes nothing" {
         $Options.ExpectedSha256 = "0" * 64
         { Invoke-NewModelPackage } | Should -Throw "STOP the zip's SHA-256 is not the one given*"
