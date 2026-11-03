@@ -119,6 +119,10 @@ body{margin:0}
               <sc-for list="{{draft}}" as="line" hint-placeholder-count="5">
                 <span>{{line}}</span>
               </sc-for>
+              <!-- #105: instant words after the newest phrase, in the box's muted text -->
+              <sc-if value="{{instant}}" hint-placeholder-val="{{ false }}">
+                <span>{{instantWords}}</span>
+              </sc-if>
             </div>
             <div style="font-size: 13px; color: {{t.muted}}">Draft text shows on this screen. Hide it before sharing your screen.</div>
           </div>
@@ -178,7 +182,7 @@ body{margin:0}
   </main>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props='{"direction":{"editor":"enum","options":["H","A","B","Dark"],"default":"H"},"recording":{"editor":"boolean","default":false},"computer":{"editor":"boolean","default":false},"drafts":{"editor":"boolean","default":false},"variant":{"editor":"enum","options":["default","empty","drop"],"default":"default"},"$preview":{"width":1100,"height":760}}'>
+<script type="text/x-dc" data-dc-script data-props='{"direction":{"editor":"enum","options":["H","A","B","Dark"],"default":"H"},"recording":{"editor":"boolean","default":false},"computer":{"editor":"boolean","default":false},"drafts":{"editor":"boolean","default":false},"instant":{"editor":"boolean","default":false},"variant":{"editor":"enum","options":["default","empty","drop"],"default":"default"},"$preview":{"width":1100,"height":760}}'>
 class Component extends DCLogic {
   renderVals() {
     const themes = {
@@ -221,6 +225,8 @@ class Component extends DCLogic {
     const bars = heights.map((h, i) => ({ h: h + 'px', c: i < 30 ? '#E56600' : 'rgba(20,41,102,0.14)' }));
     const variant = this.props.variant ?? 'default';
     const drafts = recording && !!(this.props.drafts ?? false);
+    const instant = drafts && !!(this.props.instant ?? false);
+    const instantWords = 'they were going to email the supplier this week';
     const draft = [
       "Okay, thanks for coming, everyone. First up is the garden roster for next month.",
       "I can take the first two Saturdays, but I'm away the weekend after that.",
@@ -234,7 +240,7 @@ class Component extends DCLogic {
     const recNote = 'Laptop microphone. ' + (computer
       ? 'Microphone and computer audio are recorded. Tell everyone in the meeting, including people on the call.'
       : 'Only the microphone is recorded. Tell everyone present the meeting is being recorded.');
-    return { t, recording, drafts, draft, idle: !recording, bars, computer, micLine, recNote, empty: variant === 'empty', hasMeetings: variant !== 'empty', drop: variant === 'drop' };
+    return { t, recording, drafts, draft, instant, instantWords, idle: !recording, bars, computer, micLine, recNote, empty: variant === 'empty', hasMeetings: variant !== 'empty', drop: variant === 'drop' };
   }
 }
 </script>

@@ -69,12 +69,11 @@ INSTANT_CARD = {
     "about": "Shows words in grey on the recording card moments after people speak, until "
              "the draft text replaces them. Used only with live drafts. NVIDIA's model, "
              "under the NVIDIA Open Model License."}
-# Offered in Setup and Downloads only once the app can use it (#105: the engine
-# and worker, then the setting, the policy key AllowInstantWords and the page).
-# Until then it is not offered, and the bridge refuses to download, check or
-# remove it (known), so nothing downloads a model that nothing uses (fail
-# closed, as drafts.ON_PAGE did for #104).
-OFFER_INSTANT = False
+# Offered in Setup and Downloads (#105): the app uses it once the user turns on
+# instant words. False would take the card away and make the bridge refuse to
+# download, check or remove it (known). Managed policy (AllowInstantWords and
+# AllowLiveDrafts) refuses its download in the app (Workspace.download_model).
+OFFER_INSTANT = True
 
 
 def offered_cards():

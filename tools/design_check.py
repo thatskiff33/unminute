@@ -67,6 +67,9 @@ CASES = [
      "app": "recording-drafts", "dark": True},
     {"name": "recording-drafts-states", "board": "Recording-Drafts-States.dc.html", "app": "",
      "h": 1180},
+    # Instant words (#105): one more muted line after the draft text.
+    {"name": "recording-drafts-instant", "board": "Recording-Drafts-Instant.dc.html",
+     "app": "recording-drafts-instant"},
     # #462: the recording card after a switch of microphone, with the choice
     # of microphone (no board yet: compared with the nearest one, for the
     # owner's look).

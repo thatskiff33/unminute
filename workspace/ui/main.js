@@ -294,6 +294,7 @@ function wire() {
   $("s-computer").addEventListener("change", () => setSetting({ computer_audio: $("s-computer").checked }, "s-computer"));
   $("s-lid").addEventListener("change", () => setSetting({ lid_override: $("s-lid").checked }, "s-lid"));
   $("s-drafts").addEventListener("change", () => setSetting({ live_drafts: $("s-drafts").checked }, "s-drafts"));
+  $("s-words").addEventListener("change", () => setSetting({ live_words: $("s-words").checked }, "s-words"));
   for (const r of document.querySelectorAll('input[name="draftsaudio"]'))
     r.addEventListener("change", () => setSetting({ live_drafts_audio: r.value }, r));
   wireRecorder();

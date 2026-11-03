@@ -2000,7 +2000,9 @@ class PagePartTests(DraftWorkspaceCase):
         self.holder["stream"].play(self.speech(2))
         self.assertTrue(wait_for(lambda: self.ws.recording_status()["draft"]["count"] == 2))
         draft = self.ws.recording_status()["draft"]
-        self.assertEqual(set(draft), {"state", "note", "count", "generation", "mix"})
+        self.assertEqual(set(draft), {"state", "note", "count", "generation", "mix",
+                                      "instant_seq", "instant_note"})       # #105
+        self.assertEqual((draft["instant_seq"], draft["instant_note"]), (None, None))
         self.assertEqual(draft["state"], drafts.RUNNING)
         for value in draft.values():                                     # no phrase text
             self.assertNotIn("phrase", str(value))
@@ -2085,10 +2087,12 @@ class FakeNode {
   get className() { return this._class; }
   set className(v) { this._class = String(v); }
   get scrollHeight() { return this.children.length * 20; }
+  get lastElementChild() { return this.children[this.children.length - 1] || null; }
   getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
   setAttribute(k, v) { writes.push(`${this.label} @${k}`); this.attrs[k] = String(v); }
   append(...nodes) {
-    for (const n of nodes) {
+    for (const n of nodes) {          // as the DOM: a child appended again moves to the end
+      if (n.parent === this) this.children = this.children.filter((c) => c !== n);
       writes.push(`${this.label} append`); n.parent = this; this.children.push(n);
     }
   }
@@ -2122,14 +2126,15 @@ const phrases = (since, n) => Array.from({ length: n }, (_, i) =>
   ({ kind: "phrase", text: `Synthetic line ${since + i}.`, start: i, end: i + 1 }));
 const lines = () => nodes["rec-draft-box"].querySelectorAll(".rec-draft-line").length;
 
-// One clock tick; any fetch it starts is answered with `answer` phrases.
-async function tick(rec, d, answer) {
+// One clock tick; any fetch it starts is answered with `answer` phrases
+// (and `instant`, the instant words' answer, #105).
+async function tick(rec, d, answer, instant) {
   writes = [];
   const done = renderDraft(rec, d);
   if (answer !== undefined && fetches.length) {
     const f = fetches.shift();
     f.resolve({ generation: d.generation, state: d.state, since: f.since,
-                phrases: phrases(f.since, answer) });
+                phrases: phrases(f.since, answer), instant: instant || null });
   }
   await done;
   return writes.slice();
@@ -2174,6 +2179,33 @@ const battery = { count: 2, state: "battery", note: "Draft text is paused." };
   result.count_after_overtaken = draft.count;
   await tick(rec2, base({ count: 3 }), 3);
   result.lines_after_refetch = lines();
+
+  // Instant words (#105): one line, last in the box, fetched when
+  // instant_seq changes; the phrase lines are never rewritten.
+  const rec3 = { id: "rec-3", state: "recording" };
+  const box = nodes["rec-draft-box"];
+  const texts = () => box.children.map((c) => [c._class, c.textContent]);
+  await tick(rec3, base({ count: 0, instant_seq: 0 }), 0, { text: "", from_s: 0 });
+  result.instant_first = await tick(rec3, base({ count: 0, instant_seq: 1 }), 0,
+                                    { text: "w1 w2", from_s: 0 });
+  result.instant_only = texts();
+  result.instant_idle = await steady(rec3, base({ count: 0, instant_seq: 1 }));
+  await tick(rec3, base({ count: 1, instant_seq: 2 }), 1, { text: "w3", from_s: 1 });
+  result.instant_after_phrase = texts();
+  const phraseNode = box.children[0];
+  await tick(rec3, base({ count: 1, instant_seq: 3 }), 0, { text: "w3 w4", from_s: 1 });
+  result.instant_grew = texts();
+  result.phrase_untouched = box.children[0] === phraseNode;
+  result.instant_none = await tick(rec3, base({ count: 1, instant_seq: 4 }), 0,
+                                   { text: "", from_s: 1 });
+  result.instant_after_none = texts();
+  result.instant_note = (await tick(rec3, base({ count: 1, instant_seq: 5,
+                                                 instant_note: "Instant words stopped." }), 0,
+                                    { text: "", from_s: 1 }),
+                         nodes["rec-draft-status"].textContent);
+  toggleDraft();                                     // Hide draft hides them too
+  result.instant_hidden = await tick(rec3, base({ count: 1, instant_seq: 6 }));
+  result.instant_hidden_fetches = fetches.length;
   console.log(JSON.stringify(result));
 })().catch((e) => { console.error(e && e.stack || e); process.exit(1); });
 """
@@ -2203,6 +2235,36 @@ class DraftPageTests(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertEqual(result[key], [],
                                  f"{key}: a tick with nothing new wrote to the page")
+
+    def test_instant_words_are_one_line_after_the_phrases_and_never_rewrite_them(self):
+        # #105: the line is fetched when instant_seq changes, stays last in the
+        # box, holds only the words after the newest phrase, and goes when
+        # there are none; the phrase lines above it are never written again.
+        result = self.simulate()
+        self.assertIn("rec-draft-box append", result["instant_first"])
+        self.assertEqual(result["instant_only"], [["rec-draft-instant", "w1 w2"]])
+        self.assertEqual(result["instant_idle"], [], "a tick with nothing new wrote")
+        self.assertEqual(result["instant_after_phrase"],
+                         [["rec-draft-line", "Synthetic line 0."], ["rec-draft-instant", "w3"]])
+        self.assertEqual(result["instant_grew"],
+                         [["rec-draft-line", "Synthetic line 0."],
+                          ["rec-draft-instant", "w3 w4"]])
+        self.assertTrue(result["phrase_untouched"])
+        self.assertEqual(result["instant_after_none"], [["rec-draft-line", "Synthetic line 0."]])
+        self.assertEqual(result["instant_note"], "Instant words stopped.")
+        self.assertIn("rec-draft-box hidden", result["instant_hidden"])
+        self.assertEqual(result["instant_hidden_fetches"], 0)     # hidden: nothing fetched
+
+    def test_the_instant_line_is_text_only_and_never_announced(self):
+        ui = Path(__file__).resolve().parents[1] / "workspace" / "ui"
+        js = page_scripts.source()
+        body = js[js.index("function putInstant"):js.index("async function renderDraft")]
+        self.assertNotRegex(body, r"innerHTML|outerHTML|insertAdjacentHTML")
+        self.assertIn("putText(line, words)", body)               # textContent only
+        # In the draft box, which is aria-live="off": read on demand, not on change.
+        self.assertIn('box.querySelector(".rec-draft-instant")', body)
+        css = (ui / "app.css").read_text(encoding="utf-8")
+        self.assertIn(".rec-draft-instant { color: var(--muted); }", css)
 
     def test_a_fetch_overtaken_by_hide_and_show_is_dropped(self):
         result = self.simulate()

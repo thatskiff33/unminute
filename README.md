@@ -19,6 +19,7 @@ The screenshots show a fictional sample meeting: they are the app's own screens,
 - **Cleans up in two confirmed steps.** The audio goes once you confirm the transcript is reviewed. The transcript goes once you confirm the final document is saved elsewhere. Holds stop cleanup for as long as you need.
 - **Fits around your work.** Recordings come from Import, drag and drop, watched folders or the microphone. Quiet mode leaves most of the computer free. Pause and resume are safe, and nothing already transcribed is lost after a crash.
 - **Draft text while recording (optional).** Turn it on in Settings to see rough text of what is said a few seconds behind, kept in memory only and replaced by the full transcript when you stop.
+- **Instant words (optional, with draft text).** Turn them on in Settings to see words in grey moments after people speak, until the draft text replaces them. They need an extra download (about 0.66 GB, NVIDIA's model under the NVIDIA Open Model License) and are kept in memory only.
 - **Asks before it records.** Each recording starts only after you confirm that everyone present has been told (unless your organisation turns that question off), and the window title and taskbar button show while it is recording.
 - **Stays offline.** Models are downloaded once, when you choose, and checked against published checksums. No usage statistics are ever sent.
 

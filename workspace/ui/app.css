@@ -260,6 +260,7 @@ body[data-view="handoff"] .count { position: absolute; top: -4px; right: -4px; m
 .rec-draft-box p { margin: 0; }
 .rec-draft-box p + p { margin-top: 6px; }
 .rec-draft-skip, .rec-draft-empty { font-style: italic; }
+.rec-draft-instant { color: var(--muted); }    /* instant words (#105): the box's own muted text */
 .rec-draft-status { margin: 0; font-size: 14px; color: var(--muted); }
 .rec-draft-status:empty { display: none; }
 .rec-draft-share { margin: 0; font-size: 13px; color: var(--muted); }

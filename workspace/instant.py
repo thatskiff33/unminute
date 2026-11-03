@@ -5,9 +5,12 @@
 #
 # Part of live drafts: an InstantSession belongs to one DraftSession and lives
 # and ends with it (workspace/drafts.py).
-#   - Off unless ENABLED (#105's later pull request replaces this with the
-#     setting, the policy key AllowInstantWords and AllowLiveDrafts) and the
-#     model (asr_engines.INSTANT_MODEL) is downloaded and passes its checks.
+#   - Off unless the user turns on "live_words" (default off) with live
+#     drafts, managed policy allows both (AllowInstantWords and
+#     AllowLiveDrafts; a bad value or an unreadable key withholds it, K3), and
+#     the model (asr_engines.INSTANT_MODEL) is downloaded and passes its
+#     checks (Workspace._instant_wanted). A change of switch or policy during
+#     a recording starts or ends them at the next tick; drafts carry on.
 #   - Two heavy models during a recording (D4's exception, the user's decision
 #     DEC-092): the instant-words worker starts only once the draft
 #     worker has loaded Parakeet v2, so the two load one at a time; both end
@@ -38,10 +41,6 @@ from workspace import asr_engines, drafts
 INSTANT_MODEL = asr_engines.INSTANT_MODEL.name
 THREADS = 1                      # with 2, the trial's runtime busy-waited (#105)
 LOG_NAME = "instant-worker"      # its log, crash file and process name (workspace.diag)
-# Off until #105's last pull request brings the setting, the policy key and the
-# page: no instant-words worker starts in the app until then. Tools and tests
-# that measure or test it turn it on in their own process.
-ENABLED = False
 QUEUE_S = 3.0                    # audio waiting for the worker beyond this: the oldest goes
 KEEP_S = 60.0                    # words older than this (behind the newest) are let go
 MAX_WORDS = 1000                 # and never more than this many
@@ -54,6 +53,9 @@ LAUNCH_WAIT_S = 30.0             # stop() waits this long at most for a process 
 
 STARTING, RUNNING, FAILED, UNAVAILABLE, STOPPED, BATTERY = (
     "starting", "running", "failed", "unavailable", "stopped", "battery")
+# After a second crash or a model that will not load (DEC-092): said once, on
+# the recording card's status line.
+STOPPED_NOTE = "Instant words stopped. Draft text and the recording carry on."
 
 
 def clean_piece(text):
@@ -182,6 +184,7 @@ class InstantSession:
         self._words = []                           # [[start_s, text, number]]
         self._latest = -math.inf
         self.word_count = 0
+        self.seq = 0                               # changes whenever the words or state do
         self.dropped_s = 0.0                       # audio let go to keep up (not while hidden)
         self.hidden_s = 0.0                        # audio not sent while the window was hidden
         self.state, self.reason = STARTING, None
@@ -229,6 +232,11 @@ class InstantSession:
     @property
     def visible(self):
         return self._visible
+
+    @property
+    def note(self):
+        """The page's words for instant words that stopped, or None."""
+        return STOPPED_NOTE if self.state in (FAILED, UNAVAILABLE) else None
 
     # -- control ------------------------------------------------------------------------
 
@@ -454,6 +462,7 @@ class InstantSession:
         elif kind == "error":
             self.state = UNAVAILABLE if msg[3:4] == ("load",) else FAILED
             self.reason = "load" if self.state == UNAVAILABLE else "error"
+            self.seq += 1
 
     def _add(self, at, piece):
         """A token piece: a leading space starts a word at its time; otherwise
@@ -467,6 +476,7 @@ class InstantSession:
         else:
             self._words[-1][1] = (self._words[-1][1] + text)[:drafts.MAX_TEXT]
         self._latest = max(self._latest, at)
+        self.seq += 1
         cut = 0
         while cut < len(self._words) and (self._words[cut][0] < self._latest - KEEP_S
                                           or len(self._words) - cut > MAX_WORDS):
@@ -479,6 +489,7 @@ class InstantSession:
             if self._stopped or self._conn is not conn:
                 return
             self.state, self.reason = state, reason
+            self.seq += 1
             self._proc = self._conn = None
         self._end_process(proc, conn)
 
@@ -496,6 +507,7 @@ class InstantSession:
                 return
             if self.restarts >= MAX_RESTARTS:
                 self.state, self.reason = FAILED, "crashed"
+                self.seq += 1
                 self._queue.clear()
                 self._queued_s = 0.0
                 return

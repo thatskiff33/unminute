@@ -654,6 +654,15 @@
       },
       steps: [],
     },
+    // Instant words (#105): the words after the newest phrase, one more line.
+    "recording-drafts-instant": {
+      change: (d) => {
+        SCENARIOS["recording-drafts"].change(d);
+        d.recording.draft.instant_seq = 1;
+        d.instantWords = "they were going to email the supplier this week";
+      },
+      steps: [],
+    },
     "recording-drafts-starting": {
       change: (d) => {
         SCENARIOS.recording.change(d);
@@ -1181,8 +1190,10 @@
     recording_draft: (since) => {
       const d = data.recording.draft || { state: "off", generation: 0 };
       const phrases = DRAFT.slice(since, since + 200);
+      const instant = d.instant_seq == null ? null
+        : { text: data.instantWords || "", from_s: DRAFT[DRAFT.length - 1].end };
       return { state: d.state, note: d.note || null, generation: d.generation, count: DRAFT.length,
-               since, phrases };
+               since, phrases, instant };
     },
     detail: (mid) => data.detail[mid],
     transcript: (mid, start = 0, count = 500) => {

@@ -2293,7 +2293,16 @@ class Workspace(RecordingMixin, SettingsMixin, HandoffMixin, WatchedFoldersMixin
             effective["lid_override"] = False
         if not self._allowed("AllowLiveDrafts"):
             effective["live_drafts"] = False
+        if not self._instant_words_allowed():
+            effective["live_words"] = False
+        instant_state = self._display_value(
+            "instant", lambda: setup.status(asr_engines.INSTANT_MODEL.name, self.cache_dir)[0])
         return {**effective, "choices": choices, "managed": self.managed(),
+                # Instant words (#105) need their own model: its state, for
+                # the switch's note, and whether Manage downloads can fetch it.
+                "live_words_model": {"state": instant_state,
+                                     "label": asr_engines.INSTANT_LABEL,
+                                     "offered": downloads and self._instant_words_allowed()},
                 # Live drafts (#104) need Parakeet v2: its state, for the
                 # switch's note, and whether Manage downloads can fetch it.
                 "live_drafts_model": {"state": states.get(drafts.DRAFT_MODEL, "missing"),
@@ -2344,6 +2353,8 @@ class Workspace(RecordingMixin, SettingsMixin, HandoffMixin, WatchedFoldersMixin
             raise WorkspaceError(MANAGED_OFF.format(what="The graphics card component"))
         if changes.get("live_drafts") is True and not self._allowed("AllowLiveDrafts"):
             raise WorkspaceError(MANAGED_OFF.format(what="Draft text while recording"))
+        if changes.get("live_words") is True and not self._instant_words_allowed():
+            raise WorkspaceError(MANAGED_OFF.format(what="Instant words while recording"))
         if changes.get("live_drafts") is True and not drafts.ON_PAGE:
             raise WorkspaceError("Draft text while recording is not available in this "
                                  "version.")
@@ -2530,6 +2541,9 @@ class Workspace(RecordingMixin, SettingsMixin, HandoffMixin, WatchedFoldersMixin
         if not self._allowed("AllowModelDownloads"):
             raise WorkspaceError(DOWNLOADS_OFF)
         gpu_only = gpu.component(name) is not None   # used by no work unless a GPU run
+        if asr_engines.is_instant(name) and not self._instant_words_allowed():
+            # K3: the model for a feature IT turned off is not downloaded (#105).
+            raise WorkspaceError(MANAGED_OFF.format(what="Instant words while recording"))
         if gpu_only and not self._allowed("AllowGpuComponent"):
             raise WorkspaceError(MANAGED_OFF.format(what="The graphics card component"))
         if not gpu_only and not self._user_models_allowed():

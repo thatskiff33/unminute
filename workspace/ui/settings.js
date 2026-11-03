@@ -49,11 +49,14 @@ function modelDownloadsOff() {
 // per-user (B7-5, DEC-068): AllowGpuComponent governs them, never AllowUserModels.
 function downloadOff(c) {
   return !allowed("AllowModelDownloads")
-    || (c.role === "gpu" ? !allowed("AllowGpuComponent") : !allowed("AllowUserModels"));
+    || (c.role === "gpu" ? !allowed("AllowGpuComponent") : !allowed("AllowUserModels"))
+    || (c.role === "instant" && !(allowed("AllowInstantWords") && allowed("AllowLiveDrafts")));
 }
 // A component the organisation switched off, or models IT installs instead of downloads.
 function itManaged(c) {
-  return el("span", { class: "set-text", textContent: c.role === "gpu" && !allowed("AllowGpuComponent")
+  const turnedOff = (c.role === "gpu" && !allowed("AllowGpuComponent"))
+    || (c.role === "instant" && !(allowed("AllowInstantWords") && allowed("AllowLiveDrafts")));
+  return el("span", { class: "set-text", textContent: turnedOff
     ? "Turned off by your organisation" : "Ask your IT team" });
 }
 
@@ -139,6 +142,18 @@ function renderDraftSettings(s) {
     r.checked = r.value === (s.live_drafts_audio || "microphone");
     r.disabled = !permitted || !s.live_drafts;
   }
+  // Instant words (#105): with draft text only, their own model, and IT can
+  // turn them off. Always possible to turn off.
+  const wordsPermitted = permitted && allowed("AllowInstantWords");
+  const words = s.live_words_model || {};
+  $("s-words").checked = !!s.live_words;
+  $("s-words").disabled = !s.live_words && (!wordsPermitted || !s.live_drafts);
+  $("s-words-note").textContent = !wordsPermitted ? MANAGED_NOTE
+    : !s.live_drafts ? "Needs draft text: turn on Show draft text while recording first."
+    : words.state !== "ready" ? (words.offered
+      ? `Needs a download: get ${words.label} in Manage downloads.`
+      : `Needs ${words.label}, which is not downloaded. Ask your IT team.`)
+    : "Words in grey moments after people speak, until the draft text replaces them. Paused while Unminute is minimised. Uses more memory and processor time while recording.";
   $("s-drafts-audio-note").textContent = s.live_drafts_audio === "mix"
     ? "Draft text also includes what others say on the call. The full transcript always uses both."
     : "Draft text follows your microphone only. The full transcript always uses both.";

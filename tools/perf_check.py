@@ -2546,11 +2546,6 @@ def child(args):
                 raise RuntimeError("live drafts need the public speech (--speech)")
             feed["blocks"] = speech if live else blocks
             holder["drafts"] = "instant" if instant_words else live
-            if instant_words or live:
-                # Instant words (#105) for this recording only: the app keeps
-                # them off until their setting arrives (instant.ENABLED).
-                from workspace import instant
-                instant.ENABLED = bool(instant_words)
             changes = {} if ws.settings["microphone"] else {"microphone": True}
             try:
                 drafting = bool(ws.settings["live_drafts"])
@@ -2558,6 +2553,15 @@ def child(args):
                 drafting = False
             if drafting != live:
                 changes["live_drafts"] = live
+            # Instant words (#105), as a person turns them on in Settings.
+            try:
+                worded = bool(ws.settings["live_words"])
+            except KeyError:                      # an app from before instant words
+                if instant_words:
+                    raise RuntimeError("this app has no instant words (#105)") from None
+                worded = False
+            if worded != bool(instant_words):
+                changes["live_words"] = bool(instant_words)
             if changes:
                 ws.set_settings(changes)
                 window.evaluate_js("window.workspace.show('meetings')")

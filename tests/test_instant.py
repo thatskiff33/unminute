@@ -764,6 +764,27 @@ class DraftSessionWiringTests(unittest.TestCase):
         self.assertNotIn("could not start", (self.root / "logs" / "app.log").read_text(
             encoding="utf-8"))
 
+    def test_the_view_gives_the_words_after_the_newest_phrase(self):
+        stand_in = InstantStandIn()
+        s = drafts.DraftSession("rec1", SR, self.root, instant=stand_in)
+        with s._lock:
+            s._keep({"kind": "phrase", "text": "a", "start": 0.0, "end": 2.5})
+            s._keep({"kind": "phrase", "text": "b", "start": 2.5, "end": 4.25})
+        self.assertEqual(s.instant_view(), {"text": "after 4.25", "from_s": 4.25})
+        self.assertIsNone(drafts.DraftSession("rec2", SR, self.root).instant_view())
+
+    def test_attach_and_detach_during_a_session(self):
+        s = drafts.DraftSession("rec1", SR, self.root)
+        stand_in = InstantStandIn()
+        self.assertTrue(s.attach_instant(stand_in))
+        self.assertEqual(stand_in.calls, [])                  # not ready: started later
+        self.assertFalse(s.attach_instant(InstantStandIn()))   # one at a time
+        s.detach_instant()
+        self.assertEqual(stand_in.calls, ["stop"])
+        self.assertIsNone(s.instant)
+        s.stop()
+        self.assertFalse(s.attach_instant(InstantStandIn()))   # after a stop: never
+
     def test_without_instant_words_nothing_changes(self):
         s = drafts.DraftSession("rec1", SR, self.root)
         self.assertEqual(s.instant_words(), "")
@@ -817,9 +838,10 @@ class WorkspaceTests(unittest.TestCase):
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
+        self.policy = ({}, ())
         self.ws = Workspace(self.root / "ws", self.root / "models", start=False,
                             allow_test_engines=True, battery=False,
-                            policy_reader=lambda: ({}, ()),
+                            policy_reader=lambda: self.policy,
                             protector=keyprotect.TestProtector())
         self.ws.settings.update(model=FAKE + "sentences", speakers=False, microphone=True,
                                 live_drafts=True)
@@ -838,52 +860,177 @@ class WorkspaceTests(unittest.TestCase):
     def speech(self, seconds):
         return tone(seconds, self.RATE)
 
-    def test_off_until_enabled(self):
-        self.assertFalse(instant.ENABLED)
+    def set_policy(self, values=None, invalid=()):
+        self.policy = (values or {}, invalid)
+        self.ws.policy.refresh()
+
+    def words_on(self):
+        self.ws.settings.update(live_words=True)
+
+    def test_off_by_default(self):
+        from workspace.app import DEFAULT_SETTINGS
+        self.assertIs(DEFAULT_SETTINGS["live_words"], False)
+        self.assertIs(self.ws.get_settings()["live_words"], False)
+        self.record()
+        self.ws._policy_tick()
+        self.assertTrue(wait_for(lambda: self.ws._drafts is not None))
+        self.assertIsNone(self.ws._drafts.instant)
+        draft = self.ws.recording_status()["draft"]
+        self.assertEqual((draft["instant_seq"], draft["instant_note"]), (None, None))
+        self.assertIsNone(self.ws.recording_draft()["instant"])
+        self.ws.stop_recording()
+
+    def test_the_setting_is_on_or_off_only(self):
+        from workspace.app_common import WorkspaceError
+        for bad in ("yes", 1, None):
+            with self.subTest(bad=bad), self.assertRaisesRegex(WorkspaceError, "on or off"):
+                self.ws.set_settings({"live_words": bad})
+        self.ws.set_settings({"live_words": True})
+        self.assertIs(self.ws.get_settings()["live_words"], True)
+
+    def test_policy_withholds_the_switch_the_model_and_words_in_progress(self):
+        # K3, DEC-092: AllowInstantWords, and AllowLiveDrafts too; a bad value
+        # or an unreadable key withholds them.
+        from workspace import policy
+        from workspace.app_common import WorkspaceError
+        for values, invalid in (({"AllowInstantWords": False}, ()),
+                                ({"AllowLiveDrafts": False}, ()),
+                                ({}, ("AllowInstantWords",)),
+                                ({}, policy.UNREADABLE)):
+            with self.subTest(values=values, invalid=invalid):
+                self.set_policy(values, invalid)
+                self.assertFalse(self.ws.get_settings()["live_words"])
+                self.assertFalse(self.ws.get_settings()["live_words_model"]["offered"])
+                with self.assertRaisesRegex(WorkspaceError, "turned off by your organisation"):
+                    self.ws.set_settings({"live_words": True})
+                with self.assertRaisesRegex(WorkspaceError, "turned off by your organisation"):
+                    self.ws.download_model(asr_engines.INSTANT_MODEL.name)
+        self.set_policy()
+        self.words_on()
+        self.record()
+        self.ws._policy_tick()
+        session = self.ws._drafts
+        self.assertTrue(wait_for(lambda: session.instant is not None
+                                 and session.instant.state == instant.RUNNING))
+        inst = session.instant
+        self.set_policy({"AllowInstantWords": False})         # read mid-recording
+        self.ws._policy_tick()
+        self.assertIsNone(session.instant)
+        self.assertEqual(inst.state, instant.STOPPED)
+        self.assertIs(self.ws._drafts, session)                # the draft carries on
+        self.assertEqual(session.state, drafts.RUNNING)
+        self.set_policy()                                      # allowed again: back
+        self.ws._policy_tick()
+        self.assertIsNotNone(session.instant)
+        self.assertIsNot(session.instant, inst)
+        self.ws.stop_recording()
+
+    def test_the_switch_starts_and_ends_them_during_a_recording(self):
+        self.record()
+        self.ws._policy_tick()
+        session = self.ws._drafts
+        self.assertTrue(wait_for(lambda: session.state == drafts.RUNNING))
+        self.assertIsNone(session.instant)
+        self.ws.set_settings({"live_words": True})
+        self.ws._policy_tick()
+        self.assertIsNotNone(session.instant)
+        self.assertTrue(wait_for(lambda: session.instant.state == instant.RUNNING))
+        self.assertEqual(session._batch_frames(), self.RATE // 10)
+        self.holder["stream"].play(self.speech(1.0))
+        self.assertTrue(wait_for(lambda: session.instant.word_count >= 1))
+        self.ws.set_settings({"live_words": False})
+        self.ws._policy_tick()
+        self.assertIsNone(session.instant)
+        self.assertEqual(session._batch_frames(), self.RATE // 2)
+        self.assertIsNone(self.ws.recording_draft()["instant"])
+        self.ws.stop_recording()
+
+    def test_the_bridge_gives_their_text_and_the_status_a_number_only(self):
+        # I3: no new bridge method. recording_status's draft gains instant_seq
+        # (and a fixed note), never text; recording_draft gains instant.
+        from workspace import api
+        page = api.make_api(self.ws)
+        self.words_on()
+        self.record()
+        self.ws._policy_tick()
+        session = self.ws._drafts
+        self.assertTrue(wait_for(lambda: session.instant is not None
+                                 and session.instant.state == instant.RUNNING))
+        status = page.recording_status()["value"]["draft"]
+        seq = status["instant_seq"]
+        self.assertIsInstance(seq, int)
+        self.assertIsNone(status["instant_note"])
+        self.holder["stream"].play(self.speech(1.0))
+        self.assertTrue(wait_for(lambda: session.instant.word_count >= 1))
+        status = page.recording_status()["value"]["draft"]
+        self.assertGreater(status["instant_seq"], seq)
+        for value in status.values():
+            self.assertNotIsInstance(value, list)
+        self.assertNotIn("w1s", repr(status))                 # no words in the status
+        got = page.recording_draft(0)["value"]["instant"]
+        self.assertEqual(set(got), {"text", "from_s"})
+        self.assertIsInstance(got["text"], str)
+        self.assertIn("w1s", got["text"])
+        self.assertEqual(got["from_s"], 0.0)                   # no phrase has replaced them yet
+        self.ws.stop_recording()
+
+    def test_stopped_instant_words_say_so_and_drafts_carry_on(self):
+        self.ws.instant_model = FAKE + "instant_crash_always"
+        self.words_on()
+        self.record()
+        self.ws._policy_tick()
+        session = self.ws._drafts
+        self.assertTrue(wait_for(lambda: session.instant is not None
+                                 and session.instant.state == instant.RUNNING))
+        for _ in range(3):
+            self.holder["stream"].play(self.speech(1.0))
+            time.sleep(1.0)
+        self.assertTrue(wait_for(lambda: session.instant.state == instant.FAILED, timeout=60))
+        draft = self.ws.recording_status()["draft"]
+        self.assertEqual(draft["instant_note"], instant.STOPPED_NOTE)
+        self.assertEqual(draft["state"], drafts.RUNNING)
+        self.ws._policy_tick()
+        self.assertEqual(session.instant.state, instant.FAILED)  # not started again
+        self.ws.stop_recording()
+
+    def test_not_without_its_model(self):
+        self.ws.instant_model = instant.INSTANT_MODEL         # not downloaded here
+        self.words_on()
         self.record()
         self.ws._policy_tick()
         self.assertTrue(wait_for(lambda: self.ws._drafts is not None))
         self.assertIsNone(self.ws._drafts.instant)
         self.ws.stop_recording()
 
-    def test_not_without_its_model(self):
-        self.ws.instant_model = instant.INSTANT_MODEL         # not downloaded here
-        with mock.patch.object(instant, "ENABLED", True):
-            self.record()
-            self.ws._policy_tick()
-            self.assertTrue(wait_for(lambda: self.ws._drafts is not None))
-            self.assertIsNone(self.ws._drafts.instant)
-            self.ws.stop_recording()
-
     def test_both_workers_run_while_recording_and_end_before_processing(self):
-        with mock.patch.object(instant, "ENABLED", True):
-            self.record()
-            self.ws._policy_tick()
-            session = self.ws._drafts
-            self.assertIsNotNone(session.instant)
-            self.assertTrue(wait_for(lambda: session.instant.state == instant.RUNNING))
-            self.holder["stream"].play(self.speech(2.0))
-            self.assertTrue(wait_for(lambda: session.instant.word_count >= 3))
-            procs = (session._proc, session.instant._proc)
-            # Minimised: instant words pause; shown again: they carry on.
-            self.ws.window_minimised(True)
-            self.assertFalse(session.instant.visible)
-            self.ws._policy_tick()
-            self.assertFalse(session.instant.visible)
-            self.ws.window_minimised(False)
-            self.assertTrue(session.instant.visible)
-            self.ws.stop_recording()
-            # D4: both ended before the recording's processing may start.
-            self.assertIsNone(self.ws._drafts)
-            self.assertFalse(any(p.is_alive() for p in procs))
+        self.words_on()
+        self.record()
+        self.ws._policy_tick()
+        session = self.ws._drafts
+        self.assertIsNotNone(session.instant)
+        self.assertTrue(wait_for(lambda: session.instant.state == instant.RUNNING))
+        self.holder["stream"].play(self.speech(2.0))
+        self.assertTrue(wait_for(lambda: session.instant.word_count >= 3))
+        procs = (session._proc, session.instant._proc)
+        # Minimised: instant words pause; shown again: they carry on.
+        self.ws.window_minimised(True)
+        self.assertFalse(session.instant.visible)
+        self.ws._policy_tick()
+        self.assertFalse(session.instant.visible)
+        self.ws.window_minimised(False)
+        self.assertTrue(session.instant.visible)
+        self.ws.stop_recording()
+        # D4: both ended before the recording's processing may start.
+        self.assertIsNone(self.ws._drafts)
+        self.assertFalse(any(p.is_alive() for p in procs))
 
     def test_a_session_started_while_minimised_starts_paused(self):
         self.ws.window_minimised(True)
-        with mock.patch.object(instant, "ENABLED", True):
-            self.record()
-            self.ws._policy_tick()
-            self.assertFalse(self.ws._drafts.instant.visible)
-            self.ws.stop_recording()
+        self.words_on()
+        self.record()
+        self.ws._policy_tick()
+        self.assertFalse(self.ws._drafts.instant.visible)
+        self.ws.stop_recording()
 
     def test_window_minimised_never_raises_without_a_recording(self):
         self.ws.window_minimised(True)

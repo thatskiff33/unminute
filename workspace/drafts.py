@@ -754,7 +754,7 @@ class DraftSession:
         self.instant = instant
         self._instant_due = False
         if instant is not None:
-            instant.gate = lambda: self._ready.is_set() and self._conn is not None
+            instant.gate = self._draft_ready
         self.cache_dir, self.model, self.threads = str(cache_dir), model, threads
         self.log, self.allow_test_engines = log, bool(allow_test_engines)
         self._target = target            # tests: another process target
@@ -1015,12 +1015,13 @@ class DraftSession:
 
     def _feed_loop(self):
         batch, batch_start, batch_frames = [], None, 0
-        # With instant words the audio goes on a block at a time: a 0.5 s
-        # batch would hold their first piece back by up to that long (#105).
-        limit = self._batch_frames()
         comp = _ComputerBatch(self)
         taken = -math.inf                # end of the microphone audio taken (frames)
         while True:
+            # With instant words the audio goes on a block at a time: a 0.5 s
+            # batch would hold their first piece back by up to that long
+            # (#105). Read each time: they can be turned on or off meanwhile.
+            limit = self._batch_frames()
             try:
                 start, block = self._tap.get(timeout=0.2)
             except queue.Empty:
@@ -1222,6 +1223,47 @@ class DraftSession:
         if self.state == UNAVAILABLE and self.machine_damaged:
             return REASONS["machine"]
         return NOTES.get(self.state)
+
+    def _draft_ready(self):
+        """Whether the draft worker is loaded and running (instant words' gate)."""
+        return self._ready.is_set() and self._conn is not None
+
+    def attach_instant(self, instant):
+        """Instant words turned on during the recording (the switch or policy,
+        #105): their worker starts now if this one is ready, otherwise once it
+        is. False once stopped, or while instant words are attached."""
+        with self._lock:
+            if self._stopped or self.instant is not None:
+                return False
+            instant.gate = self._draft_ready
+            self.instant = instant
+            ready = self._draft_ready() and self.state == RUNNING
+        if ready:
+            try:
+                instant.start()              # outside the lock: starting a process takes time
+            except Exception as exc:         # never the draft's concern
+                if self.log is not None:
+                    self.log.incident("drafts", exc)   # type name and frames only (P3)
+        return True
+
+    def detach_instant(self):
+        """Instant words turned off during the recording: their worker ends and
+        their words are forgotten. The draft carries on."""
+        with self._lock:
+            instant, self.instant = self.instant, None
+        if instant is not None:
+            instant.stop()
+
+    def instant_view(self):
+        """The instant words for the page (#105), or None without them: the
+        words after the newest phrase's end (from_s, seconds in the
+        recording), which the phrase text has replaced up to there."""
+        instant = self.instant
+        if instant is None:
+            return None
+        with self._lock:
+            after = self._last_end
+        return {"text": instant.words_after(after), "from_s": round(after, 3)}
 
     def set_visible(self, visible):
         """The window was shown or hidden (minimised): instant words pause
