@@ -496,7 +496,9 @@ def _permission_refuser():
         # Not kept in the profile (#488): on the virtual host's https origin
         # WebView2 would otherwise remember the refusal for the origin and
         # answer the next request (a frame's) itself, without this handler.
-        # Refused either way; this keeps each refusal the app's own.
+        # Refused either way; this keeps each refusal the app's own. The
+        # property is always there: the screen-capture event the app requires
+        # (or it closes the window) came in a later SDK.
         if hasattr(args, "SavesInProfile"):
             args.SavesInProfile = False
         blocked_calls.append(f"permission {args.PermissionKind}")

@@ -259,7 +259,10 @@ real time, and remove it when the cause is fixed.
   `tests/test_page_scripts.py` (`PageErrorPlaceTests`) runs the functions themselves.
   Served over HTTP the browser's own file and line are used. Loading the page another way
   (a virtual host instead of `file://`) should make the browser give the details itself;
-  #488 part A does that (the user's decision DEC-090), and the real-window run confirms it.
+  #488 part A does that (the user's decision DEC-090). The real-window run (4 Nov 2026) shows
+  the browser gives the file and line, except for an error a guard rethrows, where the line is
+  the guard's `throw err`; the guard's noted place is sent for that error (`e.error` is the
+  error the guard threw).
 
 ## Windows, WebView2 and pythonnet
 
@@ -268,7 +271,12 @@ real time, and remove it when the cause is fixed.
   guidance).
 - **pythonnet returns a new wrapper on every .NET property read**, so `form.Icon is x` is always
   false. Compare handles or values instead.
-- **WebView2 virtual host (#488).** The window maps `https://unminute.invalid/` to
+- **WebView2 virtual host (#488).** On an https origin WebView2 remembers a permission
+  decision for the origin unless the handler sets `SavesInProfile` false: the real-window run
+  (4 Nov 2026) saw a frame's microphone request refused by the remembered decision, never
+  reaching the app's handler. `shell._permission_refuser` sets it false, so every request is
+  the app's own refusal.
+  The window maps `https://unminute.invalid/` to
   `workspace/ui` only (`shell._map_ui_folder`, `CoreWebView2HostResourceAccessKind.Deny`),
   before pywebview's first navigation; a mapping made later applies only after a reload
   (Microsoft's reference). WebView2 serves those requests itself, with no DNS lookup, so the
