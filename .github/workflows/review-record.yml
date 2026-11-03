@@ -4,9 +4,9 @@
 # (one definition, shared with --pr; the finish-pr skill gives the format). A push
 # starts a new run on the new head, which fails until a record names that head.
 #
-# Not a required status check yet (the owner's decision, 27 Oct 2026, #410): it
-# runs on every pull request for about a week, then the owner adds it to the
-# ruleset, and docs/RELEASING.md and tests/test_consistency.py list it.
+# A required status check since the owner added it to the ruleset (#410), after
+# a week of report-only runs (the owner's decision DEC-060, 27 Oct 2026);
+# docs/RELEASING.md and tests/test_consistency.py list it.
 #
 # What starts a run:
 # - a push, or an edit of the description (its "Writer:" line): pull_request;

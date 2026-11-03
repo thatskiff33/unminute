@@ -375,8 +375,8 @@ def assess(pr, required, notes):
         info.append(f"a review of {head} is recorded; confirm it is independent and read "
                     "its verdict")
         if not review_record(oid, pr.get("body"), notes)[0]:
-            # Report only for now (#410): a note, not a blocker, until the owner
-            # makes the "Review record" check required.
+            # A note, not a blocker: the "Review record" check is required (#410),
+            # so its failure already shows as a failing required check.
             info.append("the record does not show an independent reviewer (a 'Reviewer:' "
                         "line in the comment and a different 'Writer:' line on the PR), so "
                         "the 'Review record' check fails: run --review-record for the details")

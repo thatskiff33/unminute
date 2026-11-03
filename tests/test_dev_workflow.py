@@ -379,7 +379,8 @@ class ReviewRecordTests(unittest.TestCase):
         self.assertNotIn("secret-name", " ".join(problems))
 
     def test_pr_reports_a_review_without_independence_as_a_note(self):
-        # Report only for now (#410): a note in --pr, not a blocker.
+        # A note in --pr, not a blocker: the required "Review record" check
+        # failing is the blocker (#410).
         view = pr(9, headRefOid=self.HEAD, statusCheckRollup=self.GREEN, body=self.BODY)
         blockers, info = dev_status.assess(view, REQUIRED, [f"Commit reviewed: {self.HEAD}"])
         self.assertEqual([], blockers)
