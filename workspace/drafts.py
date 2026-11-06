@@ -49,6 +49,10 @@
 #     past diag.CRASH_MAX while it runs, closed before the process ends by
 #     itself, and an ended worker is waited for up to worker.END_WAIT_S before
 #     the app reads and deletes the file.
+#   - Instant words (#105): a session may carry an InstantSession
+#     (workspace/instant.py), whose worker starts once the draft worker is
+#     ready, is fed every message the draft worker is sent, follows it on
+#     battery and ends with it.
 # Standard library and numpy only at module level: the window process imports
 # this module (tests/test_import_hygiene.py).
 
@@ -77,6 +81,7 @@ CUT_SEARCH_S = 1.5               # at the quietest window within this much of th
 MIN_SPEECH_S = 0.25              # a phrase with less speech than this is a blip: dropped
 TAP_S = 60.0                     # draft audio held while the worker loads or falls behind
 BATCH_S = 0.5                    # audio sent to the worker at a time
+INSTANT_BATCH_S = 0.1            # and with instant words (#105): the recorder's block
 BACKLOG_S = 30.0                 # phrases waiting beyond this are skipped, oldest first
 MAX_BATCH_FRAMES = 192000 * 2    # 2 s at 192 kHz: the worker refuses a larger batch
 MAX_RATE = 192000
@@ -740,8 +745,16 @@ class DraftSession:
     but keeps the text (battery); resume() starts it again. Thread-safe."""
 
     def __init__(self, recording_id, rate, cache_dir, *, generation=0, model=DRAFT_MODEL,
-                 threads=DRAFT_THREADS, log=None, allow_test_engines=False, target=None):
+                 threads=DRAFT_THREADS, log=None, allow_test_engines=False, target=None,
+                 instant=None):
         self.recording_id, self.rate, self.generation = recording_id, int(rate), generation
+        # Instant words (#105), or None: its worker starts once this one is
+        # ready (one model loading at a time) and ends with this session. A
+        # restarted one waits for this worker to be ready too (gate).
+        self.instant = instant
+        self._instant_due = False
+        if instant is not None:
+            instant.gate = lambda: self._ready.is_set() and self._conn is not None
         self.cache_dir, self.model, self.threads = str(cache_dir), model, threads
         self.log, self.allow_test_engines = log, bool(allow_test_engines)
         self._target = target            # tests: another process target
@@ -768,6 +781,7 @@ class DraftSession:
         # apart from dropped_s and is not a skipped note (no text is missing).
         self._computer_dropped_s = 0.0
         self._phrase_count = 0          # phrases kept, not counting skipped notes
+        self._last_end = 0.0            # where the newest phrase ends (seconds)
         self.load_s = None
         self.description = None
         self._proc = self._conn = None
@@ -896,6 +910,8 @@ class DraftSession:
             self.state = state
             proc, conn = self._proc, self._conn
             self._proc = self._conn = None
+        if self.instant is not None:
+            self.instant.suspend()
         self._end_process(proc, conn)
         self._drain()
 
@@ -914,7 +930,10 @@ class DraftSession:
         with self._lock:
             already = self._stopped
         if already:
-            self._ended.wait(self._end_wait() + STOP_JOIN_S * (len(self._threads) + 1))
+            # As long as the first stop may take, its instant words' end too (D4).
+            instant = self.instant
+            self._ended.wait(self._end_wait() + STOP_JOIN_S * (len(self._threads) + 1)
+                             + (instant.end_budget() if instant is not None else 0.0))
             return
         with self._lock:
             if self._stopped:
@@ -925,6 +944,8 @@ class DraftSession:
             self._proc = self._conn = None
             kept = self._phrase_count
             self._phrases, self._first = [], 0
+        if self.instant is not None:
+            self.instant.stop()              # ended and waited for too (D4)
         self._end_process(proc, conn)
         self._drain()
         try:
@@ -994,7 +1015,9 @@ class DraftSession:
 
     def _feed_loop(self):
         batch, batch_start, batch_frames = [], None, 0
-        limit = max(1, int(self.rate * BATCH_S))
+        # With instant words the audio goes on a block at a time: a 0.5 s
+        # batch would hold their first piece back by up to that long (#105).
+        limit = self._batch_frames()
         comp = _ComputerBatch(self)
         taken = -math.inf                # end of the microphone audio taken (frames)
         while True:
@@ -1041,6 +1064,13 @@ class DraftSession:
                 comp.send()
                 self._send((FLUSH,))
 
+    def _batch_frames(self):
+        """Frames the feeder sends at a time: BATCH_S, or with instant words a
+        block at a time (INSTANT_BATCH_S), so a 0.5 s batch does not hold
+        their first piece back by up to that long (#105)."""
+        seconds = INSTANT_BATCH_S if self.instant is not None else BATCH_S
+        return max(1, int(self.rate * seconds))
+
     def _send_batch(self, start, blocks):
         pcm = np.concatenate(blocks).astype("<i2")
         for i in range(0, len(pcm), MAX_BATCH_FRAMES):
@@ -1070,9 +1100,12 @@ class DraftSession:
                     break
         try:
             conn.send(msg)
-            return True
         except (OSError, EOFError, ValueError):
             return False
+        instant = self.instant
+        if instant is not None:
+            instant.put(msg)                 # never blocks: its own queue and thread
+        return True
 
     def _read_loop(self, proc, conn):
         loading_since = time.monotonic()
@@ -1094,9 +1127,20 @@ class DraftSession:
                 if self._stopped or self._conn is not conn:
                     return                   # stopped or replaced: a late result is dropped
                 self._take(msg)
-                if self.state not in (UNAVAILABLE, FAILED):
-                    continue
-                self._proc = self._conn = None      # it reported it cannot go on: end it
+                start_instant, self._instant_due = self._instant_due, False
+                ended = self.state in (UNAVAILABLE, FAILED)
+                if ended:
+                    self._proc = self._conn = None  # it reported it cannot go on: end it
+            if start_instant and self.instant is not None:
+                # After the lock: starting a process takes time. Whatever goes
+                # wrong there, this reader (and so the draft) carries on.
+                try:
+                    self.instant.start()
+                except Exception as exc:
+                    if self.log is not None:
+                        self.log.incident("drafts", exc)   # type name and frames only (P3)
+            if not ended:
+                continue
             self._end_process(proc, conn)
             return
 
@@ -1112,6 +1156,7 @@ class DraftSession:
                 and not isinstance(msg[2], bool) and math.isfinite(msg[2]) else None
             self.state = RUNNING
             self._ready.set()
+            self._instant_due = True         # after this worker loaded: one at a time (D4)
         elif kind == "phrase" and len(msg) == 4 and isinstance(msg[3], str) \
                 and all(isinstance(x, (int, float)) and math.isfinite(x) for x in msg[1:3]):
             self._keep({"kind": "phrase", "text": clean_text(msg[3]),
@@ -1134,6 +1179,7 @@ class DraftSession:
         """Call with _lock held. MAX_KEPT counts phrases and skipped notes."""
         if item["kind"] == "phrase":
             self._phrase_count += 1
+            self._last_end = max(self._last_end, item["end"])
         self._phrases.append(item)
         if len(self._phrases) > MAX_KEPT:
             drop = len(self._phrases) - MAX_KEPT
@@ -1176,6 +1222,22 @@ class DraftSession:
         if self.state == UNAVAILABLE and self.machine_damaged:
             return REASONS["machine"]
         return NOTES.get(self.state)
+
+    def set_visible(self, visible):
+        """The window was shown or hidden (minimised): instant words pause
+        while it is hidden (#105). Drafts carry on either way."""
+        if self.instant is not None:
+            self.instant.set_visible(visible)
+
+    def instant_words(self):
+        """The instant words (#105) after the newest phrase, which replaces
+        those before it: one line of text, or "" without instant words."""
+        instant = self.instant
+        if instant is None:
+            return ""
+        with self._lock:
+            after = self._last_end
+        return instant.words_after(after)
 
     def snapshot(self, since=0, limit=200):
         """State and the phrases after index since (at most limit): text and

@@ -173,6 +173,18 @@ def load_draft_engine(name, cache_dir, threads, allow_test=False):
     return asr_engines.DraftEngine(name, cache_dir, threads).load()
 
 
+def load_instant_engine(name, cache_dir, threads, allow_test=False):
+    """The instant-words worker's engine (#105): the streaming model, checked
+    and loaded offline from verified bytes (I1). Only the pinned instant
+    words model (asr_engines.INSTANT_MODEL)."""
+    if name.startswith(TEST_PREFIX):
+        return _test_factory(name, allow_test)(threads)
+    if name != asr_engines.INSTANT_MODEL.name:
+        raise ModelLoadError("Instant words use their own model only.")
+    from workspace.instant_engine import InstantEngine
+    return InstantEngine(cache_dir, threads).load()
+
+
 class GpuUnavailable(RuntimeError):
     """The CUDA build or a usable NVIDIA card/driver is not available."""
 

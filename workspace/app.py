@@ -26,7 +26,7 @@ from pathlib import Path
 
 from workspace import asr_engines
 from workspace import (audit, cleanup, clipboard, credentials, diag, drafts, engines, gpu,
-                       handoff, holds, instance, intake, keystore,
+                       handoff, holds, instance, instant, intake, keystore,
                        media, policy, power, recorder,
                        resources, runner, setup, speaker_names, speakers)
 from workspace.chunking import plan_chunks
@@ -270,6 +270,11 @@ class Workspace(RecordingMixin, SettingsMixin, HandoffMixin, WatchedFoldersMixin
         self._drafts_ended_why = None     # and why, the note it keeps (#384)
         self._draft_why = "off"           # why drafts are not running, for the page
         self.draft_model = drafts.DRAFT_MODEL     # tests: a "test:" engine
+        # Instant words (#105): their model (tests: a "test:" engine), and
+        # whether the window is shown (they pause while it is hidden or
+        # minimised; workspace/shell.py tells window_minimised).
+        self.instant_model = instant.INSTANT_MODEL
+        self._window_shown = True
         # Downloads replace model files: the draft worker and the inference
         # worker let go of them first.
         # Downloads the user queued are kept (model names only) and carry on

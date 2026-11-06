@@ -483,6 +483,22 @@ def draft_main(conn, cache_dir, model, threads, allow_test_engines=False, log_di
     _end_crash_capture(log)
 
 
+def instant_main(conn, cache_dir, model, threads, allow_test_engines=False, log_dir=None):
+    """The instant-words worker (#105): the streaming model while recording, in
+    its own process with the same start-up as the draft worker, always at
+    below-normal priority. workspace.instant.serve runs its loop."""
+    from workspace import diag, instant
+    log, _ = _start_up(log_dir, instant.LOG_NAME, quiet=True)
+    try:
+        from workspace.engines import load_instant_engine
+    except BaseException as exc:
+        diag.incident("worker_start", exc)
+        raise
+    instant.serve(conn, lambda: load_instant_engine(model, cache_dir, threads,
+                                                    allow_test=allow_test_engines), log)
+    _end_crash_capture(log)
+
+
 class WorkerHandle:
     """Owned by the state-owning process. One meeting at a time uses it."""
 

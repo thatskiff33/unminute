@@ -280,9 +280,9 @@ SPEAKER_MODEL = ModelSpec(
 # published on Hugging Face by its maintainer (not by NVIDIA), and identical
 # byte for byte to the k2-fsa/sherpa-onnx GitHub release archive of the same
 # name (checked 3 Nov 2026). The app runs them with its own ONNX Runtime; it
-# does not use sherpa-onnx (the user's decision, 4 Nov 2026, #105). Licence:
-# the NVIDIA Open Model License (version of 24 Oct 2025), whose risk the user
-# accepted on 3 Nov 2026. Not gated: no token.
+# does not use sherpa-onnx (the user's decision DEC-092, #105). Licence: the
+# NVIDIA Open Model License (version of 24 Oct 2025), whose risk the user
+# accepted (DEC-091). Not gated: no token.
 INSTANT_MODEL = ModelSpec(
     name="nemotron-speech-streaming-en-0.6b-560ms",
     folder="nemotron-speech-streaming-en-0.6b-560ms-int8",

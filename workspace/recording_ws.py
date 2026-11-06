@@ -14,7 +14,7 @@ import threading
 import time
 from typing import TYPE_CHECKING, Any
 
-from workspace import asr_engines, audit, drafts, engines, media, recorder, resources
+from workspace import asr_engines, audit, drafts, engines, instant, media, recorder, resources
 from workspace import consent as recording_consent
 from workspace.app_common import (MANAGED_OFF, WorkspaceError, _expected_import_error,
                                   _import_incident, _import_message)
@@ -83,7 +83,9 @@ class RecordingMixin:
         cache_dir: Path
         downloads: setup.Downloads
         draft_model: str
+        _window_shown: bool
         handle: WorkerHandle
+        instant_model: str
         list_microphones: Any | None
         locked: Any | None
         log: diag.Log
@@ -538,6 +540,7 @@ class RecordingMixin:
                 session.resume()
             if not reason:
                 self._draft_mix(rec, session)
+                session.set_visible(self._window_shown)   # also catches a missed change
             return
         with self._lock:                  # the mark and its note, set together
             ended, ended_why = self._drafts_ended == rec.journal["id"], self._drafts_ended_why
@@ -576,7 +579,8 @@ class RecordingMixin:
             session = drafts.DraftSession(rec.journal["id"], rec.rate, self.cache_dir,
                                           generation=self._draft_gen, model=self.draft_model,
                                           log=self.log,
-                                          allow_test_engines=self.handle.allow_test_engines)
+                                          allow_test_engines=self.handle.allow_test_engines,
+                                          instant=self._instant_session(rec))
             self._drafts = session        # processing waits from here (D4)
         # The tap holds audio from now, so the first words are drafted too.
         if session.open():
@@ -590,6 +594,34 @@ class RecordingMixin:
         except Exception as exc:
             self.log.incident("drafts", exc)      # type name and code frames, never its text (P3)
             self._end_drafts(rec, final=True, why="failed")   # not "ended" (#381)
+
+    def _instant_session(self, rec):
+        """Instant words for a new draft session (#105), or None: only while
+        instant.ENABLED (until the setting and policy key arrive) and with
+        their model downloaded and passing its quick checks. Their worker
+        starts once the draft worker has loaded (D4's exception during a
+        recording, the user's decision DEC-092)."""
+        if not instant.ENABLED:
+            return None
+        if self.instant_model.startswith(engines.TEST_PREFIX):
+            ready = self.handle.allow_test_engines
+        else:
+            ready = asr_engines.hub_model_status(self.instant_model, self.cache_dir)[0] == "ready"
+        if not ready:
+            return None
+        return instant.InstantSession(rec.rate, self.cache_dir, model=self.instant_model,
+                                      log=self.log,
+                                      allow_test_engines=self.handle.allow_test_engines,
+                                      visible=self._window_shown)
+
+    def window_minimised(self, minimised):
+        """The window was minimised or hidden (True), or shown again (False):
+        instant words pause while nobody can see them (#105). Called by the
+        shell on the UI thread; never raises."""
+        self._window_shown = not minimised
+        session = self._drafts
+        if session is not None:
+            session.set_visible(self._window_shown)
 
     def _end_drafts(self, rec=None, final=False, why="ended"):
         """End live drafts: the draft worker is ended (and waited for) and its

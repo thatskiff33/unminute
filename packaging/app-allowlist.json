@@ -31,6 +31,8 @@
   "workspace/handoff_ws.py",
   "workspace/holds.py",
   "workspace/instance.py",
+  "workspace/instant.py",
+  "workspace/instant_engine.py",
   "workspace/intake.py",
   "workspace/jobs.py",
   "workspace/keystore.py",

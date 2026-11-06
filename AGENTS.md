@@ -47,7 +47,7 @@ Network, secrets and integrity
 
 - **N1** Processing never uses the network; dependency telemetry is off before heavy imports.
   Guard: `tests/test_offline_guard.py`, `tests/test_workers.py`, `tests/test_import_hygiene.py`,
-  `tests/test_drafts.py`.
+  `tests/test_drafts.py`, `tests/test_instant.py`.
 - **N2** Only the download process reaches the network: user-started (queued downloads, and one
   cut off by closing the app, are user-started too and carry on at the next start, DEC-049), to
   the hosts in `setup.DOWNLOAD_HOSTS` (plus files.pythonhosted.org for the Whisper GPU
@@ -63,11 +63,13 @@ Network, secrets and integrity
   `tests/test_download_queue.py`.
 - **I1** Model files are pinned by revision and SHA-256 and checked when downloaded. At load, the
   speaker model is read once, re-hashed in full and built from those bytes in memory with
-  weights-only unpickling and fixed classes (`workspace/speaker_load.py`); the others are checked
-  against their verified marker (size and modification time). A machine install's copies from IT
-  are checked only against the record IT's install script wrote, or hashed in full, and the app
-  never writes there (#111 B7a, the owner's decision DEC-068). Guard:
-  `tests/test_model_integrity.py`, `tests/test_asr_engines.py`, `tests/test_machine_models.py`.
+  weights-only unpickling and fixed classes (`workspace/speaker_load.py`), and so is the instant
+  words model, from its ONNX bytes (`workspace/instant_engine.py`, the user's decision DEC-092);
+  the others are checked against their verified marker (size and modification time). A machine
+  install's copies from IT are checked only against the record IT's install script wrote, or
+  hashed in full, and the app never writes there (#111 B7a, the owner's decision DEC-068). Guard:
+  `tests/test_model_integrity.py`, `tests/test_asr_engines.py`, `tests/test_machine_models.py`,
+  `tests/test_instant.py`.
 - **I2** Untrusted media is decoded only in the sandboxed decode process, within its format,
   protocol and size limits, by PyAV (users never install FFmpeg). Network drives and symbolic
   links are refused unless managed policy allows network sources. Guard:
@@ -85,10 +87,14 @@ Durability
 - **D2** An explicit pause stays paused after a restart. Guard: `tests/test_workspace_core.py`.
 - **D3** One app instance owns the state; the workspace is never in a synced or network folder.
   Guard: `tests/test_hardening.py`, `tests/test_launch.py` (the workspace lock, every session).
-- **D4** Heavy models load lazily, one at a time. A speaker-identification failure leaves the
-  transcript usable. A GPU failure falls back to the processor and says so; the model,
-  precision and committed text never change silently. Guard: `tests/test_workers.py`,
-  `tests/test_speakers.py`, `tests/test_gpu.py`, `tests/test_drafts.py`.
+- **D4** Heavy models load lazily, one at a time. During a recording only, live drafts may hold
+  two: Parakeet v2 in the draft worker and the instant words model in its own worker, loaded one
+  after the other, both ended before any processing (the user's decision DEC-092, #105). A
+  speaker-identification failure leaves the transcript usable, and an instant words failure
+  leaves the drafts and the recording running. A GPU failure falls back to the processor and
+  says so; the model, precision and committed text never change silently. Guard:
+  `tests/test_workers.py`, `tests/test_speakers.py`, `tests/test_gpu.py`, `tests/test_drafts.py`,
+  `tests/test_instant.py`.
 
 Cleanup and retention
 

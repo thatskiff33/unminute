@@ -643,7 +643,8 @@ def main():
         return 1
     # Content-free diagnostics (R9): uncaught errors on any thread and native
     # crashes are recorded in workspace\logs\app.log from here on.
-    unclean = diag.install(ws.log, others=("worker", "gpu-worker", "draft-worker", "setup"))
+    unclean = diag.install(ws.log, others=("worker", "gpu-worker", "draft-worker",
+                                            "instant-worker", "setup"))
     diag.summarise_output(ws.log)         # pythonw: no console text is kept, only type names
     ws.log.write("start", version=package_version(), python=sys.version.split()[0],
                  previous_run_unclean=unclean)
@@ -745,7 +746,7 @@ def main():
         # (docs/RELEASE_STANDARD.md). _capturing counts a recording that is
         # still opening, so its page is never suspended.
         try:
-            shell.watch_minimise(window, ws._capturing)
+            shell.watch_minimise(window, ws._capturing, on_change=ws.window_minimised)
         except Exception:
             pass                           # still works, just not as quietly
     window.events.shown += quiet_when_minimised

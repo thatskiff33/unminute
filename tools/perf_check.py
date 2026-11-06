@@ -72,6 +72,15 @@ RECORDING_STATES = ("recording", "recording-minimised")
 DRAFT_STATES = ("recording-drafts", "recording-drafts-minimised")
 CAPTURE_STATES = RECORDING_STATES + DRAFT_STATES      # every state with a recording open
 IDLE_STATES = tuple(s for s in STATES if s not in CAPTURE_STATES)
+# Instant words (#105), asked for with --instant: a third recording, with live
+# drafts and instant words on, measured with the window visible (instant words
+# pause while it is minimised, so the drafts-on minimised state stands for
+# that). Optional, so not in STATES: no budget, and not part of a release
+# run's evidence (a budget for it is the user's to set).
+INSTANT_STATES = ("recording-drafts-instant",)
+ALL_STATES = STATES + INSTANT_STATES
+DRAFTING_STATES = DRAFT_STATES + INSTANT_STATES       # live drafts running
+OPEN_STATES = CAPTURE_STATES + INSTANT_STATES         # and with instant words too
 # Through a measuring window the recording must keep recording and its length
 # grow by at least this share of the time that passed (the synthetic input is
 # paced in real time; a hold-up over PACE_MAX_LATE_S is skipped, not caught up).
@@ -97,6 +106,7 @@ RECORD_WAITS_S = {"button": 30, "started": 30, "audio": 30}
 # to load Parakeet v2 and run (record()), so its settle measures drafting.
 DRAFT_WAIT_S = 120
 DRAFT_RUNNING = "running"         # workspace.drafts.RUNNING, as recording_status gives it
+INSTANT_RUNNING = "running"       # workspace.instant.RUNNING
 # The public speech the drafts-on states record (--speech): this long from
 # --speech-start, looped, at SYNTHETIC_RATE (about 11.5 MB held in the window
 # process at 120 s, which its private bytes include).
@@ -198,6 +208,18 @@ a count: no text leaves the window); otherwise the run could not be measured
 run needs --speech and --draft-models; --quick without them leaves the
 drafts-on states out and does not compare them. The report records the
 recording's SHA-256, the excerpt's start and length, never its name or path.
+
+Instant words (#105): with --instant, a third recording has live drafts and
+instant words on (recording-drafts-instant, the window visible), with the
+instant words model copied from --draft-models too. The window counts only if
+both were running at its start and end, in the same workers, and made draft
+text and words ("draft_phrases", "instant_words": counts only). Each drafts-on
+state also reports each draft worker's own CPU and the two together
+("workers_cpu_percent_of_one_core": draft, instant, draft_workers), the figure
+the acceptance of #105 names (under 30% of one core), and every recording
+window reports the recorder's gaps and overruns during it ("recorder_gaps", a
+count; #105 asks for none). It has no budget and is not part of a release
+run's evidence.
 
 Managed policy: where policy turns microphone recording off, the recording
 states (with live drafts on too) are "not measured (policy)", and so are the
@@ -689,11 +711,12 @@ def consent_outcome(required, record, asked, recording_title, valid):
     return "off by policy"
 
 
-def plan(leak_minutes, recording_allowed, drafts=False):
+def plan(leak_minutes, recording_allowed, drafts=False, instant=False):
     """What the parent measures, in order, in one run: the idle states, the
     leak check (if asked for) before any recording, then the recording states
     unless managed policy turns microphone recording off, then the drafts-on
-    states if `drafts` (asked for with --speech, and allowed by policy)."""
+    states if `drafts` (asked for with --speech, and allowed by policy), then
+    the instant words state if `instant` too (asked for with --instant)."""
     out = list(IDLE_STATES)
     if leak_minutes:
         out.append("leak")
@@ -701,6 +724,8 @@ def plan(leak_minutes, recording_allowed, drafts=False):
         out += RECORDING_STATES
         if drafts:
             out += DRAFT_STATES
+            if instant:
+                out += INSTANT_STATES
     return out
 
 
@@ -708,8 +733,10 @@ def step_timeout(state):
     """How long the parent waits for the child to reach `state`: a state that
     may start a recording also gets the child's own waits for that, and a
     drafts-on one the wait for its draft worker to run."""
-    if state in CAPTURE_STATES:
-        extra = DRAFT_WAIT_S if state in DRAFT_STATES else 0
+    if state in OPEN_STATES:
+        # Instant words load once the draft worker has: two waits.
+        extra = (2 * DRAFT_WAIT_S if state in INSTANT_STATES
+                 else DRAFT_WAIT_S if state in DRAFT_STATES else 0)
         return STEP_TIMEOUT_S + sum(RECORD_WAITS_S.values()) + extra
     return STEP_TIMEOUT_S
 
@@ -744,6 +771,53 @@ def check_drafting(state, before, after):
         raise Unmeasurable(f"live drafts made no draft text during {state} (does the "
                            "--speech excerpt hold speech?)")
     return made
+
+
+def check_instant(state, before, after):
+    """Raise Unmeasurable unless instant words (#105) were running at both
+    ends of `state`'s window, in the same worker, and made words during it.
+    Returns the words made in the window (a count: no text leaves the window)."""
+    def now(report, when):
+        got = (report or {}).get("instant") if isinstance(report, dict) else None
+        got = got if isinstance(got, dict) else {}
+        if got.get("state") != INSTANT_RUNNING:
+            raise Unmeasurable(f"instant words were {got.get('state') or 'off'}, not running, "
+                               f"{when} {state}")
+        if not (_number(got.get("words")) and _number(got.get("pid"))):
+            raise Unmeasurable(f"instant words gave no count {when} {state}")
+        return got
+    first = now(before, "as the window began in")
+    last = now(after, "after")
+    if last["pid"] != first["pid"]:
+        raise Unmeasurable(f"instant words started again during {state}")
+    made = last["words"] - first["words"]
+    if made <= 0:
+        raise Unmeasurable(f"instant words made no words during {state}")
+    return made
+
+
+def recorder_gaps(before, after):
+    """The recorder's gaps and overruns during a window (the child's "gaps"
+    counts at its two ends), or None when either end has none."""
+    a, b = (before or {}).get("gaps"), (after or {}).get("gaps")
+    return b - a if _number(a) and _number(b) else None
+
+
+def worker_cpu(before, after, focus, elapsed):
+    """Each named worker's processor time over the window, as % of one core
+    ({name: pid} in focus; before, after: snapshot samples by pid), and the
+    draft workers' together ("draft_workers"; #105's acceptance figure: under
+    30% of one core with the window visible). A worker missing at either end
+    is left out (None)."""
+    out = {}
+    for name, pid in focus.items():
+        a, b = (after or {}).get(pid), (before or {}).get(pid)
+        out[name] = (round((a["cpu_s"] - b["cpu_s"]) / elapsed * 100, 3)
+                     if a and b and elapsed > 0 else None)
+    parts = [v for v in out.values()]
+    out["draft_workers"] = (round(sum(parts), 3) if parts and all(_number(v) for v in parts)
+                            else None)
+    return out
 
 
 # -- the drafts-on states' input (pure apart from the files; tested) --------------------
@@ -834,20 +908,23 @@ def steps(state, recording, drafts=False):
     A later state of a group with no recording of that group open is refused."""
     if state == "quit":
         return ["discard"] if recording else []
-    if state not in STATES:
+    if state not in ALL_STATES:
         raise ValueError(f"unknown state {state!r}")
-    group = (DRAFT_STATES if state in DRAFT_STATES
-             else RECORDING_STATES if state in RECORDING_STATES else None)
-    keep = bool(recording) and group is not None and bool(drafts) == (group is DRAFT_STATES)
-    if group is not None and not keep and state != group[0]:
-        what = "with live drafts on " if group is DRAFT_STATES else ""
-        raise LostRecording(f"nothing was recording {what}when {state} began")
+    # Each group: its states, what its recording has on (drafts: False, True,
+    # or "instant" for live drafts with instant words, #105) and how it starts.
+    groups = ((INSTANT_STATES, "instant", "record:instant", "with instant words on "),
+              (DRAFT_STATES, True, "record:drafts", "with live drafts on "),
+              (RECORDING_STATES, False, "record", ""))
+    group = next((g for g in groups if state in g[0]), None)
+    keep = bool(recording) and group is not None and (drafts or False) == group[1]
+    if group is not None and not keep and state != group[0][0]:
+        raise LostRecording(f"nothing was recording {group[3]}when {state} began")
     out = ["restore"]
     if recording and not keep:
         out.append("discard")
     out.append("show:settings" if state == "settings" else "show:meetings")
     if group is not None and not keep:
-        out.append("record:drafts" if group is DRAFT_STATES else "record")
+        out.append(group[2])
     if state.endswith("minimised"):
         out.append("minimise")
     return out
@@ -973,7 +1050,7 @@ def drawing_report(state, display, sessions, page0, page1, refresh_hz=None):
     for session in sessions:
         problems += session_problems(session)
     frames = draws = least = longest = None
-    meter = state in DRAWING_STATES
+    meter = state in DRAWING_STATES or state in INSTANT_STATES     # #105: the card too
     if meter:
         least = min_meter_draws(refresh_hz)
     if not page0 or not page1:
@@ -1145,8 +1222,9 @@ def snapshot(pid, tries=3):
     raise Unmeasurable(f"could not read {len(missing)} process(es): {', '.join(missing)}")
 
 
-def measure(job, pid, settle, window):
-    """Wait settle seconds, then measure CPU over window seconds and memory at its end."""
+def measure(job, pid, settle, window, focus=None):
+    """Wait settle seconds, then measure CPU over window seconds and memory at its end.
+    focus: {name: pid} of workers whose own CPU is reported too (worker_cpu())."""
     time.sleep(settle)
     job0, _ = job.cpu_seconds()
     _, before = snapshot(pid)
@@ -1171,6 +1249,8 @@ def measure(job, pid, settle, window):
         "processes": len(procs), "processes_in_job": active,
         "python_processes": sum(1 for n in names if n.startswith("python")),
         "process_names": names,
+        **({"workers_cpu_percent_of_one_core": worker_cpu(before, after, focus, elapsed)}
+           if focus else {}),
     }
 
 
@@ -1613,6 +1693,8 @@ def one_run(args, settle, window, leak_minutes=0, display=None, refresh_hz=None,
     command, env = child_command(args, workdir)
     if speech:
         command += ["--speech-pcm", str(speech), "--draft-models", str(args.draft_models)]
+        if getattr(args, "instant", False):
+            command.append("--instant")
     proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env,
                             text=True, encoding="utf-8", bufsize=1)
     job = None
@@ -1703,13 +1785,16 @@ def one_run(args, settle, window, leak_minutes=0, display=None, refresh_hz=None,
                 time.time() - ready["worker_last_used"], 1) if gone else WORKER_WAIT_S}
         allowed = ready.get("recording_allowed") is True
         drafts = bool(speech) and ready.get("drafts_allowed") is True
+        instant_on = drafts and bool(getattr(args, "instant", False))
         off = [] if allowed else list(RECORDING_STATES)  # managed policy: microphone off
         if speech and not (allowed and drafts):           # or live drafts off
             off += DRAFT_STATES
+            if getattr(args, "instant", False):
+                off += INSTANT_STATES
         if off:
             result["not_measured_by_policy"] = off
             print(f"  {', '.join(off)}: {POLICY_SKIPPED}", flush=True)
-        for state in plan(leak_minutes, allowed, drafts):
+        for state in plan(leak_minutes, allowed, drafts, instant_on):
             if state == "leak":
                 result["leak"] = leak()
                 continue
@@ -1718,15 +1803,21 @@ def one_run(args, settle, window, leak_minutes=0, display=None, refresh_hz=None,
             if reached.get("state") != state:
                 raise Unmeasurable(f"the window did not reach {state}")
             t0 = time.monotonic()
-            visible = state in VISIBLE_STATES
+            visible = state in VISIBLE_STATES or state in INSTANT_STATES
             time.sleep(settle)
-            if state in DRAFT_STATES:        # drafting as the window begins (outside it)
+            focus = None
+            if state in DRAFTING_STATES:     # drafting as the window begins (outside it)
                 say("check")
                 drafting = read(STEP_TIMEOUT_S).get("recording")
                 draft_now(state, drafting, "as the window began in")
+                focus = {"draft": drafting.get("draft_pid")}
+                if state in INSTANT_STATES:
+                    check_instant(state, drafting, drafting)
+                    focus["instant"] = drafting["instant"]["pid"]
+                focus = {k: v for k, v in focus.items() if _number(v)} or None
             if visible:                      # read just before the window, outside it
                 start, at0 = look(f"before {state}"), time.monotonic()
-            result[state] = measure(job, proc.pid, 0, window)
+            result[state] = measure(job, proc.pid, 0, window, focus)
             if visible:                      # and just after it
                 at1, end = time.monotonic(), look(f"after {state}")
                 drawing = drawing_report(
@@ -1738,14 +1829,20 @@ def one_run(args, settle, window, leak_minutes=0, display=None, refresh_hz=None,
                     raise Unmeasurable(
                         f"{state} was not drawn on screen ({'; '.join(drawing['problems'])}): "
                         "keep the session unlocked and the window in view")
-            if state in CAPTURE_STATES:      # still the same recording, still recording
+            if state in OPEN_STATES:         # still the same recording, still recording
                 say("check")
                 held = read(STEP_TIMEOUT_S)
                 result[state]["recorded_s"] = check_held(
                     state, reached.get("recording"), held.get("recording"),
                     time.monotonic() - t0)
-                if state in DRAFT_STATES:    # and drafting, with text made in the window
+                gaps = recorder_gaps(reached.get("recording"), held.get("recording"))
+                if gaps is not None:         # reported, not gated (#105)
+                    result[state]["recorder_gaps"] = gaps
+                if state in DRAFTING_STATES:  # and drafting, with text made in the window
                     result[state]["draft_phrases"] = check_drafting(
+                        state, drafting, held.get("recording"))
+                if state in INSTANT_STATES:  # and instant words, made in the window
+                    result[state]["instant_words"] = check_instant(
                         state, drafting, held.get("recording"))
                 if reached.get("consent"):   # sent by the state that started it
                     result["recording_consent"] = reached["consent"]
@@ -2314,8 +2411,10 @@ def child(args):
     if args.speech_pcm:
         from workspace import asr_engines, drafts
         speech = speech_blocks(np.fromfile(args.speech_pcm, dtype="<i2"))
-        copy_models(args.draft_models, Path(args.workdir) / "models",
-                    (asr_engines.PARAKEET_MODELS[drafts.DRAFT_MODEL], asr_engines.SILERO_VAD),
+        specs = (asr_engines.PARAKEET_MODELS[drafts.DRAFT_MODEL], asr_engines.SILERO_VAD)
+        if args.instant:                # #105: the instant words model too
+            specs += (asr_engines.INSTANT_MODEL,)
+        copy_models(args.draft_models, Path(args.workdir) / "models", specs,
                     asr_engines.model_dir, asr_engines.VERIFIED_MARKER)
     feed = {"blocks": blocks}          # what the next recording records (record())
 
@@ -2411,13 +2510,14 @@ def child(args):
                             ws.discard_recording()
                         elif step.startswith("show:"):
                             window.evaluate_js(f"window.workspace.show('{step[5:]}')")
-                        elif step in ("record", "record:drafts"):
-                            started["consent"] = record(window, step == "record:drafts")
+                        elif step in ("record", "record:drafts", "record:instant"):
+                            started["consent"] = record(window, step != "record",
+                                                        step == "record:instant")
                         elif step == "minimise":
                             window.minimize()
                     if state == "quit":
                         break
-                    if state in CAPTURE_STATES:
+                    if state in OPEN_STATES:
                         send(state=state, recording=recording_now(), **started)
                     else:
                         send(state=state)
@@ -2431,7 +2531,7 @@ def child(args):
                     pass
                 window.destroy()
 
-        def record(window, live=False):
+        def record(window, live=False, instant_words=False):
             """Start a recording as a person does: microphone recording on in
             Settings (and live drafts on or off, as `live` says), then Record.
             The bridge asks the app's own recording question; consent_answerer
@@ -2445,7 +2545,12 @@ def child(args):
             if live and speech is None:
                 raise RuntimeError("live drafts need the public speech (--speech)")
             feed["blocks"] = speech if live else blocks
-            holder["drafts"] = live
+            holder["drafts"] = "instant" if instant_words else live
+            if instant_words or live:
+                # Instant words (#105) for this recording only: the app keeps
+                # them off until their setting arrives (instant.ENABLED).
+                from workspace import instant
+                instant.ENABLED = bool(instant_words)
             changes = {} if ws.settings["microphone"] else {"microphone": True}
             try:
                 drafting = bool(ws.settings["live_drafts"])
@@ -2484,8 +2589,18 @@ def child(args):
                         raise TimeoutError(f"live drafts did not start running in "
                                            f"{DRAFT_WAIT_S} s ({draft.get('state') or 'off'})")
                     time.sleep(0.2)
-            log(f"recording {'public speech with live drafts on' if live else 'synthetic audio'}"
-                f" (confirmation {outcome})")
+            if instant_words:                     # then instant words load, then run
+                end = time.monotonic() + DRAFT_WAIT_S
+                while ((recording_now() or {}).get("instant") or {}).get("state") \
+                        != INSTANT_RUNNING:
+                    if time.monotonic() > end:
+                        got = (recording_now() or {}).get("instant") or {}
+                        raise TimeoutError(f"instant words did not start running in "
+                                           f"{DRAFT_WAIT_S} s ({got.get('state') or 'off'})")
+                    time.sleep(0.2)
+            what = ("public speech with live drafts and instant words on" if instant_words
+                    else "public speech with live drafts on" if live else "synthetic audio")
+            log(f"recording {what} (confirmation {outcome})")
             return outcome
 
         def recording_now():
@@ -2499,6 +2614,21 @@ def child(args):
             out = {"state": rec["state"], "seconds": rec["seconds"]}
             if isinstance(draft, dict):
                 out["draft"] = {k: draft.get(k) for k in ("state", "count", "generation")}
+            # The recorder's gaps and overruns so far (counts, #105: no gaps
+            # while the draft workers run), the draft workers' process ids
+            # (their own CPU) and instant words' state and word count, never
+            # their text.
+            opened = getattr(ws, "_recording", None)
+            if opened is not None:
+                out["gaps"] = sum(1 for e in opened.journal.get("events", ())
+                                  if e.get("kind") in ("gap", "overrun"))
+            session = getattr(ws, "_drafts", None)
+            if session is not None:
+                out["draft_pid"] = session.pid
+                inst = getattr(session, "instant", None)
+                if inst is not None:
+                    out["instant"] = {"state": inst.state, "words": inst.word_count,
+                                      "pid": inst.pid}
             return out
 
         # make_api's confirm seam (for tests and this tool; the app passes none):
@@ -2512,7 +2642,12 @@ def child(args):
         holder["window"] = window
         if hasattr(shell, "watch_minimise"):     # as workspace/__main__.py does (#129)
             capturing = getattr(ws, "_capturing", ws.recording_active)
-            window.events.shown += lambda: shell.watch_minimise(window, capturing)
+            told = getattr(ws, "window_minimised", None)      # #105: instant words pause
+            if told is not None:
+                window.events.shown += lambda: shell.watch_minimise(window, capturing,
+                                                                    on_change=told)
+            else:
+                window.events.shown += lambda: shell.watch_minimise(window, capturing)
         shell.run(lambda w: threading.Thread(target=drive, args=(w,), daemon=True).start(),
                   (window,), storage_path=shell.storage_folder(ws.root))
         return 0
@@ -2547,6 +2682,9 @@ def main():
                         help=f"the excerpt's length, looped (default {SPEECH_SECONDS:g})")
     parser.add_argument("--draft-models", help="a model folder holding Parakeet v2 and its "
                         "speech detector, as the app downloads them (only read)")
+    parser.add_argument("--instant", action="store_true",
+                        help="also measure recording with live drafts and instant words on "
+                        "(#105); --draft-models must hold the instant words model too")
     parser.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--store-child", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--speech-child", action="store_true", help=argparse.SUPPRESS)
@@ -2589,6 +2727,8 @@ def drafts_input_problem(args):
     speech, models = args.speech, args.draft_models
     if bool(speech) != bool(models):
         return "--speech and --draft-models go together"
+    if getattr(args, "instant", False) and not speech:
+        return "--instant needs --speech and --draft-models"
     if not speech:
         return None if args.quick else (
             "a release run also measures recording with live drafts on: give --speech (a "

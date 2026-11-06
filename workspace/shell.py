@@ -207,10 +207,13 @@ class Minimise:
 
     `webview` has hide(), show(), low_memory(on), suspend() and resume().
     `later(seconds, fn)` runs fn later on the UI thread and returns something
-    with cancel()."""
+    with cancel(). `on_change(minimised)`, if given, is told each change
+    after the steps above (instant words pause while minimised, #105); an
+    error in it changes nothing here."""
 
-    def __init__(self, webview, recording, later):
+    def __init__(self, webview, recording, later, on_change=None):
         self.webview, self.recording, self.later = webview, recording, later
+        self.on_change = on_change
         self.minimised = False
         self.low = False           # set before the call, so a failure is still undone
         self.suspended = False
@@ -220,6 +223,16 @@ class Minimise:
         if minimised == self.minimised:
             return
         self.minimised = minimised
+        try:
+            self._apply(minimised)
+        finally:
+            if self.on_change is not None:
+                try:
+                    self.on_change(minimised)
+                except Exception:
+                    pass
+
+    def _apply(self, minimised):
         if minimised:
             self.webview.hide()
             if self.recording():
@@ -319,13 +332,14 @@ def _guarded(fn, *args):
         pass
 
 
-def watch_minimise(window, recording):
+def watch_minimise(window, recording, on_change=None):
     """Apply Minimise to the window's minimise and restore. Call once the window
-    is shown. `recording` is a callable: is a recording open or opening now?"""
+    is shown. `recording` is a callable: is a recording open or opening now?
+    `on_change(minimised)` is told of each change (Minimise)."""
     from System import EventHandler
     from System.Windows.Forms import FormWindowState
     form = window.native
-    state = Minimise(_WebView2(form.browser.webview), recording, _UiTimer)
+    state = Minimise(_WebView2(form.browser.webview), recording, _UiTimer, on_change)
 
     def on_resize(sender, args):              # WinForms raises this on the UI thread
         _guarded(state.changed, form.WindowState == FormWindowState.Minimized)
