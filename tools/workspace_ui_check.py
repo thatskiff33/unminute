@@ -79,6 +79,7 @@ STUCK_DIALOG_S = 20
 PAGE_ERRORS = []
 PAGE_ERROR_JS = """
     const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    const groupOf = window.workspace.groupOf;   // the page's own, from meetings.js (#488)
     setTimeout(groupOf, 0, null);           // a timer: groupOf(null) throws in meetings.js
     await wait(1500);                       // the bridge takes one page error a second
     const target = document.createElement('div');

@@ -1817,8 +1817,12 @@ class LockedPageTests(unittest.TestCase):
                 self.assertRegex(first, r"^if \(.*state\.locked.*\) return;")
         drop = self.function("wireDrop")
         self.assertIn("if (state.locked) return;", drop[drop.index('"dragover"'):])
-        # And the locked screen stops any poll already scheduled.
-        self.assertIn("clearTimeout(pollTimer)", self.function("renderLocked"))
+        # And the locked screen stops any poll already scheduled (pollTimer is
+        # polling.js's own, so the locked screen asks it to, #488).
+        self.assertIn("stopPolling();", self.function("renderLocked"))
+        stop = self.function("stopPolling")
+        self.assertIn("clearTimeout(pollTimer);", stop)
+        self.assertIn("pollTimer = null;", stop)
 
     def test_the_recording_card_does_not_render_or_poll_while_locked(self):
         # #346 with #318: the recording card (its clock, level meters and

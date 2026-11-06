@@ -1,7 +1,14 @@
 // Unminute UI: the meetings page and the locked screen.
-// One of the page's ordered scripts (index.html, #414): it only declares.
-// main.js, the last, runs the page.
+// One of the page's modules (#414, #488): it only declares, and main.js,
+// which index.html loads, runs the page.
 "use strict";
+import { $, attempt, call, el, say, sayDone, state } from "./core.js";
+import {
+  VIEWS, button, joinParts, linkButton, notice, openMeeting, setMenu
+} from "./navigation.js";
+import { transcribeAgain } from "./confirm.js";
+import { stopRecTimer } from "./drafts.js";
+import { refresh, stopPolling } from "./polling.js";
 
 // -- meetings page -----------------------------------------------------------------
 function dayWord(days) { return days === 0 ? "Today" : days === 1 ? "Yesterday" : `${days} days old`; }
@@ -198,10 +205,10 @@ async function renderStatus() {
   const parts = [];
   if (s.importing) parts.push(`Importing ${s.importing} recording${s.importing > 1 ? "s" : ""}`);
   if (s.message) parts.push(s.message);
-  const line = parts.join(" · ");
-  if (line !== state.statusLine) {
-    state.statusLine = line;
-    if (line) say(line, { sticky: true });
+  const statusText = parts.join(" · ");
+  if (statusText !== state.statusLine) {
+    state.statusLine = statusText;
+    if (statusText) say(statusText, { sticky: true });
     else if ($("status").dataset.sticky) say("");
   }
   $("import-errors").replaceChildren(...s.import_errors.map((e) => notice("alert", e,
@@ -301,8 +308,7 @@ const hex32 = (n) => "0x" + (n >>> 0).toString(16).toUpperCase().padStart(8, "0"
 
 function renderLocked(info) {
   state.locked = info;
-  clearTimeout(pollTimer);              // nothing polls while locked
-  pollTimer = null;
+  stopPolling();                        // nothing polls while locked
   stopRecTimer();
   setMenu(false);
   $("sidebar").hidden = true;
@@ -357,3 +363,9 @@ function renderReminders(r) {
   $("reminders").replaceChildren(...lines);
   $("reminders").hidden = lines.length === 0;
 }
+
+// What the page's other modules import from this one (#488).
+export {
+  MODE, dayWord, declined, groupOf, lengthWord, renderLists, renderLocked, renderReminders,
+  renderStatus, speakersWord, wireLocked
+};

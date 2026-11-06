@@ -1,12 +1,14 @@
 # tests/page_scripts.py
 # The page's scripts (workspace/ui), for the tests that read the page's own
-# code. Since #414 the page is several ordered classic scripts, listed in
-# index.html, instead of one app.js: source() joins them in that order, so a
-# test that looked for a function or a phrase in app.js finds it in the same
-# text. Guards that must see every script read every_script(), which takes the
-# .js files from the folder itself rather than from index.html, and
-# tests/test_page_scripts.py keeps the two, and the package allowlist, the same
-# set.
+# code. Since #414 the page is several scripts instead of one app.js, and
+# since #488 they are ES modules: index.html loads main.js, which imports the
+# others. names() lists them in the order main.js's PAGE_SCRIPTS numbers them
+# (a page error's file goes by that number), and source() joins them in that
+# order, so a test that looked for a function or a phrase in app.js finds it in
+# the same text. Guards that must see every script read every_script(), which
+# takes the .js files from the folder itself, and tests/test_page_scripts.py
+# keeps that, PAGE_SCRIPTS, the modules main.js's imports reach, and the
+# package allowlist the same set.
 #
 # index.html is read with the standard library's HTML parser, not a pattern,
 # so a script tag is found however it is written (<SCRIPT>, </script >, an
@@ -14,14 +16,15 @@
 # py/bad-tag-filter; #414 step 3a review).
 #
 # Tests that run the page's code use run(): tests/page_vm.js loads the real
-# scripts, in index.html's order, into one Node.js context and runs the test's
-# JavaScript after them, so it calls the functions the page ships rather than
-# copies cut out of the source (#414 step 3b). function_text() and
-# listener_texts() give a loaded function's own text as Node.js holds it, for
-# the checks on how a function is written.
+# modules, from main.js through their imports, into one Node.js context and
+# runs the test's JavaScript after them, so it calls the functions the page
+# ships rather than copies cut out of the source (#414 step 3b, #488).
+# function_text() and listener_texts() give a loaded function's own text as
+# Node.js holds it, for the checks on how a function is written.
 
 import functools
 import json
+import re
 import shutil
 import subprocess
 import unittest
@@ -68,12 +71,23 @@ def script_tags(html):
     return parser.found, parser.ends
 
 
-def names(html=None):
-    """The page's scripts, as index.html loads them, in order: each script
-    element's src (None for one without), so a test sees every element."""
+def tag_sources(html=None):
+    """The scripts index.html loads, in order: each script element's src (None
+    for one without), so a test sees every element."""
     if html is None:
         html = (UI / "index.html").read_text(encoding="utf-8")
     return [dict(found["attrs"]).get("src") for found in script_tags(html)[0]]
+
+
+def names(main=None):
+    """The page's modules, in the order main.js's PAGE_SCRIPTS lists them: a
+    page error's file is sent as its place in that list (main.js, scriptLine)."""
+    if main is None:
+        main = (UI / "main.js").read_text(encoding="utf-8")
+    listed = re.search(r"^const PAGE_SCRIPTS = \[([^\]]*)\];", main, re.M)
+    if listed is None:
+        raise AssertionError("PAGE_SCRIPTS not found in main.js")
+    return re.findall(r'"([^"]+)"', listed.group(1))
 
 
 def paths():
@@ -81,7 +95,7 @@ def paths():
 
 
 def source():
-    """Every page script's text, joined in load order."""
+    """Every page module's text, joined in PAGE_SCRIPTS's order."""
     return "\n".join(path.read_text(encoding="utf-8") for path in paths())
 
 
@@ -95,15 +109,22 @@ def every_source():
     return "\n".join(path.read_text(encoding="utf-8") for path in every_script())
 
 
-def run(code, timeout=60):
-    """Run code (JavaScript) in Node.js after the page's scripts, and return
-    what it printed, read as JSON. The scripts are the real ones, loaded in
-    index.html's order (tests/page_vm.js says what code may replace). The test
-    is skipped without Node.js; anything Node.js reports as an error fails it."""
+def run(code, timeout=60, before=None, main=None):
+    """Run code (JavaScript) in Node.js after the page's modules, and return
+    what it printed, read as JSON. The modules are the real ones, loaded from
+    main.js through their imports (tests/page_vm.js says what code may
+    replace). before, if given, runs first, before the page loads; main may
+    name another folder's main.js (synthetic modules, for the harness's own
+    tests). The test is skipped without Node.js; anything Node.js reports as an
+    error fails it."""
     node = shutil.which("node")
     if not node:
         raise unittest.SkipTest("Node.js not installed")
-    done = subprocess.run([node, str(PAGE_VM), *map(str, paths())], input=code,
+    command = [node, "--experimental-vm-modules", str(PAGE_VM)]
+    if before is not None:
+        command += ["--before", before]
+    command.append(str(main or UI / "main.js"))
+    done = subprocess.run(command, input=code,
                           capture_output=True, text=True, encoding="utf-8", timeout=timeout,
                           check=False, cwd=ROOT)
     if done.returncode != 0:
@@ -113,13 +134,13 @@ def run(code, timeout=60):
 
 @functools.cache
 def _loaded_texts():
-    """Every function the page's scripts declare (function name() {...}), by
-    name, and every listener the page added to the document and the window as
-    it loaded, by event type in the order added: each as written, since Node.js
-    keeps a function's own text."""
+    """Every function the page's modules hold at top level (function name()
+    {...}, or a const that holds one), by name, and every listener the page
+    added to the document and the window as it loaded, by event type in the
+    order added: each as written, since Node.js keeps a function's own text."""
     return run(r"""
 const functions = {}, native = /\{\s*\[native code\]\s*\}$/;
-for (const name of Object.getOwnPropertyNames(globalThis)) {
+for (const name of Object.values(loaded.modules).flat()) {
   const value = globalThis[name];
   if (typeof value === "function" && !native.test(String(value))) functions[name] = String(value);
 }
@@ -140,7 +161,7 @@ def function_text(name):
     """The text of the page function declared as name, as the page ships it."""
     texts = _loaded_texts()["functions"]
     if name not in texts:
-        raise AssertionError(f"{name} is not a function declared by the page scripts")
+        raise AssertionError(f"{name} is not a function declared by the page modules")
     return _lines(texts[name])
 
 

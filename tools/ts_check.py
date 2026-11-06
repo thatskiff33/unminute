@@ -11,7 +11,8 @@
 #
 # Only the scripts that opt in with a "// @ts-check" line near their top are
 # checked (tsconfig.json has checkJs off); the others are still read, because
-# the page's ordered classic scripts share one global scope (index.html, #414).
+# the checked ones import from them (the page's modules, #414, #488), so a name
+# a checked module uses without importing it is reported too.
 # The type notes are JSDoc comments, so the shipped code does not change.
 # tools/page_globals.d.ts declares what the page uses but does not declare
 # itself (the pywebview bridge); it is never in the package.

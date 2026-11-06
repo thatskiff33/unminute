@@ -1,7 +1,14 @@
 // Unminute UI: handoff.
-// One of the page's ordered scripts (index.html, #414): it only declares.
-// main.js, the last, runs the page.
+// One of the page's modules (#414, #488): it only declares, and main.js,
+// which index.html loads, runs the page.
 "use strict";
+import {
+  $, attempt, call, clearError, clearErrorsIn, el, fmtTime, say, sayDone, showError, state
+} from "./core.js";
+import { joinParts, show } from "./navigation.js";
+import { lengthWord } from "./meetings.js";
+import { plural } from "./meeting.js";
+import { confirmFinal } from "./confirm.js";
 
 // -- handoff (#22) ------------------------------------------------------------------
 // A page in three steps: template, details to remove, copy or save. The
@@ -292,3 +299,6 @@ function wireHandoff() {
   $("ho-close").addEventListener("click", closeHandoff);
   $("ho-final").addEventListener("click", () => { if (state.detail) confirmFinal(state.detail); });
 }
+
+// What the page's other modules import from this one (#488).
+export { closeHandoff, closeTemplateEditor, handoffState, openHandoff, wireHandoff };

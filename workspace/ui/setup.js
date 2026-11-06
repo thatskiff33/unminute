@@ -1,7 +1,16 @@
 // Unminute UI: setup.
-// One of the page's ordered scripts (index.html, #414): it only declares.
-// main.js, the last, runs the page.
+// One of the page's modules (#414, #488): it only declares, and main.js,
+// which index.html loads, runs the page.
 "use strict";
+import { $, attempt, call, el, errorHome, say, sayDone, showError, state } from "./core.js";
+import { button, icon, joinParts, linkButton, show } from "./navigation.js";
+import { confirmDialog } from "./confirm.js";
+import {
+  computerLocked, computerNote, downloadOff, itManaged, modelDownloadsOff
+} from "./settings.js";
+import { micLists, relistMics, relistOnFocus, showSuMics } from "./recording.js";
+import { putText } from "./drafts.js";
+import { refresh } from "./polling.js";
 
 // -- setup (#19) ----------------------------------------------------------------------
 // First run in five steps. The token is typed into a password field and
@@ -240,7 +249,7 @@ function renderSummary(s) {
   const rec = s.cards.find((c) => c.role === "speech" && c.recommended);
   const ready = s.cards.find((c) => c.role === "speech" && c.state === "ready");
   const speaker = s.cards.find((c) => c.role === "speakers") || {};
-  const line = (label, value, on) => el("li", {},
+  const summaryRow = (label, value, on) => el("li", {},
     el("span", { class: `s-icon${on ? "" : " off"}` }, on ? icon("tick", 14) : el("span", { "aria-hidden": "true", textContent: "–" })),
     el("span", { class: "s-label", textContent: label }), el("span", { class: "s-value", textContent: value }));
   const speech = ready ? `${cardName(ready)}, ready` : isRunning(rec) ? "Downloading…"
@@ -250,8 +259,8 @@ function renderSummary(s) {
     : isRunning(speaker) ? "Downloading…" : isQueued(speaker) ? "Queued"
     : "Not set up. You can add it later in Settings.";
   const mic = !suState.mic ? "Skipped. Turn on in Settings." : suState.computer ? "On, with computer audio" : "On";
-  $("su-summary").replaceChildren(line("Speech model", speech, !!ready),
-    line("Speaker names", names, names === "Ready"), line("Microphone", mic, !!suState.mic));
+  $("su-summary").replaceChildren(summaryRow("Speech model", speech, !!ready),
+    summaryRow("Speaker names", names, names === "Ready"), summaryRow("Microphone", mic, !!suState.mic));
 }
 
 async function renderSuMic() {
@@ -342,3 +351,8 @@ function wireSetup() {
     show("meetings");
   }));
 }
+
+// What the page's other modules import from this one (#488).
+export {
+  cardsSig, downloadRow, renderSetup, replaceKeeping, setStep, suState, updateProgress, wireSetup
+};

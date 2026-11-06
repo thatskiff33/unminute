@@ -376,8 +376,8 @@ def main():
     if args.page_ms <= 0:
         parser.error("--page-ms must be more than 0")
     if not design_check.page_tags_found():
-        sys.exit("index.html no longer loads core.js and main.js as expected; "
-                 "update design_check.APP_TAG and MAIN_TAG.")
+        sys.exit("index.html no longer loads main.js as its one module script; "
+                 "update design_check.MAIN_TAG.")
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), design_check.Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{server.server_address[1]}"

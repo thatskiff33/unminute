@@ -1,7 +1,14 @@
 // Unminute UI: speaker names.
-// One of the page's ordered scripts (index.html, #414): it only declares.
-// main.js, the last, runs the page.
+// One of the page's modules (#414, #488): it only declares, and main.js,
+// which index.html loads, runs the page.
 "use strict";
+import { $, PAGE, SAVE_DELAY_MS, attempt, call, el, fmtTime, say, sayDone, state } from "./core.js";
+import {
+  initials, mergeIcon, playIcon, plural, renderMeeting, speakerClass, transcriptRow
+} from "./meeting.js";
+import {
+  markHits, newSearch, play, searchSeq, showHits, takeJump, updatePlayer
+} from "./playback.js";
 
 // -- speaker names (#21) ---------------------------------------------------------
 function canName() {
@@ -21,9 +28,9 @@ function whoButton(item, again) {
 
 // Reassigning needs an explicit Move: arrow keys on a select fire "change"
 // on every step, which must not move the passage.
-async function reassign(button, item) {
+async function reassign(opener, item) {
   if (!canName()) { say("Speakers can be changed only before the review is confirmed."); return; }
-  const open = button.closest("li").querySelector(".reassign");
+  const open = opener.closest("li").querySelector(".reassign");
   if (open) { open.querySelector("select").focus(); return; }
   const list = await attempt(() => call("speakers", state.mid));
   if (!list) return;
@@ -31,9 +38,9 @@ async function reassign(button, item) {
     ...list.speakers.map((s) => el("option", { value: s.label, textContent: s.name,
                                                  selected: s.label === item.label })),
     el("option", { value: "new", textContent: "Someone else (new speaker)" }));
-  const body = button.closest("li").querySelector(".row-body");
+  const body = opener.closest("li").querySelector(".row-body");
   const box = el("div", { class: "reassign" }, el("label", {}, "Move this passage to ", sel));
-  const restore = () => { if (box.isConnected) { box.remove(); button.hidden = false; } };
+  const restore = () => { if (box.isConnected) { box.remove(); opener.hidden = false; } };
   const move = el("button", { type: "button", class: "primary", textContent: "Move", on: { click: () => attempt(async () => {
     await call("assign_speaker", state.mid, item.id, sel.value);
     restore();
@@ -44,12 +51,12 @@ async function reassign(button, item) {
   const cancel = el("button", { type: "button", class: "cancel", textContent: "Cancel", on: { click: restore } });
   box.append(move, cancel);
   box.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") { e.preventDefault(); restore(); button.focus(); }
+    if (e.key === "Escape") { e.preventDefault(); restore(); opener.focus(); }
     if (e.key === "Enter" && e.target === sel) { e.preventDefault(); move.click(); }
   });
   // A label shown on hover makes way for the box; a speaker's first label stays above it.
-  if (button.classList.contains("again")) { button.hidden = true; body.prepend(box); }
-  else button.after(box);
+  if (opener.classList.contains("again")) { opener.hidden = true; body.prepend(box); }
+  else opener.after(box);
   sel.focus();
 }
 
@@ -347,3 +354,9 @@ async function undo() {
   } else if (r === null) say("Nothing to undo");
   renderMeeting();
 }
+
+// What the page's other modules import from this one (#488).
+export {
+  ABANDONED, REDRAW, appendTranscript, canName, openNames, renderTranscript, startEditing,
+  stopEditing, undo, undoSpeakers, whoButton
+};
