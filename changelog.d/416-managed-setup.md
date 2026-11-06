@@ -1,0 +1,1 @@
+- **Setup without token steps for staff.** When IT manages downloads or model copies, missing speaker models now say to ask IT in Setup and Downloads. Ready speaker models explain that no account or token is needed. Microphone and Finish setup errors stay beside their controls until dismissed or the action succeeds. The guide explains how staff can continue without speaker names.

@@ -546,6 +546,47 @@ class DownloadPlaceTests(unittest.TestCase):
     asked, so a refusal stays beside it rather than in the toast (#473 review:
     Setup step 2's own Download, Repair and Cancel passed none)."""
 
+    def test_managed_speaker_model_never_offers_token_setup(self):
+        result = page_scripts.run(r"""
+const nodes = {};
+document = { getElementById: (id) => nodes[id] ||= { hidden: false, textContent: "" } };
+el = (tag, props = {}, ...children) => ({ tag, ...props, children });
+renderSuSteps = () => {};
+icon = () => ({});
+replaceKeeping = () => {};
+updateProgress = () => {};
+renderSummary = () => {};
+state.managed = { allow: { AllowModelDownloads: false, AllowUserModels: false } };
+const speaker = { name: "speaker", role: "speakers", state: "missing", needs_token: true,
+                  about: "Speaker names.", label: "Speaker names", size_gb: 1 };
+const speech = { name: "speech", role: "speech", state: "ready", recommended: true };
+call = async () => ({ cards: [speech, speaker], managed: state.managed, speech_ready: true });
+(async () => {
+  const row = downloadRow(speaker, { cards: [speaker] }, false);
+  await renderSetup();
+  const missing = { hidden: nodes["speaker-setup"].hidden,
+                    status: nodes["su-speaker-status"].textContent,
+                    action: row.children[0].children[2].textContent };
+  speaker.state = "ready";
+  await renderSetup();
+  console.log(JSON.stringify({ missing, readyHidden: nodes["speaker-setup"].hidden }));
+})();
+""")
+        self.assertTrue(result["missing"]["hidden"])
+        self.assertEqual(result["missing"]["action"], "Ask your IT team")
+        self.assertIn("IT team", result["missing"]["status"])
+        self.assertTrue(result["readyHidden"])
+
+    def test_setup_test_and_finish_keep_errors_beside_the_action(self):
+        actions = [args for args in call_args(page_functions("wireSetup"), "attempt")
+                   if any(f'"{method}"' in args[0]
+                          for method in ("test_microphone", "finish_setup"))]
+        self.assertEqual(len(actions), 2)
+        for args in actions:
+            with self.subTest(action=args[0][:60]):
+                self.assertEqual(len(args), 2, "Setup action without an error place")
+                self.assertIn(args[1], ('"su-test"', '"s-finish"'))
+
     def test_every_start_download_passes_its_control(self):
         calls = call_args(APP_JS, "startDownload")
         self.assertGreaterEqual(len(calls), 4, "the page's startDownload calls were not found")

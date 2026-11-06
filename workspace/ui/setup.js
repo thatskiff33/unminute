@@ -157,6 +157,8 @@ function downloadRow(c, s, inUse) {
   else if (c.state === "ready")
     action = button("Check every file", (e) => attempt(() => call("verify_model", c.name).then(refresh), e.currentTarget),
                     { title: "Compare every file with its published checksum" });
+  else if (downloadOff(c))
+    action = itManaged(c);
   else if (c.needs_token && c.state === "missing")
     action = button("Set up…", () => {
       suState.step = 3;
@@ -164,8 +166,6 @@ function downloadRow(c, s, inUse) {
       show("setup");
       setStep(3);
     }, { primary: true });
-  else if (downloadOff(c))
-    action = itManaged(c);
   else action = button(c.state === "missing" ? `Download (${c.size_gb} GB)` : "Repair",
                        (e) => startDownload(c.name, { near: e.currentTarget }), { primary: true });
   // Download, Repair and Set up stay available: another download queues (#366).
@@ -218,7 +218,12 @@ async function renderSetup() {
   $("su-other-title").textContent = `Other options: ${others.map(cardName).join(", ")}`;
   $("su-2-note").textContent = isRunning(rec) || isQueued(rec) ? "You can keep going while it downloads" : "";
   const speaker = s.cards.find((c) => c.role === "speakers") || {};
-  $("speaker-setup").hidden = speaker.state === "ready";
+  $("speaker-setup").hidden = speaker.state === "ready" || modelDownloadsOff();
+  $("su-speaker-about").textContent = speaker.state === "ready"
+    ? "Speaker names are ready to use. No account or token is needed."
+    : modelDownloadsOff()
+    ? "Your IT team manages speaker names on this computer."
+    : "The speaker model needs a free Hugging Face account to download, once. After that it works offline and the token is not needed.";
   $("s-download-speakers").disabled = isRunning(speaker) || isQueued(speaker) || modelDownloadsOff();
   $("s-token").disabled = modelDownloadsOff();
   $("s-use-remembered").hidden = !s.token_remembered || speaker.state === "ready"
@@ -229,6 +234,7 @@ async function renderSetup() {
     ? "A Hugging Face token is remembered in Windows Credential Manager. Removing it does not affect models already downloaded."
     : "";
   putText($("su-speaker-status"), speaker.state === "ready" ? "The speaker model is downloaded and ready."   // live: only on change
+    : modelDownloadsOff() ? "Ask your IT team to install or repair the speaker model. You can skip this step and keep using Unminute."
     : isQueued(speaker) ? queueNote(speaker.download)
     : speaker.download ? speaker.download.message : "");
   renderSummary(s);
@@ -281,7 +287,7 @@ function startDownload(name, extra = {}) {
 
 function wireSetup() {
   for (const b of document.querySelectorAll("[data-help]"))
-    b.addEventListener("click", () => attempt(() => call("open_help", b.dataset.help)));
+    b.addEventListener("click", () => attempt(() => call("open_help", b.dataset.help), b));
   for (const b of document.querySelectorAll("#view-setup [data-go]"))
     b.addEventListener("click", () => setStep(Number(b.dataset.go)));
   const speakerName = () => (state.setup.cards.find((c) => c.role === "speakers") || {}).name;
@@ -306,11 +312,11 @@ function wireSetup() {
     await call("set_settings", { microphone: $("su-mic").checked });
     micLists["su-device"].stale = true;
     renderSuMic();
-  }));
+  }, "su-mic"));
   $("su-computer").addEventListener("change", () => attempt(async () => {
     await call("set_settings", { computer_audio: $("su-computer").checked });
     renderSuMic();
-  }));
+  }, "su-computer"));
   $("su-skip-4").addEventListener("click", () => {
     // First run only: skipping undoes a switch turned on here. Later visits leave Settings alone.
     if (suState.mic && !state.setup.onboarded)
@@ -330,7 +336,7 @@ function wireSetup() {
     box.classList.toggle("quiet", !t.heard);
     box.textContent = t.heard ? `Sound heard (loudest ${t.peak_db} dB).`
       : `Very quiet (loudest ${t.peak_db} dB). Speak, or check the microphone and its volume.`;
-  }));
+  }, "su-test"));
   relistOnFocus("su-device", showSuMics);
   $("s-finish").addEventListener("click", () => attempt(async () => {
     const speaker = state.setup.cards.find((c) => c.role === "speakers") || {};
@@ -340,5 +346,5 @@ function wireSetup() {
       : !suState.skipSpeakers && (speaker.state === "ready" || isRunning(speaker) || isQueued(speaker));
     await call("finish_setup", speakers);
     show("meetings");
-  }));
+  }, "s-finish"));
 }

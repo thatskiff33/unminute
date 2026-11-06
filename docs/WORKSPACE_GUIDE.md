@@ -4,7 +4,7 @@ Unminute turns a meeting recording into a reviewed transcript on your own comput
 
 It is a temporary workspace, not an archive. Your final documents live wherever your organisation files them.
 
-This guide covers the packaged workspace, as it is in the project's latest code. The newest release is 0.5.0-preview.7 (3 November 2026); what is newer than that release is listed in the README, under "Not yet in a release"; its change notes wait in the `changelog.d` folder until the next release adds them to the changelog.
+For release availability and changes, see the [README](../README.md#not-yet-in-a-release) and [changelog](../CHANGELOG.md).
 
 **What you will do**
 
@@ -13,14 +13,14 @@ This guide covers the packaged workspace, as it is in the project's latest code.
 3. [Review](#working-on-a-meeting) the transcript: play passages, fix words and name speakers, then confirm.
 4. [Hand off](#handing-off-and-cleaning-up) the reviewed text to your organisation's approved AI assistant, then confirm the final document is saved. Unminute clears the meeting.
 
-On Import, Hand off, Settings, Downloads and Setup's download steps, if something cannot be done, Unminute says why next to the button you used, and the message stays until you select **Dismiss** or the action works. Elsewhere the reason shows briefly at the bottom right of the window. [Troubleshooting and support](#troubleshooting-and-support) lists the messages and what to do.
+On Import, Hand off, Settings, Downloads and Setup, if something cannot be done, Unminute says why next to the button you used, and the message stays until you select **Dismiss** or the action works. Elsewhere the reason shows briefly at the bottom right of the window. [Troubleshooting and support](#troubleshooting-and-support) lists the messages and what to do.
 
 ## Getting started
 
 1. **Install.** Your IT team may install the app for you. Otherwise, run `install.cmd` from the package. It installs for your Windows account only and needs no administrator rights.
 2. **Set up.** On first start, Setup takes you through five steps:
    - **Speech model:** Parakeet v2 is recommended (about 0.7 GB). Parakeet v3, Whisper large-v3 turbo and Whisper large-v3 are under Other options. Whisper large-v3 is the largest download, so expect it to be the slowest on a processor.
-   - **Speaker names** (optional): if your IT team installed the speaker model, this step says it is ready and asks for nothing: select **Continue**. Otherwise speaker identification needs a free Hugging Face account and token, once. Follow the steps on the screen. The token can be remembered in Windows Credential Manager and you can remove it at any time. Already-downloaded models keep working without it.
+   - **Speaker names** (optional): if your IT team installed the speaker model, this step says it is ready and asks for nothing: select **Continue**. If the step says your IT team manages speaker names, ask them to install or repair the model; select **Skip for now** to carry on without speaker names. You do not need an account or token. Otherwise speaker identification needs a free Hugging Face account and token, once. Follow the steps on the screen. The token can be remembered in Windows Credential Manager and you can remove it at any time. Already-downloaded models keep working without it.
    - **Microphone** (optional): turn on recording and test the microphone.
    - You can skip the optional steps and turn them on later in Settings. Settings > **Manage downloads** adds or repairs models later. Settings > **Speech model** marks a model that is not downloaded or is damaged.
    - **Models from your IT team.** Where Unminute is installed for everyone on the computer, your IT team may install the models too. They show as ready, with "Installed by your IT team." under Details in Manage downloads, and need no download or token. If your organisation uses only those models, a model they have not installed says to ask your IT team. If a copy your IT team installed is damaged, Manage downloads shows it as damaged (a missing file, or one of the wrong size, at once; damage inside a file of the right size once a meeting fails to load the model or **Check every file** runs, and until then it shows as installed by your IT team) and says to ask your IT team to repair it (or, where your own copies are allowed, to use **Repair** to download your own). Once your IT team has repaired it, it shows as ready again.
@@ -216,7 +216,7 @@ The earlier version's workspace and models stay on the computer until they are d
 
 ## Troubleshooting and support
 
-When something you asked for cannot be done, the reason appears next to it: under **Import a recording**, in the Hand off step you used, in the Settings card you changed, on the Downloads page, or in Setup's download steps. It stays until you select **Dismiss** or the same action works. Other messages show briefly at the bottom right of the window, an error with an alert mark and a success with a tick.
+When something you asked for cannot be done, the reason appears next to it: under **Import a recording**, in the Hand off step you used, in the Settings card you changed, on the Downloads page, or in Setup. It stays until you select **Dismiss** or the same action works. Other messages show briefly at the bottom right of the window, an error with an alert mark and a success with a tick.
 
 ![An error kept under Import a recording, with Dismiss (sample)](screenshots/workspace-error.png)
 

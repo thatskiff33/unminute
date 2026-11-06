@@ -360,7 +360,7 @@
         <div class="su-head">
           <span class="eyebrow">Step 3 of 5 · Optional</span>
           <h2 id="su-3-title">Work out who spoke when</h2>
-          <p class="su-lede">The speaker model needs a free Hugging Face account to download, once. After that it works offline and the token is not needed.</p>
+          <p id="su-speaker-about" class="su-lede">The speaker model needs a free Hugging Face account to download, once. After that it works offline and the token is not needed.</p>
         </div>
         <div id="speaker-setup" class="su-token">
           <ol class="su-token-steps">
@@ -398,7 +398,7 @@
         </div>
       </section>
 
-      <section id="su-4" class="su-step" aria-labelledby="su-4-title" hidden>
+      <section id="su-4" class="su-step" aria-labelledby="su-4-title" data-errors hidden>
         <div class="su-head">
           <span class="eyebrow">Step 4 of 5 · Optional</span>
           <h2 id="su-4-title">Record with a microphone</h2>
@@ -417,6 +417,7 @@
             <span id="su-computer-note" class="t-note"></span></span>
             <input type="checkbox" id="su-computer" class="switch" role="switch"></label>
         </div>
+        <div class="error-slot"></div>
         <p class="su-note">Tell everyone in the meeting when it is being recorded, including people on a call.</p>
         <div class="su-foot">
           <button type="button" data-go="3">Back</button>
@@ -426,7 +427,7 @@
         </div>
       </section>
 
-      <section id="su-5" class="su-step" aria-labelledby="su-5-title" hidden>
+      <section id="su-5" class="su-step" aria-labelledby="su-5-title" data-errors hidden>
         <div class="su-head">
           <span class="su-done-mark" aria-hidden="true">
             <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg>
@@ -435,6 +436,7 @@
           <p class="su-lede">You can change any of this later in Settings.</p>
         </div>
         <ul id="su-summary" class="su-summary"></ul>
+        <div class="error-slot"></div>
         <p id="s-finish-note" class="su-note"></p>
         <div class="su-foot">
           <button type="button" data-go="4">Back</button>
