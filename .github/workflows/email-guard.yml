@@ -1,0 +1,110 @@
+# The Commit emails checks: no personal or work email address reaches main, the user's
+# decision DEC-094 (main's history is not rewritten; new addresses are stopped here).
+# tools/commit_emails.py does the checking and says what it allows; findings name the
+# commit, the field and the domain only, never an address, because these logs are public.
+#
+# - On a pull request (pushed, or its title or description edited): every commit's
+#   author and committer, its Co-authored-by trailers and message, the lines and file
+#   names the pull request adds, and its title and description.
+# - On a push to main: the commits pushed. GitHub writes a squash commit at merge time,
+#   with the merging account's commit address and a message made from the pull
+#   request, so no pull request check saw it. A finding there cannot
+#   be undone by a push (main is never force-pushed); it says the account's email
+#   privacy setting needs turning on before the next merge.
+#
+# Not yet a required check: a check joins the ruleset after 10 consecutive green runs,
+# and only the owner account can add it (docs/RELEASING.md). tests/test_consistency.py
+# lists this workflow as pending.
+#
+# The same supply-chain rules as ci.yml apply (see its header). Both jobs read only,
+# hold no secret and write nothing. The pull request job runs the checker from the base
+# commit, not the pull request's, so a pull request cannot loosen its own check (as
+# review-record.yml does); only a pull request that adds the checker, where the base has
+# none, runs its own copy. The workflow file itself still comes from the pull request,
+# as for every pull_request check (docs/SECURITY_MODEL.md, T15).
+name: Commit emails
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited]
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pull-request:
+    name: Commit emails
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read          # the checkout, for the base's checker and the diff
+      pull-requests: read     # the pull request's commits
+    steps:
+      # The merge commit with full history, so both the base and the head are here.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Commit emails, trailers, messages, added lines, title and description
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          set -euo pipefail
+          # The base's checker; the pull request's own copy only where the base commit
+          # is here and has none. Any other failure stops the check.
+          if git cat-file -e "$BASE_SHA:tools/commit_emails.py" 2>/dev/null; then
+            git show "$BASE_SHA:tools/commit_emails.py" > "$RUNNER_TEMP/check.py"
+          elif git cat-file -e "$BASE_SHA^{commit}"; then
+            echo "The base has no checker yet: running this pull request's copy."
+            cp tools/commit_emails.py "$RUNNER_TEMP/check.py"
+          else
+            echo "::error::The base commit is not in this checkout."
+            exit 1
+          fi
+          gh api --paginate "repos/$REPO/pulls/$PR/commits" \
+            --jq '.[] | {sha, author: .commit.author.email, committer: .commit.committer.email, message: .commit.message} | @json' \
+            > "$RUNNER_TEMP/commits.jsonl"
+          # --text: a file git takes for binary (a NUL byte) is still read line by line.
+          git diff --no-color --text --unified=0 "$BASE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/added.diff"
+          python3 -I "$RUNNER_TEMP/check.py" "$RUNNER_TEMP/commits.jsonl" "$RUNNER_TEMP/added.diff"
+
+  main:
+    name: Main commit emails
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read          # the checkout and the pushed commits
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The commits pushed to main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+        run: |
+          set -euo pipefail
+          fields='{sha, author: .commit.author.email, committer: .commit.committer.email, message: .commit.message} | @json'
+          if [ "${BEFORE//0/}" = "" ]; then       # a new branch: no earlier commit
+            gh api "repos/$REPO/commits/$AFTER" --jq "$fields" > "$RUNNER_TEMP/commits.jsonl"
+          else
+            gh api "repos/$REPO/compare/$BEFORE...$AFTER" --jq ".commits[] | $fields" > "$RUNNER_TEMP/commits.jsonl"
+          fi
+          python3 -I tools/commit_emails.py "$RUNNER_TEMP/commits.jsonl"

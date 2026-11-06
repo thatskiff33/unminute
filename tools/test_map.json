@@ -241,6 +241,11 @@
    "workspace/settings_ws.py",
    "workspace/watched_ws.py"
   ],
+  "test_commit_emails": [
+   ".github/workflows/email-guard.yml",
+   "packaging/licences/manifest.json",
+   "tools/commit_emails.py"
+  ],
   "test_compare_engines": [
    "tools/compare_engines.py",
    "workspace/drafts.py",

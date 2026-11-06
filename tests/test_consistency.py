@@ -521,7 +521,10 @@ class DocsTests(unittest.TestCase):
                           "review-record.yml")
     SUPPORT_JOBS = {"ci.yml": ("select-tests",)}
     REPORT_ONLY_WORKFLOWS = ("quality.yml", "scorecard.yml")
-    PENDING_REQUIRED_WORKFLOWS = ()
+    # email-guard.yml (DEC-094): "Commit emails" on pull requests and "Main commit
+    # emails" on pushes to main, until 10 consecutive green runs and the owner add
+    # the pull request check to the ruleset (docs/RELEASING.md).
+    PENDING_REQUIRED_WORKFLOWS = ("email-guard.yml",)
     OTHER_WORKFLOWS = ("release.yml", "review-record-rerun.yml")
 
     @staticmethod
