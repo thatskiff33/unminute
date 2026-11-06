@@ -71,9 +71,9 @@ Disabled: that permission cannot be given, and originals are never deleted, incl
 Enabled: such recordings can be imported with Import or by dragging them onto the window. Opening them connects to the file server with the user's Windows credentials. Users open them through the mapped drive letter; a \\server\share path chosen directly is still refused. Watched folders must still be on the computer.</string>
 
       <string id="HandoffFilenameIncludesTitle">Suggest the meeting title as the handoff file name</string>
-      <string id="HandoffFilenameIncludesTitle_Help">Disabled or not configured: Save suggests "Meeting transcript" with the date and time, because meeting titles often name the client and file names are recorded in many places (recent items, search indexes, sync logs).
+      <string id="HandoffFilenameIncludesTitle_Help">Enabled or not configured: Save suggests the meeting title and the date it was imported, with any words redacted for that handoff shown as [redacted]. When speaker names are being replaced, Save suggests "Meeting transcript" with the date and time instead.
 
-Enabled: Save suggests the meeting title, except when speaker names are being replaced.</string>
+Disabled: Save always suggests "Meeting transcript" with the date and time. Choose this if meeting titles often name clients: file names are recorded in many places (recent items, search indexes, sync logs). A value that is not 0 or 1, or a policy key that cannot be read, also gives the date and time only.</string>
 
       <string id="ClipboardClearMinutes">Clear the app's handoff copy from the clipboard</string>
       <string id="ClipboardClearMinutes_Help">Enabled: a handoff copied with the app's Copy button is removed from the clipboard after this many minutes (1 to 1440), and when the app closes, unless something else was copied in the meantime. Time the computer spends asleep counts.

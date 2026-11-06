@@ -101,10 +101,10 @@ class HandoffMixin:
         if not isinstance(anonymise, bool):
             raise WorkspaceError("Expected yes or no.")
         template = self._handoff(self.templates.get, tid)
-        out = self._handoff(handoff.build, self.store, mid, template, anonymise)
-        if self._allowed("HandoffFilenameIncludesTitle") and not anonymise:
-            out = {**out, "filename": handoff.title_filename(self.store.meeting(mid)["title"],
-                                                             out["filename"])}
+        # The title is in the suggested file name unless IT turns it off
+        # (DEC-093); build leaves it out when names are replaced.
+        out = self._handoff(handoff.build, self.store, mid, template, anonymise,
+                            self._allowed("HandoffFilenameIncludesTitle"))
         return {**out, "options": handoff.options(self.store, mid),
                 "assistant": self._assistant_shown(self._assistant())}
 

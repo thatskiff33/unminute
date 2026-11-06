@@ -729,22 +729,37 @@ class WorkspacePolicyTests(unittest.TestCase):
             self.assertEqual(ws._clipboard_clears, [])
 
     def test_handoff_file_name_and_folder(self):
+        # The title is in the suggested name unless IT turns it off (the
+        # owner's decision DEC-093); a bad or unreadable value gives the date
+        # only (K3: it is a permission). handoff.build applies it, after
+        # redactions and never when names are replaced (tests/test_handoff.py).
         import tempfile
+        import time
         from workspace import handoff
-        ws = self.open(HandoffFilenameIncludesTitle=True,
-                       HandoffDefaultFolder=tempfile.gettempdir())
-        mid = ws.store.create_meeting("Client: budget review")
-        built = {"filename": "Meeting transcript 2026-10-16 10-00.md"}
-        with mock.patch.object(handoff, "build", return_value=built), \
-                mock.patch.object(ws.templates, "get", return_value={}), \
-                mock.patch.object(handoff, "options", return_value={}):
-            self.assertEqual(ws.handoff_preview(mid, "t")["filename"],
-                             "Client  budget review - transcript.md")
-            self.assertEqual(ws.handoff_preview(mid, "t", True)["filename"],
-                             "Meeting transcript 2026-10-16 10-00.md")   # anonymised: no title
+        cases =(({}, True), ({"HandoffFilenameIncludesTitle": True}, True),
+                 ({"HandoffFilenameIncludesTitle": False}, False))
+        for values, expected in cases:
+            ws = self.open(**values)
+            mid = ws.store.create_meeting("Client: budget review")
+            with mock.patch.object(handoff, "build", return_value={}) as build, \
+                    mock.patch.object(ws.templates, "get", return_value={}), \
+                    mock.patch.object(handoff, "options", return_value={}):
+                ws.handoff_preview(mid, "t")
+                ws.policy = policy.PolicySource(reader=lambda: ({}, policy.UNREADABLE))
+                ws.handoff_preview(mid, "t")
+            self.assertEqual([c.args[4] for c in build.call_args_list],     # title_in_name
+                             [expected, False], values)
+            ws.close()
+            self.tmp.cleanup()
+        created = time.mktime((2026, 10, 16, 10, 0, 0, 0, 0, -1))
+        self.assertEqual(handoff.title_filename("Client: budget review", created),
+                         "Client  budget review 2026-10-16 - transcript.md")
         # Invisible format characters (a right-to-left override) cannot disguise the name.
-        self.assertEqual(handoff.title_filename("Notes\u202egnp.exe\x7f\x85", "x"),
-                         "Notes gnp.exe - transcript.md")
+        self.assertEqual(handoff.title_filename("Notes\u202egnp.exe\x7f\x85", created),
+                         "Notes gnp.exe 2026-10-16 - transcript.md")
+        self.assertEqual(handoff.title_filename(" .. ", created),
+                         "Meeting transcript 2026-10-16 10-00.md")
+        ws = self.open(HandoffDefaultFolder=tempfile.gettempdir())
         self.assertEqual(ws.handoff_folder(), tempfile.gettempdir())
 
     # -- Copy and open the assistant (#109) ------------------------------------------
@@ -927,7 +942,7 @@ class WorkspacePolicyTests(unittest.TestCase):
         managed = ws.get_settings()["managed"]
         self.assertEqual(managed["managed"], [])
         self.assertTrue(all(v for k, v in managed["allow"].items()
-                            if k not in ("AllowNetworkSources", "HandoffFilenameIncludesTitle")))
+                            if k != "AllowNetworkSources"))
 
 
 class PageModelGateTests(unittest.TestCase):

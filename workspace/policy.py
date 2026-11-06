@@ -62,9 +62,10 @@ SPEC = {
     # Clear the app's own handoff copy from the clipboard after N minutes (0 = never).
     "ClipboardClearMinutes": ("int", 0, False),
     # Where the handoff Save dialog starts, and whether the suggested file
-    # name may include the meeting title.
+    # name includes the meeting title: it does when not set (the owner's
+    # decision DEC-093); a bad or unreadable value gives the date only.
     "HandoffDefaultFolder": ("path", None, False),
-    "HandoffFilenameIncludesTitle": ("bool", False, True),
+    "HandoffFilenameIncludesTitle": ("bool", True, True),
     # Hand off "Copy and open <name>" (#109): copy the handoff, then open this
     # https address in the user's browser. Name and address are set together
     # (see app.Workspace._assistant); the app's default is ChatGPT.

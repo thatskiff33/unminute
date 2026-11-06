@@ -116,6 +116,25 @@ class HandoffTests(unittest.TestCase):
         self.edit(3, "The car park issue is closed.")
         self.assertNotEqual(transcript_mark(self.build()["markdown"]), before)
 
+    def test_file_name_has_the_redacted_title_and_date(self):
+        # The owner's decision DEC-093: the suggested name is the title and the
+        # import date. Built from the handoff's own title, so a word redacted
+        # for this handoff is redacted in the file name too.
+        self.review()
+        handoff.set_options(self.store, self.mid, [], ["aroha"])
+        minutes = self.templates.get("minutes")
+        out = handoff.build(self.store, self.mid, minutes, title_in_name=True)
+        self.assertRegex(out["filename"],
+                         r"^Board meeting \[redacted\] \d{4}-\d{2}-\d{2} - transcript\.md$")
+        self.assertEqual(out["redactions"], self.build()["redactions"])   # counted once
+        date_only = r"^Meeting transcript \d{4}-\d{2}-\d{2} \d{2}-\d{2}\.md$"
+        self.assertRegex(handoff.build(self.store, self.mid, minutes, True,
+                                       title_in_name=True)["filename"], date_only)
+        self.assertRegex(self.build()["filename"], date_only)       # not asked for
+        self.store.rename_meeting(self.mid, "  ")                   # no title left: date only
+        self.assertRegex(handoff.build(self.store, self.mid, minutes,
+                                       title_in_name=True)["filename"], date_only)
+
     def test_prompt_only_points_at_the_file(self):
         self.review()
         out = self.build("summary")

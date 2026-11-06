@@ -581,17 +581,19 @@ def _name_replacer(names, pseudo):
     return lambda text: pattern.sub(lambda m: alias[m.lastgroup], text)
 
 
-def build(store, mid, template, anonymise=False):
+def build(store, mid, template, anonymise=False, title_in_name=False):
     """The exact handoff texts for a reviewed meeting. anonymise replaces
     speaker names, in the labels and in the text, with Speaker 1, Speaker 2.
+    title_in_name (policy HandoffFilenameIncludesTitle) suggests the title,
+    as redacted for this handoff, in the file name; never with anonymise.
     If any part of the meeting cannot be read (#111 C2b-2), nothing is
     produced: the store raises DamagedContent (store.strict), so no preview,
     copy or saved file can hold a placeholder in place of the text."""
     with store.strict():
-        return _build(store, mid, template, anonymise)
+        return _build(store, mid, template, anonymise, title_in_name)
 
 
-def _build(store, mid, template, anonymise):
+def _build(store, mid, template, anonymise, title_in_name):
     # The title only: the meeting's note is the app's own and never goes out,
     # so a damaged one does not refuse the handoff.
     found = store.meetings("id = ?", (mid,), content=("title",))
@@ -622,7 +624,8 @@ def _build(store, mid, template, anonymise):
         count += n
         return rename(out)          # after redaction, so a redacted name stays redacted
 
-    title = r(m["title"]) or "Meeting"
+    shown = r(m["title"])           # redacted once: the heading and the file name
+    title = shown or "Meeting"
     names = (pseudo if anonymise else
              {lbl: r(name) for lbl, name in view["names"].items()})   # counted once each
     lines, speakers, skipped = [], [], 0
@@ -671,28 +674,35 @@ def _build(store, mid, template, anonymise):
             "digests": {k: digest(t) for k, t in texts.items()},
             "template": {"id": template["id"], "title": template["title"],
                          "version": template["version"]},
-            "filename": _filename(m["created_at"])}
+            "filename": (title_filename(shown, m["created_at"])
+                         if title_in_name and not anonymise else _filename(m["created_at"]))}
 
 
 def digest(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def title_filename(title, fallback):
-    """The meeting title as the suggested file name, when the organisation's
-    policy allows it (HandoffFilenameIncludesTitle, #111 A5). Characters
+def title_filename(title, created_at):
+    """The suggested file name: the meeting title (as redacted for the
+    handoff) and the date it was imported, "<title> YYYY-MM-DD -
+    transcript.md". The default since the owner's decision DEC-093, which
+    IT can turn off (HandoffFilenameIncludesTitle, #111 A5). Characters
     Windows refuses, control characters and invisible format characters
-    (such as right-to-left overrides, which can disguise a name) become spaces."""
+    (such as right-to-left overrides, which can disguise a name) become
+    spaces. With no title left, the date-and-time name (_filename)."""
     text = "".join(" " if unicodedata.category(ch) in ("Cc", "Cf") else ch
                    for ch in title or "")
-    safe = re.sub(r'[<>:"/\\|?*]', " ", text).strip(" .")[:80]
-    return f"{safe} - transcript.md" if safe else fallback
+    safe = re.sub(r'[<>:"/\\|?*]', " ", text).strip(" .")[:80].rstrip(" .")
+    if not safe:
+        return _filename(created_at)
+    return f"{safe} {time.strftime('%Y-%m-%d', time.localtime(created_at))} - transcript.md"
 
 
 def _filename(created_at):
-    """The suggested file name: the date and time the meeting was imported
-    (so two meetings on one day do not collide), never the title unless the
-    organisation's policy allows it (title_filename). A title
-    often names the client, and file names travel further than file contents
-    (Recent items, jump lists, search indexes, sync logs)."""
+    """The suggested file name without the title: the date and time the
+    meeting was imported (so two meetings on one day do not collide). Used
+    when IT turns the title off, when its policy cannot be read, and when
+    speaker names are replaced. A title often names the client, and file
+    names travel further than file contents (Recent items, jump lists,
+    search indexes, sync logs)."""
     return f"Meeting transcript {time.strftime('%Y-%m-%d %H-%M', time.localtime(created_at))}.md"
