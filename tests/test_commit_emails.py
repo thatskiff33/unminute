@@ -209,6 +209,11 @@ class DiffTests(unittest.TestCase):
         diff = f"diff --git a/{name} b/{name}\n+++ b/{name}\n@@ -0,0 +1 @@\n+(c) {GMAIL}\n"
         self.assertEqual(commit_emails.check_diff(diff),
                          ["a file name holds a personal address (gmail.com)"])
+        # The manifest is this repository's own file, so its lines are checked.
+        own = "packaging/licences/manifest.json"
+        diff = f"diff --git a/{own} b/{own}\n+++ b/{own}\n@@ -0,0 +1 @@\n+{GMAIL}\n"
+        self.assertEqual(commit_emails.check_diff(diff),
+                         [f"{own}:1: adds a personal address (gmail.com)"])
         near = "packaging/licences.md"
         diff = f"diff --git a/{near} b/{near}\n+++ b/{near}\n@@ -0,0 +1 @@\n+{GMAIL}\n"
         self.assertEqual(commit_emails.check_diff(diff),

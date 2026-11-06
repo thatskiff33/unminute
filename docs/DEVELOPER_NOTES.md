@@ -796,7 +796,8 @@ real time, and remove it when the cause is fixed.
   names, title or description hold a personal or work address; "Main commit emails" checks each
   push to `main` the same way (`tools/commit_emails.py`, `.github/workflows/email-guard.yml`,
   DEC-094). The lines of the third-party licence texts in `packaging/licences/` are not checked:
-  they hold upstream authors' public addresses and are kept byte for byte (#176). Findings name the
+  they hold upstream authors' public addresses and are kept byte for byte (#176). Their
+  `manifest.json`, which this repository writes, is checked. Findings name the
   domain only, never the address. It catches mistakes, not disguise: an address written as
   `name%40gmail.com` or an HTML entity passes.
 - **Set the address per clone**, or for one command: `git config user.email <noreply address>`,

@@ -66,8 +66,10 @@ TRAILER_LINE = re.compile(r"^\s*co-authored-by\s*:(.*)$", re.IGNORECASE | re.MUL
 # Third-party licence texts, kept byte for byte as published (the build checks each
 # against its SHA-256 in packaging/licences/manifest.json, #176): they hold upstream
 # authors' public addresses and cannot be edited, so their lines are not checked.
-# Their file names still are.
+# Their file names still are, and so is the manifest, which this repository writes
+# (tools/collect_licences.py).
 UPSTREAM_TEXTS = ("packaging/licences/",)
+OWN_FILES = {"packaging/licences/manifest.json"}
 # The only bot whose descriptions are skipped: they quote upstream release notes.
 BODY_EXEMPT_AUTHORS = {"dependabot[bot]"}
 # The pull request commits endpoint lists at most 250 commits.
@@ -168,7 +170,7 @@ def check_diff(diff: str) -> list[str]:
                             for found in sorted(set(find_personal_name(line))))
         elif in_header and line.startswith("+++ "):
             path = line[4:].strip('"').removeprefix("b/")
-            upstream = path.startswith(UPSTREAM_TEXTS)
+            upstream = path.startswith(UPSTREAM_TEXTS) and path not in OWN_FILES
             if "@" in path:
                 path = "(a file with @ in its name)"
         elif line.startswith("@@"):
