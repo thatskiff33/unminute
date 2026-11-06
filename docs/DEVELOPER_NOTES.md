@@ -786,3 +786,21 @@ real time, and remove it when the cause is fixed.
   busy") both refuse otherwise.
 - **Squash merges** are not reported by `git branch --merged`. Check a branch against its PR
   (`gh pr list --state all --head <branch>`) before deleting it.
+
+### Commit email addresses
+
+- **Every commit uses a GitHub noreply address**, as author and committer:
+  `<id>+<login>@users.noreply.github.com`. The repository is public, and so is every address on
+  `main`. The "Commit emails" check fails a pull request whose commits use another address, or
+  whose `Co-authored-by` trailers, messages, added lines, title or description hold a personal or
+  work address; "Main commit emails" checks each push to `main` the same way
+  (`tools/commit_emails.py`, `.github/workflows/email-guard.yml`, DEC-094). Findings name the
+  domain only, never the address.
+- **Set the address per clone**, or for one command: `git config user.email <noreply address>`,
+  or `GIT_COMMITTER_EMAIL=<noreply address>` with `--author="Name <noreply address>"`. A rebase
+  writes a new committer, so amend again after one. GitHub also declines a push that would publish
+  a private address when the account has "Block command line pushes that expose my email" on.
+- **The squash commit on `main` takes the merging account's commit address.** That account turns
+  on "Keep my email addresses private" in its email settings before it merges. A finding on
+  `main` cannot be fixed by a push, because `main` is never rewritten (DEC-094); turn the setting
+  on before the next merge.
