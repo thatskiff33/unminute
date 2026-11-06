@@ -278,7 +278,7 @@ Policy values live under `HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Unminute` and ove
 | `AllowWatchedFolders` | Allow watched folders | Watched folders | Allowed |
 | `AllowDeleteOriginals` | Allow deleting original recordings from watched folders | Watched folders | Allowed |
 | `AllowNetworkSources` | Allow recordings on network drives | Network drives | Refused |
-| `HandoffFilenameIncludesTitle` | Suggest the meeting title as the handoff file name | Handoff | Date and time only |
+| `HandoffFilenameIncludesTitle` | Suggest the meeting title as the handoff file name | Handoff | Title and date (the owner's decision DEC-093) |
 | `ClipboardClearMinutes` | Clear the app's handoff copy from the clipboard | Clipboard | Never cleared |
 | `ReviewReminderDays` | Days before a meeting's next step shows "Review due" | Retention reminders | 30 days |
 | `ActionRequiredDays` | Days before a meeting's next step shows "Action required" | Retention reminders | Off |
@@ -290,6 +290,8 @@ Policy values live under `HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Unminute` and ove
 New in v0.5.0-preview.4: `AllowHandoffAssistant`, `HandoffAssistantName` and `HandoffAssistantUrl`, and the Copy and open button they control; `AllowComputerAudioRecording`; `AllowLiveDrafts`; and `ReviewReminderDays` and `ActionRequiredDays`, and the retention reminders they set (#111 C6). Earlier versions ignore them, as they ignore any value name they do not know. Users can turn on **Also record computer audio** (#108; off until each user turns it on): it records everything the computer plays, such as the other side of a Teams or Zoom call, and also notification sounds. Set `AllowComputerAudioRecording` to 0 to turn it off. It never applies when `AllowMicrophoneRecording` is 0. `AllowLiveDrafts` governs draft text while recording (#104): rough text of what is said, kept in memory only and replaced by the full transcript. The recording card shows it and Settings has the switch, off until the user turns it on. Set to 0, it cannot be turned on, and a draft in progress is stopped and cleared when the app next reads the policy, while the recording carries on. The template's revision number did not change when they were added, and Intune does not overwrite an imported template: to take the new values, delete the profiles that use the template and the old template, then import again ([PACKAGING.md](PACKAGING.md)).
 
 New in v0.5.0-preview.7: `AllowUserModels`, read on machine installs only (#111 B7a; "Models for everyone" above). Earlier versions ignore it. The template's revision number did not change for it either, so import the template again as above.
+
+Changed after v0.5.0-preview.7: with `HandoffFilenameIncludesTitle` not set, Save Markdown now suggests the meeting title and import date (the owner's decision DEC-093). Earlier versions suggested the date and time only. To keep that, set it to 0 (Disabled). Import the template again for the new help text.
 
 Value names are not case-sensitive. A name the app does not recognise (a misspelling, a trailing space or a lookalike letter) grants and withholds nothing, so check names against the template. The app keeps the first 20 such names, never their data. Settings lists them near the top of the page (a trailing space shows as `\x20`, #300), and Copy diagnostics says how many there are. In a `HandoffDefaultFolder` set as an expandable string, the app expands only `%NAME%` variables, as Windows does ([PACKAGING.md](PACKAGING.md), "Managed settings (policy)").
 
