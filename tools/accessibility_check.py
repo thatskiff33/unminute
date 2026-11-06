@@ -802,18 +802,29 @@ def owner_exceptions(report):
     return out
 
 
+REFLOW_RESIZES = 3      # resizes at most per width (a test pins the steps)
+
+
 def reflow(window):
     """Reflow like browser zoom: a narrower viewport at normal zoom. 640 CSS px
-    is 200% zoom of a 1280 px window; 320 CSS px is the WCAG 1.4.10 width."""
+    is 200% zoom of a 1280 px window; 320 CSS px is the WCAG 1.4.10 width.
+    One resize in proportion can miss: the window's frame does not scale, and
+    a vertical scrollbar that comes or goes changes the page's width. So it
+    resizes again, up to REFLOW_RESIZES in all, while the page is still wider
+    than the target. Narrower is kept: it is a stricter test, never a pass
+    the target would fail. Still wider after the last is reported (findings)."""
     import time
 
     from workspace_ui_check import evaluate
     w0, h0 = window.width, window.height
     out = {}
     for target in (640, 320):
-        cw = evaluate(window, "return document.documentElement.clientWidth;")
-        window.resize(max(200, round(window.width * target / cw)), h0)
-        time.sleep(0.8)
+        for step in range(REFLOW_RESIZES):
+            cw = evaluate(window, "return document.documentElement.clientWidth;")
+            if step and cw <= target + 1:        # findings allows 1 px of rounding
+                break
+            window.resize(max(200, round(window.width * target / cw)), h0)
+            time.sleep(0.8)
         out[str(target)] = evaluate(window, REFLOW)
     window.resize(w0, h0)
     time.sleep(0.8)

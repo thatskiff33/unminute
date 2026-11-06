@@ -656,6 +656,18 @@ real time, and remove it when the cause is fixed.
   scenario test loses one of each on purpose. On a timeout the error now says whether Edge
   still runs, when the page last asked for a script and how many bridge calls it made, which
   tells a dead page from a stopped driver.
+- **A scratch environment without every requirement fails `tools/accessibility_check.py`
+  with `focus_obscured` (#416).** On 6 November 2026 a virtual environment without
+  `sounddevice` made the page toast "Microphone support could not start in this
+  installation" (`recorder.list_devices`, correctly). The toast sits at the bottom right
+  for 8 s and covered a focused control on the "recording draft" and "meeting" views. Install
+  the hash-locked requirements, not a subset, or check the toast's text before treating the
+  finding as a page fault.
+- **Reflow widths are reached by resizing again (#416).** One resize in proportion from the
+  full window can land a few CSS px wide (643 for 640, 6 November 2026), as the frame does
+  not scale and a vertical scrollbar can come or go. `reflow` resizes up to `REFLOW_RESIZES`
+  times while the page is wider than the target, and keeps a narrower result, which is a
+  stricter test. A view still wider after that is a finding.
 - **`tools/accessibility_check.py` lists "OWNER EXCEPTIONS"** before its findings: field
   boundaries in the brand `--control-line` colour and the meeting title at rest (#298, the owner's decision DEC-047 of 25 October 2026). They are expected and do not fail the run. Each is
   matched by its colour for the mode the view was audited in (the light token in light, the

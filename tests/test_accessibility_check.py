@@ -825,5 +825,66 @@ class SettleReportTests(unittest.TestCase):
         self.assertIn("draft_scenario.DRAFT_A11Y", loop)          # the draft view's, per mode
 
 
+class _ResizedWindow:
+    """A window whose page is client(width) CSS px wide at an outer width."""
+    def __init__(self, width, client):
+        self.width, self.height, self.client, self.sizes = width, 700, client, []
+
+    def resize(self, width, height):
+        self.width = width
+        self.sizes.append(width)
+
+
+class ReflowResizeTests(unittest.TestCase):
+    """The reflow widths are reached (#416): on 6 November 2026 the meetings
+    import error view measured 643 CSS px for 640, since one resize in
+    proportion was taken from a width that still had a vertical scrollbar."""
+
+    @staticmethod
+    def frame_and_scrollbar(width):
+        # A 16 px frame at 150% scaling, with a 12 px scrollbar only while wide.
+        return round((width - 16) / 1.5) - (12 if width > 1200 else 0)
+
+    def reflow(self, window):
+        from unittest import mock
+
+        import workspace_ui_check
+
+        def evaluate(_window, script):
+            cw = window.client(window.width)
+            if script.endswith("clientWidth;"):
+                return cw
+            return {"css_width": cw, "horizontal_overflow_px": 0, "cut_off": []}
+        with mock.patch.object(workspace_ui_check, "evaluate", evaluate), \
+                mock.patch("time.sleep"):
+            return accessibility_check.reflow(window)
+
+    def css_widths(self, out):
+        return {width: r["css_width"] for width, r in out.items()}
+
+    def test_a_resize_that_lands_wide_is_corrected(self):
+        window = _ResizedWindow(1616, self.frame_and_scrollbar)
+        out = self.reflow(window)
+        self.assertEqual(643, self.frame_and_scrollbar(window.sizes[0]))   # the first try
+        self.assertEqual({"640": 639, "320": 315}, self.css_widths(out))
+        self.assertEqual(1616, window.width)                               # put back
+        self.assertEqual([], [f for f in accessibility_check.findings(
+            {"views": {"v": {"reflow": out}}}) if "reflow width" in f])
+
+    def test_narrower_than_the_target_is_kept(self):
+        window = _ResizedWindow(1616, lambda w: round((w - 16) / 1.5))
+        out = self.reflow(window)
+        self.assertEqual(3, len(window.sizes))       # one per width, then back
+        self.assertEqual({"640": 635, "320": 315}, self.css_widths(out))
+
+    def test_a_page_that_stays_wide_stops_and_fails(self):
+        window = _ResizedWindow(1616, lambda w: max(700, round((w - 16) / 1.5)))
+        out = self.reflow(window)
+        self.assertEqual(2 * accessibility_check.REFLOW_RESIZES + 1, len(window.sizes))
+        self.assertEqual({"640": 700, "320": 700}, self.css_widths(out))
+        found = accessibility_check.findings({"views": {"v": {"reflow": out}}})
+        self.assertIn("v: reflow width 640 not reached (700)", found)
+
+
 if __name__ == "__main__":
     unittest.main()
