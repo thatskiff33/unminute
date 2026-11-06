@@ -19,7 +19,11 @@
 #     the module index.html loads, is evaluated after every module it reaches;
 #   - no two modules declare the same top-level name, so the tests (which
 #     reach every module's names in one namespace, tests/page_vm.js) and a
-#     reader never mistake one for another.
+#     reader never mistake one for another;
+#   - a module imports every other module's top-level name it uses, read from
+#     its code, not only where a test runs it; and no local (const, let, a
+#     parameter or a destructured name) takes such a name, since the rule has
+#     no scope analysis.
 # The rules read the scripts with a small tokeniser (strings, template
 # literals, regular expressions and comments skipped; brackets counted), not a
 # full parser: the page uses plain modern JavaScript, and the tokeniser's own

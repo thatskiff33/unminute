@@ -231,8 +231,9 @@ real time, and remove it when the cause is fixed.
   are for the test's code only: a module that uses another module's name without importing
   it throws "is not defined" in the browser, and an accessor reached from a page module
   throws the same (it knows the caller's file from the stack), for the code a test runs.
-  Code no test runs is covered by the static rule in "Adding a module" above. Assignments are covered too (#495): a stub of a name that neither the page
-  nor the test declares (a function since renamed or removed, `renamedAway = () => 0`)
+  Code no test runs is covered by the static rule in "Adding a module" above. Assignments
+  are covered too (#495): a stub of a name that neither the page nor the test declares
+  (a function since renamed or removed, `renamedAway = () => 0`)
   fails with "is not defined" instead of creating a new global the page never calls. The
   test's code runs in strict mode, which stops most such assignments where they happen;
   Node.js's `vm` lets the assignment of a function through even in strict mode (it cannot
