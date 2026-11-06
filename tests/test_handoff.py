@@ -135,6 +135,20 @@ class HandoffTests(unittest.TestCase):
         self.assertRegex(handoff.build(self.store, self.mid, minutes,
                                        title_in_name=True)["filename"], date_only)
 
+    def test_file_name_redacts_phrases_split_by_refused_characters(self):
+        # Review of PR #542: "/" becomes a space in a file name, so a phrase
+        # redacted as "Aroha Smith" must not come back from "Aroha/Smith",
+        # nor one redacted as typed ("Q3/Q4"). "%" goes too, so no part of
+        # the name reads as an environment variable in the Save dialog.
+        self.review()
+        handoff.set_options(self.store, self.mid, [], ["aroha smith", "q3/q4"])
+        self.store.rename_meeting(self.mid, "Aroha/Smith Q3/Q4 %TEMP% review")
+        out = handoff.build(self.store, self.mid, self.templates.get("minutes"),
+                            title_in_name=True)
+        self.assertRegex(out["filename"], r"^\[redacted\] \[redacted\]  TEMP  review "
+                                          r"\d{4}-\d{2}-\d{2} - transcript\.md$")
+        self.assertEqual(out["redactions"], self.build()["redactions"])   # not counted again
+
     def test_prompt_only_points_at_the_file(self):
         self.review()
         out = self.build("summary")

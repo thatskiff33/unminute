@@ -736,7 +736,7 @@ class WorkspacePolicyTests(unittest.TestCase):
         import tempfile
         import time
         from workspace import handoff
-        cases =(({}, True), ({"HandoffFilenameIncludesTitle": True}, True),
+        cases = (({}, True), ({"HandoffFilenameIncludesTitle": True}, True),
                  ({"HandoffFilenameIncludesTitle": False}, False))
         for values, expected in cases:
             ws = self.open(**values)

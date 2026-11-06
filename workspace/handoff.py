@@ -624,8 +624,7 @@ def _build(store, mid, template, anonymise, title_in_name):
         count += n
         return rename(out)          # after redaction, so a redacted name stays redacted
 
-    shown = r(m["title"])           # redacted once: the heading and the file name
-    title = shown or "Meeting"
+    title = r(m["title"]) or "Meeting"
     names = (pseudo if anonymise else
              {lbl: r(name) for lbl, name in view["names"].items()})   # counted once each
     lines, speakers, skipped = [], [], 0
@@ -674,8 +673,29 @@ def _build(store, mid, template, anonymise, title_in_name):
             "digests": {k: digest(t) for k, t in texts.items()},
             "template": {"id": template["id"], "title": template["title"],
                          "version": template["version"]},
-            "filename": (title_filename(shown, m["created_at"])
+            "filename": (_redacted_filename(m["title"], m["created_at"], redact)
                          if title_in_name and not anonymise else _filename(m["created_at"]))}
+
+
+def _redacted_filename(title, created_at, redact):
+    """title_filename for the title as redacted for the handoff. Redacted
+    as typed (a phrase that holds a character names refuse, such as
+    "A/B"), then again once those characters are spaces (a title
+    "Aroha/Smith" with "Aroha Smith" redacted), so neither form reaches the
+    name. Not counted: the heading's redactions are the ones reported."""
+    text, _ = redact(_one_line(title))
+    text, _ = redact(_name_text(text))
+    return title_filename(text, created_at)
+
+
+def _name_text(text):
+    """Text as a file name may hold it: characters Windows refuses, "%"
+    (so nothing can read as an environment variable), control characters
+    and invisible format characters (such as right-to-left overrides,
+    which can disguise a name) become spaces."""
+    text = "".join(" " if unicodedata.category(ch) in ("Cc", "Cf") else ch
+                   for ch in text or "")
+    return re.sub(r'[<>:"/\\|?*%]', " ", text)
 
 
 def digest(text):
@@ -686,13 +706,10 @@ def title_filename(title, created_at):
     """The suggested file name: the meeting title (as redacted for the
     handoff) and the date it was imported, "<title> YYYY-MM-DD -
     transcript.md". The default since the owner's decision DEC-093, which
-    IT can turn off (HandoffFilenameIncludesTitle, #111 A5). Characters
-    Windows refuses, control characters and invisible format characters
-    (such as right-to-left overrides, which can disguise a name) become
-    spaces. With no title left, the date-and-time name (_filename)."""
-    text = "".join(" " if unicodedata.category(ch) in ("Cc", "Cf") else ch
-                   for ch in title or "")
-    safe = re.sub(r'[<>:"/\\|?*]', " ", text).strip(" .")[:80].rstrip(" .")
+    IT can turn off (HandoffFilenameIncludesTitle, #111 A5). The title is
+    cleaned by _name_text. With no title left, the date-and-time name
+    (_filename)."""
+    safe = _name_text(title).strip(" .")[:80].rstrip(" .")
     if not safe:
         return _filename(created_at)
     return f"{safe} {time.strftime('%Y-%m-%d', time.localtime(created_at))} - transcript.md"
