@@ -30,11 +30,12 @@ from workspace import (audit, cleanup, clipboard, credentials, diag, drafts, eng
                        media, policy, power, recorder,
                        resources, runner, setup, speaker_names, speakers)
 from workspace.chunking import plan_chunks
-# Shared with the modules split out of this one (#414). ERROR_KINDS is
-# imported from here by workspace/api.py, and _computer_seconds by the tests.
-from workspace.app_common import (ERROR_KINDS, MANAGED_OFF, WorkspaceError,  # noqa: F401
-                                  _expected_import_error, _hold_id, _import_incident,
-                                  _import_message)
+# Shared with the modules split out of this one (#414). ERROR_KINDS and
+# ERROR_CODES are imported from here by workspace/api.py, and _computer_seconds
+# by the tests.
+from workspace.app_common import (ERROR_CODES, ERROR_KINDS, MANAGED_OFF,  # noqa: F401
+                                  WorkspaceError, _expected_import_error, _hold_id,
+                                  _import_incident, _import_message)
 # The workspace's own files and folders (#111 C7): named once, in diag (and
 # the lid's restore record in power).
 from workspace.diag import AUDIT_FOLDER, DB_FILE, LOGS_FOLDER, SETTINGS_FILE

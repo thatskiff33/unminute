@@ -6,7 +6,9 @@
 #     "error": "...", "kind": "error" or "info"} and never raises (pywebview
 #     would send a Python stack trace, with file paths, to the page). The kind
 #     (#416) is the WorkspaceError's, one of app.ERROR_KINDS: the page styles
-#     a message by it, never by its wording;
+#     a message by it, never by its wording. A refusal that asks the page to
+#     act also carries "code", one of app.ERROR_CODES (never free text), and
+#     the page acts on that, never on the wording;
 #   - the page never supplies file paths: recordings come from the native
 #     file dialog or a native drop, which pywebview resolves in Python.
 
@@ -23,8 +25,8 @@ import wave
 import numpy as np
 
 from workspace import cleanup, consent, diag
-from workspace.app import (AUDIO_EXTENSIONS, ERROR_KINDS, FINISH_ONLY_TEXT, LOCKED_TEXT,
-                           WorkspaceError)
+from workspace.app import (AUDIO_EXTENSIONS, ERROR_CODES, ERROR_KINDS, FINISH_ONLY_TEXT,
+                           LOCKED_TEXT, WorkspaceError)
 from workspace.media import SAMPLE_RATE
 
 # pywebviewEventHandler delivers DOM events to handlers registered from Python
@@ -83,17 +85,21 @@ def _wav_bytes(samples):
     return buf.getvalue()
 
 
-def _refused(message, kind="error"):
+def _refused(message, kind="error", code=None):
     """The bridge's answer to a refused request: the message, and its kind
-    (#416), one of ERROR_KINDS; anything else counts as an error."""
-    return {"ok": False, "error": message, "kind": kind if kind in ERROR_KINDS else "error"}
+    (#416), one of ERROR_KINDS; anything else counts as an error. code, when
+    it is one of ERROR_CODES, goes too; anything else is left out."""
+    answer = {"ok": False, "error": message, "kind": kind if kind in ERROR_KINDS else "error"}
+    if code in ERROR_CODES:
+        answer["code"] = code
+    return answer
 
 
 def _safe(fn, *args):
     try:
         return {"ok": True, "value": fn(*args)}
     except WorkspaceError as exc:
-        return _refused(str(exc), getattr(exc, "kind", "error"))
+        return _refused(str(exc), getattr(exc, "kind", "error"), getattr(exc, "code", None))
     except Exception as exc:
         # Recorded without its message (R9); the code lets support find it.
         # The bridge method that called _safe (fn can be a lambda): its name

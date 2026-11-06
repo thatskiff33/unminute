@@ -36,10 +36,13 @@ const state = {
 };
 
 // -- bridge -----------------------------------------------------------------
-// Calls return {ok, value} or {ok: false, error, kind}; they never throw in
-// Python, so no stack trace (with file paths) reaches the page. kind (#416)
+// Calls return {ok, value} or {ok: false, error, kind, code}; they never throw
+// in Python, so no stack trace (with file paths) reaches the page. kind (#416)
 // says what a refusal is ("error" or "info"); an answer without a known kind
-// counts as an error.
+// counts as an error. code, only on a refusal that asks the page to act, is one
+// of ERROR_CODES (app.ERROR_CODES): the page acts on err.code, never on the
+// wording, and any other code is dropped.
+const ERROR_CODES = ["devices_changed"];
 /**
  * @param {string} name  a method in API_METHODS (workspace/api.py)
  * @param {...unknown} args
@@ -48,9 +51,10 @@ const state = {
 async function call(name, ...args) {
   const r = await window.pywebview.api[name](...args);
   if (!r || !r.ok) {
-    /** @type {Error & {kind?: string}} */
+    /** @type {Error & {kind?: string, code?: string}} */
     const err = new Error((r && r.error) || "The request failed.");
     err.kind = r && r.kind === "info" ? "info" : "error";
+    if (r && ERROR_CODES.includes(r.code)) err.code = r.code;
     throw err;
   }
   return r.value;

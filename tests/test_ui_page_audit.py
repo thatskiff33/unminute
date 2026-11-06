@@ -17,7 +17,9 @@
 #     the transcript's times and passages, the template links and the
 #     "Replace names" check box; and nothing covers part of a back link's
 #     target (the meeting title's border box and the hand-off page's heading
-#     reach into it), which the audit's box measurement cannot see;
+#     reach into it), which the audit's box measurement cannot see; and an
+#     error's Dismiss (#416; Import's error on Meetings and Copy's on the
+#     hand off page, the real-window check's views) answers over 24 px;
 #   - accessible names contain the visible label (2.5.3): playback speed,
 #     the speaker names dialog and the passages to leave out;
 #   - field boundaries reach 3:1 (1.4.11) in every view, except where a named
@@ -74,7 +76,16 @@ VIEWS = {
     "handoff page": ("handoff", "const i = document.querySelector('#ho-passages input');"
                      "i.checked = true; i.dispatchEvent(new Event('change', {bubbles: true}));",
                      1100, ["low_contrast", "small_targets", "label_not_in_name"] + FOCUS),
+    # Errors beside their action (#416), with Dismiss: Import's on Meetings,
+    # and Copy's on the hand off page, each placed by the real-window check's
+    # own script for that view (accessibility_check.VIEWS), so the script is
+    # tried on the page before a release run depends on it.
+    "meetings import error": ("home", accessibility_check.VIEWS["meetings import error"], 1100,
+                              ["low_contrast", "small_targets", "label_not_in_name"] + FOCUS),
+    "handoff copy error": ("handoff", accessibility_check.VIEWS["handoff copy error"], 1100,
+                           ["low_contrast", "small_targets", "label_not_in_name"] + FOCUS),
 }
+ERROR_VIEWS = ("meetings import error", "handoff copy error")
 
 # Narrow widths load the page in a frame of exactly that width (design_check's
 # frame.html): Edge will not make a window narrower than about 500 px, and its
@@ -89,7 +100,7 @@ RUNNER = """
   while (document.documentElement.dataset.ready !== '1') await wait(100);
   await wait(500);
   const view = new URLSearchParams(location.search).get('view');
-  if (EXTRA[view]) EXTRA[view]();
+  if (EXTRA[view]) await EXTRA[view]();
   await wait(300);
   let out;
   try { out = await AUDIT(); } catch (e) { out = {error: String(e)}; }
@@ -140,6 +151,25 @@ RUNNER = """
       }
     }
   }
+  // Each shown error's Dismiss (#416) answers a pointer over 24 px, centred on
+  // it: its line is only 15 px tall, so a transparent layer adds the rest.
+  // Every pixel row of the 24, at the middle of its width (54 px wide).
+  out.dismiss = 0;
+  out.dismiss_short = [];
+  for (const box of document.querySelectorAll('.inline-error')) {
+    const dismiss = box.querySelector('button');
+    if (!dismiss || !dismiss.getClientRects().length) continue;
+    dismiss.scrollIntoView({block: 'center'});
+    const r = dismiss.getBoundingClientRect();
+    const [x, y] = [r.left + r.width / 2, r.top + r.height / 2];
+    out.dismiss++;
+    if (r.width < 24) out.dismiss_short.push('width ' + r.width.toFixed(1));
+    for (let dy = -11.5; dy < 12; dy += 1) {
+      const hit = document.elementFromPoint(x, y + dy);
+      if (hit !== dismiss) out.dismiss_short.push('row ' + (dy + 11.5) + ' of 24: '
+        + (hit ? (hit.id ? '#' + hit.id : hit.tagName + '.' + hit.className) : 'nothing'));
+    }
+  }
   // In a narrow view the page is in a frame: the result goes to the top page,
   // which is the document Edge prints.
   const top = window.top.document;
@@ -152,7 +182,7 @@ RUNNER = """
 
 
 def runner():
-    extra = ",\n".join(f"{json.dumps(k)}: () => {{ {v[1]} }}" for k, v in VIEWS.items())
+    extra = ",\n".join(f"{json.dumps(k)}: async () => {{ {v[1]} }}" for k, v in VIEWS.items())
     return (RUNNER % (extra, accessibility_check.AUDIT)).encode("utf-8")
 
 
@@ -264,6 +294,16 @@ class PageAuditTests(unittest.TestCase):
                     # Below 481 px the meeting hides its back link.
                     self.assertGreater(r.get("back_links", 0), 0, "no back link was checked")
                 self.assertEqual([], r.get("back_link_covered", ["(no result)"]))
+
+    def test_dismiss_answers_over_24_px(self):
+        # The audit passes Dismiss by its spacing (2.5.8); its target is also
+        # 24 px, by a layer that changes nothing drawn (#416, review nit 1).
+        for (name, mode), r in self.results.items():
+            if name not in ERROR_VIEWS:
+                continue
+            with self.subTest(view=name, mode=mode):
+                self.assertEqual(1, r.get("dismiss", 0), "no error was shown")
+                self.assertEqual([], r.get("dismiss_short", ["(no result)"]))
 
     def test_no_findings_in_the_views_fixed_for_298(self):
         # Only a finding a named owner exception covers is left out, as in the tool.

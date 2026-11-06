@@ -905,6 +905,20 @@ class WorkspaceSwitchTests(unittest.TestCase):
         self.assertEqual(self.win.stream.device, INDEX[LAPTOP])
         self.assertEqual(len(self.win.streams), 1)
 
+    def test_a_microphone_not_on_the_list_is_refused_with_its_code(self):
+        # Start and Test name the microphone by the list's index and name; one
+        # that no longer matches is refused with the code the page relists on
+        # (#416), and nothing opens.
+        bridge = api.make_api(self.ws)
+        for answer in (bridge.test_microphone(INDEX[LAPTOP], HEADSET),
+                       bridge.test_microphone(99, LAPTOP),
+                       bridge.start_recording(INDEX[LAPTOP], HEADSET)):
+            self.assertEqual((answer["ok"], answer.get("code")), (False, "devices_changed"))
+        with self.assertRaises(WorkspaceError) as caught:
+            self.ws.start_recording(INDEX[LAPTOP], HEADSET, consent=CONSENT)
+        self.assertEqual(caught.exception.code, "devices_changed")
+        self.assertEqual(self.win.streams, [])
+
     def test_a_recording_started_on_a_chosen_microphone_follows_no_default(self):
         # DEC-080: the app tells the recorder whether it started on the default.
         self.ws.start_recording(INDEX[USB], USB, consent=CONSENT)
@@ -932,6 +946,10 @@ class WorkspaceSwitchTests(unittest.TestCase):
         self.assertFalse(bridge.switch_microphone(1, "x" * 121)["ok"])
         self.assertFalse(bridge.switch_microphone(-1, HEADSET)["ok"])
         self.assertEqual(len(self.win.streams), 1)
+        # A changed list says so by its code, which the page acts on (#416).
+        refused = bridge.switch_microphone(1, USB)
+        self.assertEqual((refused["ok"], refused.get("code")), (False, "devices_changed"))
+        self.assertNotIn("code", bridge.switch_microphone(-1, HEADSET))
         answer = bridge.switch_microphone(1, HEADSET)
         self.assertTrue(answer["ok"], answer)
         self.assertEqual(answer["value"]["device"], HEADSET)
