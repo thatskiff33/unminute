@@ -396,9 +396,10 @@ def expected_page_error_line():
 
 
 def page_error_problems(received, expected):
-    """#491: from file://, as the window opens the page, WebView2 hides an
-    uncaught error's line from the error event (line 0) and sends no
-    unhandledrejection event for the page's own errors. Each deliberate error
+    """#491: from file://, as the window opened the page until #488, WebView2
+    hid an uncaught error's line from the error event (line 0) and sent no
+    unhandledrejection event for the page's own errors; the page's guards
+    stay for the virtual host it now uses (#488). Each deliberate error
     (a timer's, a listener's and an async callback's rejection) must arrive
     once, in order, with its real line and a column."""
     kinds = ["error", "error", "rejection"]

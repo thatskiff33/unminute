@@ -1,7 +1,9 @@
 # tools/process_listeners.py
 # The app's process tree and any network sockets it listens on. The window
-# checks use these to show the app opens no local listener (the page loads from
-# file://, so pywebview starts no HTTP server; workspace/shell.py). Windows only.
+# checks use these to show the app opens no local listener: the page loads from
+# a WebView2 virtual host (https://unminute.invalid, #488), which WebView2 serves
+# itself from the UI folder, and pywebview starts no HTTP server for an https://
+# address (workspace/shell.py). Before #488 it loaded from file://. Windows only.
 # The importing tool puts tools/ on the import path (after the standard
 # library); this module leaves the path alone.
 

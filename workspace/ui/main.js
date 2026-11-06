@@ -24,16 +24,19 @@ function scriptLine(url, line) {
   return at < 0 ? line : (at + 1) * SCRIPT_LINES + Math.max(0, line | 0);
 }
 
-// The window opens the page from file://, where WebView2 hides an uncaught
-// error in the page's own scripts from the error event: "Script error.", no
-// file, line 0 (real window, 30 Oct 2026, #491). An error the page catches
-// itself still has its stack. So every callback the browser calls later (an
-// event listener, an on... handler, a timer, an animation frame) runs inside
-// guarded(): if it throws, the guard notes where, from the stack, and throws
-// the same error on, so nothing else changes; the error event that follows at
-// once sends that place. From file:// the browser sends no unhandledrejection
-// event at all for an error in the page's own scripts (same probe), so the
-// guard watches a promise a callback returns. If it rejects and nothing else
+// From file://, as the window opened the page until #488, WebView2 hid an
+// uncaught error in the page's own scripts from the error event: "Script
+// error.", no file, line 0 (real window, 30 Oct 2026, #491). The window now
+// serves the page from a WebView2 virtual host (#488), where
+// the browser should give them; the guards stay until a real-window run shows
+// it does. An error the page catches itself still has its stack. So every
+// callback the browser calls later (an event listener, an on... handler, a
+// timer, an animation frame) runs inside guarded(): if it throws, the guard
+// notes where, from the stack, and throws the same error on, so nothing else
+// changes; the error event that follows at once sends that place. From
+// file:// the browser sent no unhandledrejection event at all for an error in
+// the page's own scripts (same probe), so the guard watches a promise a
+// callback returns. If it rejects and nothing else
 // handles it (see watchRejection), the guard sends the rejection and rejects
 // on with the same reason in a promise of its own: the event, where the
 // browser sends one, still fires, and the page's listener skips that promise
@@ -45,6 +48,7 @@ function scriptLine(url, line) {
 // message are cut off unread (they could quote meeting text) and no file name
 // or path is sent (docs/DEVELOPER_NOTES.md, "Page scripts").
 let caughtAt = null;                  // [line, col] of the error now being reported
+let caughtErr = null;                 // the error a guard noted it for, and threw on
 const sentPromises = new WeakSet();   // the promises a guard rejected on after sending them
 const handled = new WeakSet();        // the promises then (catch, finally) was called on
 const watched = new WeakSet();        // the promises a guard watches, each once
@@ -76,6 +80,7 @@ function guarded(fn) {
         value = fn.apply(this, args);
       } catch (err) {
         caughtAt = stackPlace(err);
+        caughtErr = err;
         throw err;
       }
       // The browser does not wait for a callback's promise; the page may.
@@ -114,7 +119,8 @@ function watchRejection(promise, reason) {
 // with no rejection handler, and a finally, pass a watched promise's
 // rejection on to the promise they return, so the guard watches that one
 // too: the rejection is sent once, from wherever it ends up unhandled. Known
-// limits from file:// (docs/DEVELOPER_NOTES.md, "Page scripts"): an await
+// limits where the browser sends no event of its own (from file://, as before
+// #488; docs/DEVELOPER_NOTES.md, "Page scripts"): an await
 // does not call then, so a promise handled only by an await elsewhere is
 // still sent; and a rejection passed on any other way is not sent at all:
 // through Promise.all, race or any, by an async function that returns the
@@ -366,14 +372,19 @@ document.addEventListener("visibilitychange", () => {
 });
 
 // Where the browser gives the file and line (served over HTTP, as in the
-// design check), they are used; from file:// it gives neither, and the place
-// a guard noted is used instead (#491). The promise a guard rejected on after
+// design check, and expected on the window's virtual host, #488), they are
+// used; from file:// it gave neither, and the place a guard noted is used
+// instead (#491). The promise a guard rejected on after
 // sending its rejection is not sent again (#501); any other is sent with its
 // reason's place, when it is an Error with a stack.
+// On the virtual host the browser gives a line, but for an error a guard threw
+// on it is the guard's own throw in main.js (real window, 4 Nov 2026, #488), so
+// the place the guard noted from the error's stack is sent for that error.
 window.addEventListener("error", (e) => {
-  const caught = caughtAt;
-  caughtAt = null;
-  if (e.filename) reportUiError("error", scriptLine(e.filename, e.lineno), e.colno);
+  const caught = caughtAt, err = caughtErr;
+  caughtAt = caughtErr = null;
+  if (caught && err !== null && e.error === err) reportUiError("error", ...caught);
+  else if (e.filename) reportUiError("error", scriptLine(e.filename, e.lineno), e.colno);
   else reportUiError("error", ...(caught || [0, 0]));
 });
 window.addEventListener("unhandledrejection", (e) => {

@@ -127,6 +127,79 @@ class NavigationTests(unittest.TestCase):
         self.assertTrue(shell._allowed(shell.ui_url("other.html"), "other.html"))
         self.assertFalse(shell._allowed(page, "other.html"))
 
+    def test_the_page_is_on_a_virtual_host_with_a_name_that_never_resolves(self):
+        # #488: the page's origin is a WebView2 virtual host, not file://, on a
+        # special-use name (RFC 6761 .invalid), never a name a real site has.
+        self.assertEqual(shell.UI_HOST, "unminute.invalid")
+        self.assertEqual(shell.ui_url(), "https://unminute.invalid/index.html")
+        self.assertTrue(shell.UI_HOST.endswith(".invalid"))
+        self.assertEqual(shell.UI_HOST, shell.UI_HOST.lower())   # as Chromium reports it
+
+    def test_the_lock_refuses_every_file_address_and_any_other_spelling(self):
+        # #488: only https://unminute.invalid/index.html (with a ?query or
+        # #fragment) passes, character for character. The page's own file, by
+        # its file:// address in any spelling, is refused, as is the same host
+        # over http, with a port, a user, another case, a trailing dot, a
+        # longer or shorter name, a dot segment or an encoded letter.
+        page = shell.ui_url()
+        own_file = (shell.UI_DIR / "index.html").as_uri()
+        for bad in (own_file, own_file.lower(), own_file.replace("%20", " "),
+                    own_file + "#x", "file:///index.html", "file://unminute.invalid/index.html",
+                    "file:///C:/Windows/win.ini", "file:///C:/Users/x/meeting.html",
+                    "http://unminute.invalid/index.html", "https://unminute.invalid:443/index.html",
+                    "https://user@unminute.invalid/index.html",
+                    "https://UNMINUTE.INVALID/index.html", "https://unminute.invalid/INDEX.HTML",
+                    "HTTPS://unminute.invalid/index.html",
+                    "https://unminute.invalid./index.html",
+                    "https://unminute.invalid.evil.example/index.html",
+                    "https://evil.unminute.invalid/index.html",
+                    "https://unminute.invalid/./index.html",
+                    "https://unminute.invalid/x/../index.html",
+                    "https://unminute.invalid/%69ndex.html",
+                    "https://unminute.invalid/index.html/",
+                    "https://unminute.invalid/index.htmlx",
+                    "https://unminute.invalid/index.html%00",
+                    "https://unminute.invalid\\index.html",
+                    "https://unminute.invalid/", "https://unminute.invalid",
+                    " " + page, page + " ", "about:blank", "data:text/html,x",
+                    "https://example.com/", "", None):
+            self.assertFalse(shell._allowed(bad), repr(bad))
+        self.assertTrue(shell._allowed(page))
+
+    def test_the_window_opens_the_virtual_host_and_starts_no_http_server(self):
+        # #488: create_window gives pywebview the virtual host's https address.
+        # pywebview starts its localhost HTTP server only for a local path
+        # (webview.util.is_local_url), so this address adds no listener.
+        from types import SimpleNamespace
+
+        class Event:
+            def __iadd__(self, handler):
+                return self
+        created = {}
+        fake = type(sys)("webview")
+        fake.settings = {}
+        fake.create_window = lambda title, **kw: (
+            created.update(kw) or SimpleNamespace(events=SimpleNamespace(before_load=Event())))
+        with mock.patch.dict(sys.modules, {"webview": fake}), \
+                mock.patch.object(shell, "wait_preload"), \
+                mock.patch.object(shell, "_log_to_current_stderr"), \
+                mock.patch.object(shell, "install_dispatch_guard"):
+            shell.create_window(object(), allowed=frozenset(), harden=False)
+        self.assertEqual(created["url"], "https://unminute.invalid/index.html")
+        self.assertIs(fake.settings["ALLOW_FILE_URLS"], False)
+        self.assertIs(fake.settings["ALLOW_DOWNLOADS"], False)
+        self.assertIs(fake.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"], False)
+        if HAVE_WEBVIEW:
+            from webview.util import is_local_url
+            self.assertFalse(is_local_url(created["url"]))
+
+    def test_the_mapped_folder_holds_only_the_page_and_its_assets(self):
+        # #488: the virtual host serves UI_DIR and nothing above it, so no
+        # Python, settings or workspace file can be fetched from the origin.
+        self.assertEqual(shell.UI_DIR, ROOT / "workspace" / "ui")
+        suffixes = {p.suffix.lower() for p in shell.UI_DIR.rglob("*") if p.is_file()}
+        self.assertLessEqual(suffixes, {".html", ".css", ".js", ".woff2", ".svg", ".txt"})
+
     def test_the_window_needs_its_allowed_names_and_has_one_page(self):
         # No default bridge allowlist to fall back on, and no page to choose (#136).
         import inspect
@@ -202,7 +275,25 @@ class NavigationTests(unittest.TestCase):
         self.assertEqual(directives, {
             "default-src": ["'none'"], "script-src": ["'self'"], "style-src": ["'self'"],
             "img-src": ["'self'", "data:"], "media-src": ["data:"], "connect-src": ["'none'"],
-            "font-src": ["'self'"], "base-uri": ["'none'"], "form-action": ["'none'"]})
+            "font-src": ["'self'"], "worker-src": ["'none'"], "base-uri": ["'none'"],
+            "form-action": ["'none'"]})
+
+    def test_the_page_may_start_no_worker(self):
+        # #488 review: on the virtual host's https origin, without worker-src
+        # (which falls back to script-src 'self'), a page script could start a
+        # Worker or SharedWorker and register a service worker; a WebView2 probe
+        # on 3 Nov 2026 (Runtime 156.0.4314.58) did all three (from file:// none
+        # worked). worker-src 'none' refuses
+        # them, and the page uses no worker.
+        import re
+        html = (ROOT / "workspace" / "ui" / "index.html").read_text(encoding="utf-8")
+        [policy] = re.findall(r'<meta http-equiv="Content-Security-Policy"\s+content="([^"]*)"',
+                              html)
+        self.assertIn("worker-src 'none'", [part.strip() for part in policy.split(";")])
+        script = page_scripts.every_source()
+        for pattern in (r"\bWorker\b", r"\bSharedWorker\b", r"\bserviceWorker\b",
+                        r"\bimportScripts\b", r"\bWorklet\b", r"\baudioWorklet\b"):
+            self.assertIsNone(re.search(pattern, script), pattern)
 
     def test_the_page_names_no_assistant_until_the_app_does(self):
         # #109 review: before the preview arrived (or if it failed), the page
@@ -555,7 +646,7 @@ class AlertGuardTests(unittest.TestCase):
                 settings = sender.CoreWebView2.Settings
                 seen.append(("settings", settings.AreDefaultScriptDialogsEnabled))
                 sender.CoreWebView2.Settings.AreDefaultScriptDialogsEnabled = True  # as pywebview
-                self.load_url("file:///index.html")
+                self.load_url(shell.ui_url())
 
             def load_url(self, url):
                 settings = self.sender.CoreWebView2.Settings
@@ -612,12 +703,16 @@ class AlertGuardTests(unittest.TestCase):
                 self.PermissionRequested = Event()
                 self.ScreenCaptureStarting = Event()
 
+            def SetVirtualHostNameToFolderMapping(self, host, folder, kind):
+                seen.append(("map", host, folder, kind))
+
         class Control:
             def __init__(self):
                 self.CoreWebView2 = Core()
         control = Control()
         with mock.patch.dict(sys.modules, {"webview.platforms.edgechromium": module}), \
-                mock.patch.object(shell, "_permission_deny", return_value="DENY"):
+                mock.patch.object(shell, "_permission_deny", return_value="DENY"), \
+                mock.patch.object(shell, "_host_access_deny", return_value="HOST DENY"):
             shell.install_alert_guard()
             view = module.EdgeChrome()
             view.sender = control
@@ -625,7 +720,12 @@ class AlertGuardTests(unittest.TestCase):
         # pywebview turned them on, but the page loaded with them off, and
         # with no host objects (#415 item 4: the bridge is web messages), and
         # any dialog, permission or screen capture asked for is refused.
-        self.assertEqual(seen[-1], ("load", "file:///index.html", False, False))
+        self.assertEqual(seen[-1], ("load", "https://unminute.invalid/index.html", False, False))
+        # #488: before that first load, and once, the virtual host was mapped
+        # to the UI folder alone, with Deny (no other origin may load from it).
+        maps = [s for s in seen if s[0] == "map"]
+        self.assertEqual(maps, [("map", "unminute.invalid", str(shell.UI_DIR), "HOST DENY")])
+        self.assertLess(seen.index(maps[0]), seen.index(seen[-1]))
         core = control.CoreWebView2
         self.assertFalse(core.Settings.AreDefaultScriptDialogsEnabled)
         self.assertFalse(core.Settings.AreHostObjectsAllowed)
@@ -636,9 +736,13 @@ class AlertGuardTests(unittest.TestCase):
         class Request:                        # the page asks for the microphone
             PermissionKind = "Microphone"
             State = "Default"
+            SavesInProfile = True
         request = Request()
         refuse_permission(None, request)
         self.assertEqual(request.State, "DENY")
+        # Not remembered for the origin (#488): a frame's request reaches the
+        # handler too (real window, 4 Nov 2026).
+        self.assertIs(request.SavesInProfile, False)
         self.assertIn("permission Microphone", shell.blocked_calls)
 
         class Capture:                        # the page asks to capture the screen
@@ -669,6 +773,9 @@ class AlertGuardTests(unittest.TestCase):
                 self.ScriptDialogOpening = Event()
                 self.PermissionRequested = Event()
 
+            def SetVirtualHostNameToFolderMapping(self, host, folder, kind):
+                seen.append(("map",))                # works: the event is what is missing
+
         class Control:
             def __init__(self):
                 self.CoreWebView2 = Core()
@@ -677,17 +784,88 @@ class AlertGuardTests(unittest.TestCase):
         try:
             with mock.patch.dict(sys.modules, {"webview.platforms.edgechromium": module}), \
                     mock.patch.object(shell, "_permission_deny", return_value="DENY"), \
+                    mock.patch.object(shell, "_host_access_deny", return_value="HOST DENY"), \
                     mock.patch.object(shell, "_close_now", closed.append):
                 shell.install_alert_guard()
                 view = module.EdgeChrome()
                 view.sender = control
                 view.pywebview_window = "the window"
                 view.on_webview_ready(control, None)
+            self.assertIn(("map",), seen)
             self.assertFalse([s for s in seen if s[0] == "load"])
             self.assertEqual(closed, ["the window"])             # once
             self.assertTrue(shell.lock_failed)
         finally:
             shell.lock_failed.clear()
+
+    def test_the_folder_is_mapped_with_deny_not_a_looser_kind(self):
+        # #488: Deny, not DenyCors or Allow, which would let another origin
+        # load the page's files as a script or an image (DenyCors) or fetch
+        # them (Allow). WebView2's enum is stood in for, so this runs anywhere.
+        from types import SimpleNamespace
+        kinds = SimpleNamespace(Deny="deny", DenyCors="deny cors", Allow="allow")
+        core_module = type(sys)("Microsoft.Web.WebView2.Core")
+        core_module.CoreWebView2HostResourceAccessKind = kinds
+        modules = {name: type(sys)(name) for name in
+                   ("Microsoft", "Microsoft.Web", "Microsoft.Web.WebView2")}
+        modules["Microsoft.Web.WebView2.Core"] = core_module
+        calls = []
+        core = SimpleNamespace(SetVirtualHostNameToFolderMapping=lambda *a: calls.append(a))
+        with mock.patch.dict(sys.modules, modules):
+            shell._map_ui_folder(core)
+        self.assertEqual(calls, [("unminute.invalid", str(shell.UI_DIR), "deny")])
+
+    def test_no_page_loads_when_the_folder_cannot_be_mapped(self):
+        # #488: the page's address has no folder behind it if the mapping
+        # fails (or the runtime has no such call, or no Deny to give it), so
+        # nothing loads and the window closes, once, as for the other guards.
+        from types import SimpleNamespace
+
+        class Settings:
+            AreDefaultScriptDialogsEnabled = True
+
+        class Event:
+            def __iadd__(self, handler):
+                return self
+
+        class Core:
+            def __init__(self, mapping):
+                self.Settings = Settings()
+                self.ScriptDialogOpening = Event()
+                self.PermissionRequested = Event()
+                self.ScreenCaptureStarting = Event()
+                if mapping is not None:
+                    self.SetVirtualHostNameToFolderMapping = mapping
+
+        def refuse(host, folder, kind):
+            raise OSError("mapping refused")
+
+        def no_kind():
+            raise ImportError("no CoreWebView2HostResourceAccessKind")
+
+        for name, mapping, kind in (("the call fails", refuse, lambda: "HOST DENY"),
+                                    ("no such call", None, lambda: "HOST DENY"),
+                                    ("no Deny to give", lambda *a: None, no_kind)):
+            with self.subTest(name):
+                module, seen = self.fake_backend()
+                control = SimpleNamespace(CoreWebView2=Core(mapping))
+                closed = []
+                try:
+                    with mock.patch.dict(sys.modules,
+                                         {"webview.platforms.edgechromium": module}), \
+                            mock.patch.object(shell, "_permission_deny", return_value="DENY"), \
+                            mock.patch.object(shell, "_host_access_deny", kind), \
+                            mock.patch.object(shell, "_close_now", closed.append):
+                        shell.install_alert_guard()
+                        view = module.EdgeChrome()
+                        view.sender = control
+                        view.pywebview_window = "the window"
+                        view.on_webview_ready(control, None)
+                    self.assertFalse([s for s in seen if s[0] == "load"])
+                    self.assertEqual(closed, ["the window"])     # once
+                    self.assertTrue(shell.lock_failed)
+                finally:
+                    shell.lock_failed.clear()
 
 
 @unittest.skipUnless(HAVE_WEBVIEW, "pywebview not installed")
