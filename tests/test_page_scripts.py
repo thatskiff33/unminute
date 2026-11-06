@@ -1,16 +1,25 @@
 # tests/test_page_scripts.py
-# The page's ordered classic scripts (#414 step 3, the owner's decision of
-# 30 Oct 2026, Option A). app.js was split along its section markers into
-# several plain <script src> files that share one global scope, as app.js's
-# code did. Three rules keep that safe:
-#   - the scripts index.html loads, the .js files in workspace/ui and the
-#     package allowlist's entries are the same set, so no file escapes the
-#     guards that read every page script (I3, T1) or ships unlisted;
-#   - no two scripts declare the same top-level name: a repeated const, let or
-#     class stops the later script loading at all, and a repeated function
-#     silently replaces the earlier one;
-#   - only main.js, the last, runs anything as the page loads. The others only
-#     declare, so no script uses a name from a later one before it exists.
+# The page's scripts (#414 step 3, the owner's decision DEC-082). app.js was
+# split along its section markers into several files, first ordered classic
+# scripts sharing one global scope, and since #488 (the user's decision
+# DEC-090) ES modules: index.html loads only
+# main.js, as a module, and each module imports by name what it uses from the
+# others. These rules keep that safe:
+#   - index.html loads one script, main.js as a module; the modules main.js's
+#     imports reach, the .js files in workspace/ui, the package allowlist's
+#     entries and main.js's PAGE_SCRIPTS are the same set, so no file escapes
+#     the guards that read every page script (I3, T1) or ships unlisted;
+#   - imports and exports are plain lists ({ a, b }), an import names a ./x.js
+#     file in the folder and only what it exports, and nothing imports by URL,
+#     at run time (import()) or through import.meta;
+#   - only main.js runs anything as the page loads. The others only declare,
+#     and none reads an imported name as it loads: the modules import each
+#     other in cycles, so one may be evaluated before a module it imports
+#     from, whose const and let are not yet set. Functions are, and main.js,
+#     the module index.html loads, is evaluated after every module it reaches;
+#   - no two modules declare the same top-level name, so the tests (which
+#     reach every module's names in one namespace, tests/page_vm.js) and a
+#     reader never mistake one for another.
 # The rules read the scripts with a small tokeniser (strings, template
 # literals, regular expressions and comments skipped; brackets counted), not a
 # full parser: the page uses plain modern JavaScript, and the tokeniser's own
@@ -18,13 +27,17 @@
 
 import json
 import re
+import tempfile
 import unittest
+from pathlib import Path
 
 import page_scripts
 
 ROOT = page_scripts.ROOT
 UI = page_scripts.UI
 MAIN = "main.js"
+MODULE_TAG = '<script type="module" src="main.js"></script>'
+PAGE_FILE = re.compile(r'^"\./([A-Za-z0-9_-]+\.js)"$')
 DECLARES = ("function", "async", "class", "const", "let", "var")
 DIRECTIVE = ('"use strict"', "'use strict'")
 REGEX_AFTER = {"return", "typeof", "case", "do", "else", "in", "of", "new", "delete", "void",
@@ -190,17 +203,60 @@ def declared(statement):
     return names
 
 
+def module_list(statement):
+    """An import or export statement written as a plain list, which runs
+    nothing: ("import", names, specifier) for import { a, b } from "x";, or
+    ("export", names, None) for export { a, b };. None for any other
+    statement, including every other form of import or export (a default, a
+    renamed or starred name, export const, an import for its effects alone)."""
+    words = [t[1] for t in statement]
+    if words[-1] == ";":
+        words = words[:-1]
+    if len(words) < 3 or words[0] not in ("import", "export") or words[1] != "{":
+        return None
+    try:
+        close = words.index("}")
+    except ValueError:
+        return None
+    inside, tail = words[2:close], words[close + 1:]
+    names = inside[0::2]
+    if (not names or any(not NAME.fullmatch(n) or n in ("as", "default") for n in names)
+            or any(c != "," for c in inside[1::2]) or len(inside) % 2 == 0):
+        return None
+    if words[0] == "export":
+        return ("export", names, None) if not tail else None
+    if len(tail) != 2 or tail[0] != "from" or not tail[1].startswith(('"', "'")):
+        return None
+    return ("import", names, tail[1])
+
+
 def problems_at_load(src):
     """The top-level statements of a script that are not declarations (after
-    the opening "use strict"), as their first few tokens."""
+    the opening "use strict") or plain import and export lists, as their
+    first few tokens."""
     found = []
     for k, statement in enumerate(statements(src)):
         head = statement[0][1]
         if k == 0 and head in DIRECTIVE:
             continue
+        if head in ("import", "export") and module_list(statement):
+            continue
         if head not in DECLARES or (head == "async" and statement[1][1] != "function"):
             found.append(" ".join(t[1] for t in statement[:4]))
     return found
+
+
+def links(src):
+    """A module's imports, [(specifier as written, names)], and its exports
+    (names), from its plain import and export lists."""
+    imports, exports = [], []
+    for statement in statements(src):
+        listed = module_list(statement)
+        if listed and listed[0] == "import":
+            imports.append((listed[2], listed[1]))
+        elif listed:
+            exports.extend(listed[1])
+    return imports, exports
 
 
 
@@ -249,89 +305,114 @@ def allowlisted_scripts():
             if p.startswith("workspace/ui/") and p.endswith(".js")}
 
 
-def tag_problems(html, in_folder, allowlisted):
-    """What is wrong with a page's script tags, as a list of messages: the
-    scripts it loads, the .js files in the folder and the allowlist's entries
-    must be the same set, and each tag a plain <script src="x.js"></script>
-    (no inline, async, defer or module script: each runs in turn, in the
-    order listed) with main.js last."""
+def tag_problems(html):
+    """What is wrong with a page's script tags, as a list of messages: it
+    loads one script, main.js as a module, written exactly as MODULE_TAG (no
+    inline, classic, async or defer script, and no other module); main.js's
+    imports load the rest."""
     found, ends = page_scripts.script_tags(html)
-    loaded = page_scripts.names(html)
     problems = []
-    if len(loaded) != len(set(loaded)):
-        problems.append("index.html loads a script twice")
-    if set(loaded) != in_folder:
-        problems.append(f"index.html and the .js files in workspace/ui differ: "
-                        f"{sorted(map(str, set(loaded) ^ in_folder))}")
-    if set(loaded) != allowlisted:
-        problems.append(f"index.html and packaging/app-allowlist.json name different scripts: "
-                        f"{sorted(map(str, set(loaded) ^ allowlisted))}")
     if ends != len(found):
         problems.append(f"{len(found)} script tags but {ends} end tags")
-    for element, name in zip(found, loaded, strict=True):
-        if (element["attrs"] != [("src", name)] or element["tag"] != f'<script src="{name}">'
-                or element["text"]):
-            problems.append(f"not a plain script tag: {element['tag']}")
-    if not loaded or loaded[-1] != MAIN:
-        problems.append("main.js is not the last script")
+    if len(found) != 1:
+        problems.append(f"{len(found)} script elements: index.html loads main.js only")
+    for element in found:
+        if (element["attrs"] != [("type", "module"), ("src", MAIN)] or element["text"]
+                or element["tag"] + "</script>" != MODULE_TAG):
+            problems.append(f"not the page's module tag: {element['tag']}")
+    return problems
+
+
+def set_problems(reached, listed, in_folder, allowlisted):
+    """What is wrong with the page's set of modules: those main.js's imports
+    reach, PAGE_SCRIPTS (listed, in order), the .js files in the folder and
+    the allowlist's entries must be the same set, each listed once."""
+    problems = []
+    if len(listed) != len(set(listed)):
+        problems.append("PAGE_SCRIPTS lists a module twice")
+    for name, other in (("PAGE_SCRIPTS", set(listed)), ("the .js files in workspace/ui", in_folder),
+                        ("packaging/app-allowlist.json", allowlisted)):
+        if set(reached) != other:
+            problems.append(f"main.js's imports and {name} differ: "
+                            f"{sorted(map(str, set(reached) ^ other))}")
     return problems
 
 
 class PageScriptSetTests(unittest.TestCase):
-    """index.html, the folder and the package allowlist name the same scripts."""
+    """index.html loads main.js as a module, and its imports, PAGE_SCRIPTS, the
+    folder and the package allowlist name the same scripts."""
 
     @classmethod
     def setUpClass(cls):
         cls.html = (UI / "index.html").read_text(encoding="utf-8")
         cls.in_folder = {p.relative_to(UI).as_posix() for p in page_scripts.every_script()}
         cls.allowlisted = allowlisted_scripts()
+        # The modules tests/page_vm.js loaded from main.js, as the browser does.
+        cls.reached = page_scripts.run("console.log(JSON.stringify(Object.keys(loaded.modules)));")
 
-    def test_index_html_loads_every_script_in_the_folder_and_the_allowlist(self):
-        self.assertGreaterEqual(len(page_scripts.names()), 10,
-                                "the reading of index.html no longer finds its scripts")
-        self.assertEqual([], tag_problems(self.html, self.in_folder, self.allowlisted))
+    def test_index_html_loads_main_js_as_its_one_module(self):
+        self.assertEqual(page_scripts.tag_sources(), [MAIN])
+        self.assertEqual([], tag_problems(self.html))
 
     def test_a_script_tag_is_found_however_it_is_written(self):
         # Tag names are case-insensitive and an end tag may hold spaces, so a
         # pattern for one spelling misses a script the browser still loads
         # (CodeQL py/bad-tag-filter; #414 step 3a review). Each of these is
-        # added before main.js and must be refused.
-        main_tag = '<script src="main.js"></script>'
-        self.assertEqual(1, self.html.count(main_tag))
+        # added before main.js and must be refused, as must main.js loaded any
+        # other way.
+        self.assertEqual(1, self.html.count(MODULE_TAG))
         for extra in ('<SCRIPT src="../../tools/stray.js"></SCRIPT>',
                       '<script src="../../tools/stray.js"></script >',
                       '<Script\n  src="../../tools/stray.js"></sCrIpT\t>',
                       '<script src=../../tools/stray.js></script>',
                       '<script src="../../tools/stray.js"/>',
                       '<script>window.x = 1;</script>',
+                      '<script type="module">import "./core.js";</script>',
                       '<script src="core.js" defer></script>',
                       '<SCRIPT src="core.js"></SCRIPT>',
-                      '<script src="core.js" type="module"></script>'):
+                      '<script type="module" src="core.js"></script>'):
             with self.subTest(extra=extra):
-                html = self.html.replace(main_tag, extra + "\n" + main_tag)
-                self.assertTrue(tag_problems(html, self.in_folder, self.allowlisted))
-        moved = self.html.replace(main_tag, "").replace(
-            '<script src="core.js"></script>', main_tag + '\n<script src="core.js"></script>')
-        self.assertIn("main.js is not the last script",
-                      tag_problems(moved, self.in_folder, self.allowlisted))
+                html = self.html.replace(MODULE_TAG, extra + "\n" + MODULE_TAG)
+                self.assertTrue(tag_problems(html))
+        for main in ('<script src="main.js"></script>',
+                     '<script src="main.js" type="module"></script>',
+                     '<script type="module" src="main.js" async></script>',
+                     '<SCRIPT type="module" src="main.js"></SCRIPT>', ""):
+            with self.subTest(main=main):
+                self.assertTrue(tag_problems(self.html.replace(MODULE_TAG, main)))
 
-    def test_main_js_numbers_the_scripts_in_index_html_order(self):
+    def test_main_js_reaches_every_script_in_the_folder_and_the_allowlist(self):
         # PAGE_SCRIPTS numbers a page error's file (docs/DEVELOPER_NOTES.md,
-        # "Page scripts"), so it must follow index.html's order.
-        main = (UI / MAIN).read_text(encoding="utf-8")
-        listed = re.search(r"^const PAGE_SCRIPTS = \[([^\]]*)\];", main, re.M)
-        self.assertIsNotNone(listed, "PAGE_SCRIPTS not found in main.js")
-        self.assertEqual(re.findall(r'"([^"]+)"', listed.group(1)), page_scripts.names())
+        # "Page scripts"), so it lists every module, each once.
+        self.assertGreaterEqual(len(self.reached), 10, "the harness no longer loads the modules")
+        self.assertEqual(self.reached[-1], MAIN, "main.js is evaluated last")
+        self.assertEqual([], set_problems(self.reached, page_scripts.names(), self.in_folder,
+                                          self.allowlisted))
+
+    def test_a_module_left_out_of_any_list_is_found(self):
+        listed = page_scripts.names()
+        for reached, names, folder, allowed in (
+                (self.reached[1:], listed, self.in_folder, self.allowlisted),   # not imported
+                (self.reached, listed[1:], self.in_folder, self.allowlisted),   # not numbered
+                (self.reached, listed + listed[:1], self.in_folder, self.allowlisted),
+                (self.reached, listed, self.in_folder | {"stray.js"}, self.allowlisted),
+                (self.reached, listed, self.in_folder, self.allowlisted - {"core.js"})):
+            with self.subTest(case=len(reached) + len(names) + len(folder) + len(allowed)):
+                self.assertTrue(set_problems(reached, names, folder, allowed))
 
 
 class PageScriptRuleTests(unittest.TestCase):
-    """Only main.js runs anything at load, and no top-level name is declared twice."""
+    """Only main.js runs anything at load, imports and exports are plain lists
+    of names between the page's own modules, and no top-level name is declared
+    twice."""
 
     @classmethod
     def setUpClass(cls):
         cls.sources = {p.name: p.read_text(encoding="utf-8") for p in page_scripts.paths()}
 
     def test_each_script_is_strict(self):
+        # A module is strict anyway; the directive keeps a file strict if it is
+        # ever read as a classic script, as it was before #488.
         for name, src in self.sources.items():
             with self.subTest(script=name):
                 self.assertIn(statements(src)[0][0][1], DIRECTIVE)
@@ -345,25 +426,66 @@ class PageScriptRuleTests(unittest.TestCase):
                                  f"{name} runs code as it loads: only main.js may")
         self.assertTrue(problems_at_load(self.sources[MAIN]), "main.js no longer starts the page")
 
-    def test_no_script_reads_a_later_scripts_name_as_it_loads(self):
-        # Declarations hoist within a script but not across scripts, so an
-        # initializer outside a function body that names something declared
-        # in a later script would throw as the page loads (#414 step 3a
-        # review: "const probeAtLoad = wire();" in polling.js).
-        order = [(name, statements(src)) for name, src in self.sources.items()]
-        for k, (name, parsed) in enumerate(order):
+    def test_imports_and_exports_link_only_the_page_modules(self):
+        # Each import and export is a plain list (main.js's too), an import
+        # names another module in the folder and only names it exports, and an
+        # export names a top-level declaration of its own module. Nothing is
+        # imported at run time (import()) or reached through import.meta.
+        found = {}
+        for name, src in self.sources.items():
+            for statement in statements(src):
+                if statement[0][1] in ("import", "export"):
+                    with self.subTest(script=name, statement=" ".join(t[1] for t in statement[:4])):
+                        self.assertIsNotNone(module_list(statement), "not a plain list")
+            words = [t[1] for t in tokens(src)]
+            for k, word in enumerate(words[:-1]):
+                if word == "import":
+                    with self.subTest(script=name, after=words[k + 1]):
+                        self.assertEqual(words[k + 1], "{", "an import other than a list")
+            found[name] = links(src)
+        for name, (imports, exports) in found.items():
+            own = {w for st in statements(self.sources[name]) if st[0][1] in DECLARES
+                   for w in declared(st)}
+            with self.subTest(script=name, exports=exports):
+                self.assertEqual(len(exports), len(set(exports)))
+                self.assertLessEqual(set(exports), own, "an export the module does not declare")
+            imported = [w for _, names in imports for w in names]
+            with self.subTest(script=name, imported="twice or its own"):
+                self.assertEqual(len(imported), len(set(imported)), "a name imported twice")
+                self.assertEqual(set(), set(imported) & own, "a name both imported and declared")
+            for specifier, names in imports:
+                with self.subTest(script=name, specifier=specifier):
+                    m = PAGE_FILE.match(specifier)
+                    self.assertIsNotNone(m, "not ./name.js")
+                    self.assertIn(m.group(1), found, "not one of the page's modules")
+                    self.assertNotEqual(m.group(1), name, "a module imports itself")
+                    self.assertLessEqual(set(names), set(found[m.group(1)][1]),
+                                         f"{m.group(1)} does not export these")
+        self.assertIn('"./core.js"', [s for s, _ in found["meetings.js"][0]],
+                      "the reading no longer finds the imports")
+
+    def test_no_module_reads_an_imported_name_as_it_loads(self):
+        # The modules import each other in cycles, so a module may be
+        # evaluated before one it imports from, whose const, let and class are
+        # not set until then (a function is): an initializer outside a function
+        # body that reads an imported name could throw as the page loads
+        # (#414 step 3a review: "const probeAtLoad = wire();" in polling.js).
+        # main.js, evaluated after every module it reaches, may.
+        for name, src in self.sources.items():
             if name == MAIN:
                 continue
-            later = {word for _, rest in order[k + 1:] for st in rest
-                     if st[0][1] in DECLARES for word in declared(st)}
-            for statement in parsed:
+            imported = {w for _, names in links(src)[0] for w in names}
+            for statement in statements(src):
                 if statement[0][1] not in DECLARES:
                     continue
                 with self.subTest(script=name, statement=" ".join(t[1] for t in statement[:3])):
-                    self.assertEqual(set(), names_read_at_load(statement) & later,
-                                     f"{name} reads a later script's name as it loads")
+                    self.assertEqual(set(), names_read_at_load(statement) & imported,
+                                     f"{name} reads an imported name as it loads")
 
     def test_no_two_scripts_declare_the_same_name(self):
+        # Modules could each have their own, but the tests reach every
+        # module's top-level names in one namespace (tests/page_vm.js), and a
+        # stub or a reader must not mistake one for another.
         where = {}
         for name, src in self.sources.items():
             for statement in statements(src):
@@ -384,6 +506,8 @@ class TokeniserTests(unittest.TestCase):
 
     def test_declarations_only(self):
         src = ('"use strict";\n'
+               'import { x, y } from "./x.js";\n'
+               "import {\n  z, w\n} from './z.js';\n"
                "// wire();\n"
                "const a = 1, b = [2, 3];\n"
                "let c;\n"
@@ -397,12 +521,22 @@ class TokeniserTests(unittest.TestCase):
         self.assertEqual([], problems_at_load(src))
         names = [n for st in statements(src) if st[0][1] in DECLARES for n in declared(st)]
         self.assertEqual(names, ["a", "b", "c", "re", "t", "f", "g", "h", "K", "s", "long"])
+        self.assertEqual(links(src + "export { a, f };\nexport {\n  K\n};\n"),
+                         ([('"./x.js"', ["x", "y"]), ("'./z.js'", ["z", "w"])], ["a", "f", "K"]))
 
     def test_it_finds_code_that_runs_at_load(self):
         for src in ("wire();\n", "window.x = 1;\n", "if (a) b();\n", "for (;;) {}\n",
                     'document.addEventListener("x", () => {});\n',
                     "const a = 1\nwire()\n",             # no semicolons
                     "function f() {}\nf();\n", "(() => {})();\n", "async () => {};\n",
+                    # an import or export other than a plain list
+                    'import "./x.js";\n', 'import x from "./x.js";\n',
+                    'import * as x from "./x.js";\n', 'import { a as b } from "./x.js";\n',
+                    'import { a, } from "./x.js";\n', "import { a } from x;\n",
+                    "export default wire();\n", "export const a = wire();\n",
+                    "export function f() {}\n", "export { a as b };\n",
+                    'export { a } from "./x.js";\n', "export * from './x.js';\n",
+                    'import("./x.js");\n',
                     'const a = 1;\n"use strict";\n'):
             with self.subTest(src=src):
                 self.assertTrue(problems_at_load(src), src)
@@ -434,9 +568,9 @@ class TokeniserTests(unittest.TestCase):
 
 class RealScriptsTests(unittest.TestCase):
     """tests/page_vm.js, which the page tests use to call the page's real
-    functions (#414 step 3b): every script loads, in index.html's order, into
-    one Node.js context where their top-level names are shared, as in the
-    browser, and a test's code cannot quietly miss the page."""
+    functions (#414 step 3b, #488): every module loads, from main.js through
+    its imports, into one Node.js context, where a test reaches each module's
+    top-level names by name, and a test's code cannot quietly miss the page."""
 
     def test_every_script_loads_and_shares_its_names(self):
         out = page_scripts.run(r"""
@@ -450,10 +584,24 @@ console.log(JSON.stringify({
         self.assertEqual(out["first"], "function")            # core.js
         self.assertEqual(out["last"], "function")             # main.js
         self.assertEqual(out["kinds"], ["success", "info", "error"])
-        self.assertEqual(out["lets"], ["object", "boolean"])   # polling.js, recording.js
-        # main.js ran as it does in the page: its listeners and window.workspace.
+        self.assertEqual(out["lets"], ["object", "boolean"])   # both polling.js
+        # main.js ran as it does in the page: its listeners and window.workspace,
+        # which holds what the check tools call (#488: no page name is global).
         self.assertIn("pywebviewready", out["started"])
-        self.assertIn("refresh", out["workspace"])
+        self.assertEqual(out["workspace"], sorted([
+            "call", "show", "openMeeting", "refresh", "state", "play", "say", "setStep",
+            "askClose", "errorHome", "showError", "groupOf"]))
+
+    def test_the_harness_reads_every_top_level_name(self):
+        # tests/page_vm.js reads each module's top-level names with a simple
+        # reading of its lines; it must find exactly what the rules' tokeniser
+        # finds, or a test could not reach a name the page declares.
+        out = page_scripts.run("console.log(JSON.stringify(loaded.modules));")
+        for path in page_scripts.paths():
+            src = path.read_text(encoding="utf-8")
+            own = [w for st in statements(src) if st[0][1] in DECLARES for w in declared(st)]
+            with self.subTest(script=path.name):
+                self.assertEqual(sorted(out[path.name]), sorted(own))
 
     def test_a_replacement_reaches_the_page_functions(self):
         out = page_scripts.run(r"""
@@ -464,6 +612,14 @@ sayDone("Saved.");                                     // a page const that call
 console.log(JSON.stringify({ el: $("status"), seen }));
 """)
         self.assertEqual(out, {"el": {"id": "status"}, "seen": [["Saved.", "success"]]})
+
+    def test_a_replacement_reaches_the_modules_that_import_it(self):
+        # el is core.js's; deviceOption, in recording.js, imports it.
+        out = page_scripts.run(r"""
+el = (tag, props) => ({ tag, value: props.value });
+console.log(JSON.stringify(deviceOption({ index: 3, name: "Synthetic microphone" })));
+""")
+        self.assertEqual(out, {"tag": "option", "value": "3"})
 
     def test_declaring_a_page_or_stand_in_name_again_fails_loudly(self):
         # A test that declared its own document or state would leave the page
@@ -507,6 +663,93 @@ console.log(JSON.stringify({ el: $("status"), seen }));
             page_scripts.function_text("noSuchFunction")
         [handler] = page_scripts.listener_texts("document", "visibilitychange")
         self.assertIn("pollNow();", handler)
+
+
+class HarnessModuleTests(unittest.TestCase):
+    """What tests/page_vm.js refuses, as the browser would, shown with
+    synthetic modules in a folder of their own. CI's syntax job runs node
+    --check, which passes a file with import or export without checking it
+    (Node.js 24, 6 Nov 2026), so a page module that does not parse is found
+    here: every page test loads every module."""
+
+    FILES = {
+        "main.js": '"use strict";\nimport { twice } from "./a.js";\n'
+                   "function start() { return twice(2); }\nexport { start };\n",
+        "a.js": '"use strict";\nimport { one } from "./b.js";\n'
+                "function twice(x) { return x * 2 * one(); }\n"
+                "function lost() { return two(); }           // two is b.js's, not imported\n"
+                "export { twice };\n",
+        "b.js": '"use strict";\nfunction one() { return 1; }\nfunction two() { return 2; }\n'
+                "export { one, two };\n",
+    }
+
+    def run_modules(self, code, **changed):
+        with tempfile.TemporaryDirectory() as folder:
+            for name, text in {**self.FILES, **changed}.items():
+                Path(folder, name).write_text(text, encoding="utf-8")
+            return page_scripts.run(code, main=Path(folder) / "main.js")
+
+    def test_a_replacement_reaches_its_own_module_and_every_importer(self):
+        out = self.run_modules("const first = start();\none = () => 10;\n"
+                               "const second = [twice(2), start()];\ntwice = (x) => -x;\n"
+                               "console.log(JSON.stringify([first, second, start(), two()]));")
+        self.assertEqual(out, [4, [40, 40], -2, 2])
+
+    def test_a_name_used_without_its_import_is_not_defined(self):
+        with self.assertRaisesRegex(AssertionError,
+                                    "two is not defined: a.js uses it without importing it"):
+            self.run_modules("lost();")
+
+    def test_what_the_browser_would_refuse_stops_the_run(self):
+        good = self.FILES["a.js"]
+        for case, a_js, error in (
+                ("not exported", good.replace("{ one }", "{ one, three }"),
+                 "does not provide an export named 'three'"),
+                ("outside the folder", good.replace('"./b.js"', '"../b.js"'), "imports ../b.js"),
+                ("by address", good.replace('"./b.js"', '"https://example.invalid/b.js"'),
+                 "imports https://example.invalid/b.js"),
+                ("no such file", good.replace('"./b.js"', '"./missing.js"'), "missing.js"),
+                ("does not parse", good.replace("one(); }", "one();"), "SyntaxError")):
+            with self.subTest(case=case):
+                with self.assertRaisesRegex(AssertionError, re.escape(error)):
+                    self.run_modules("console.log(1);", **{"a.js": a_js})
+
+
+class StartUpTests(unittest.TestCase):
+    """#488: a module script runs once the document is parsed, and pywebview
+    sends pywebviewready only once the page has loaded, so main.js is listening
+    by then. The page calls nothing until the event, and starts on it."""
+
+    # Before the page loads: a bridge that records each call and refuses it
+    # (so the start-up goes no further than its first view), timers that never
+    # fire (no polling), a player that pauses (the view's change stops it),
+    # and ready(), which sends the event to the window's listeners.
+    BRIDGE = r"""
+const called = [], realSetTimeout = setTimeout;
+setTimeout = () => 0;
+clearTimeout = () => {};
+document.getElementById("player").pause = () => {};
+window.pywebview = { api: {} };
+const methods = { status: null, setup_state: null };
+const answer = (name) => async () => { called.push(name); return { ok: false, error: "refused" }; };
+const ready = () => {
+  for (const fn of window.listeners.pywebviewready) fn(new Event("pywebviewready"));
+};
+"""
+
+    def test_the_page_waits_for_the_event_and_starts_on_it(self):
+        # pywebview's first script leaves window.pywebview.api empty; its
+        # second adds the methods and sends the event.
+        called = page_scripts.run("const before = called.slice();\n"
+                                  "for (const name of Object.keys(methods))\n"
+                                  "  window.pywebview.api[name] = answer(name);\n"
+                                  "ready();\n"
+                                  "realSetTimeout(() =>\n"
+                                  "  console.log(JSON.stringify([before, called])), 50);",
+                                  before=self.BRIDGE)
+        self.assertEqual(called[0], [])
+        self.assertEqual(called[1][:2], ["status", "setup_state"])
+        self.assertEqual(called[1].count("setup_state"), 1)
 
 
 class ScriptLineTests(unittest.TestCase):

@@ -1,8 +1,16 @@
 // Unminute UI: navigation and small builders.
-// One of the page's ordered scripts (index.html, #414): it only declares.
-// main.js, the last, runs the page.
+// One of the page's modules (#414, #488): it only declares, and main.js,
+// which index.html loads, runs the page.
 // @ts-check: the type notes below are comments; CI checks them (report only, #489).
 "use strict";
+import { $, el, state } from "./core.js";
+import { setTab } from "./meeting.js";
+import { stopEditing } from "./speakers.js";
+import { dropSearches, stopAudio } from "./playback.js";
+import { suState } from "./setup.js";
+import { micsStale } from "./recording.js";
+import { stopRecTimer } from "./drafts.js";
+import { refresh } from "./polling.js";
 
 // -- navigation -------------------------------------------------------------
 const VIEWS = ["meetings", "meeting", "handoff", "settings", "downloads", "setup", "help"];
@@ -96,3 +104,6 @@ function notice(kind, text, ...actions) {
             ...actions);
 }
 const joinParts = (...parts) => parts.filter(Boolean).join(" · ");
+
+// What the page's other modules import from this one (#488).
+export { SVG_NS, VIEWS, button, icon, joinParts, linkButton, notice, openMeeting, setMenu, show };

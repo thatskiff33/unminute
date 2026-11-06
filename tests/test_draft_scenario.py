@@ -471,6 +471,7 @@ class VerdictTests(unittest.TestCase):
 # -- headless Edge: the real page against the real bridge -----------------------------------
 
 UI = ROOT / "workspace" / "ui"
+PAGE_TAG = '<script type="module" src="main.js"></script>'   # index.html's one script (#488)
 # The page's own policy, with the changes this harness needs and the real
 # window does not: script from the check (unsafe-eval) and the bridge
 # reached over this local server (connect-src 'self'). The page has no
@@ -602,9 +603,8 @@ class Harness:
                     html = CSP.sub(lambda m: m.group(1) + m.group(2).replace(
                         "script-src 'self'", "script-src 'self' 'unsafe-eval'").replace(
                         "connect-src 'none'", "connect-src 'self'") + m.group(3), html)
-                    html = html.replace('<script src="core.js"></script>',
-                                        '<script src="shim.js"></script>\n'
-                                        '<script src="core.js"></script>')
+                    # The shim, a classic script, runs before the page's module (#488).
+                    html = html.replace(PAGE_TAG, '<script src="shim.js"></script>\n' + PAGE_TAG)
                     body = html.encode("utf-8")
                 ctype = {".html": "text/html", ".js": "text/javascript", ".css": "text/css",
                          ".woff2": "font/woff2", ".svg": "image/svg+xml",

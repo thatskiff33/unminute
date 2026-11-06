@@ -1,7 +1,19 @@
 // Unminute UI: one meeting, with its side panel and transcript rows.
-// One of the page's ordered scripts (index.html, #414): it only declares.
-// main.js, the last, runs the page.
+// One of the page's modules (#414, #488): it only declares, and main.js,
+// which index.html loads, runs the page.
 "use strict";
+import { $, DAY, SCOPES, attempt, call, el, fmtTime, say, sayError, state } from "./core.js";
+import { SVG_NS, button, joinParts, linkButton, show } from "./navigation.js";
+import { MODE, dayWord, lengthWord, speakersWord } from "./meetings.js";
+import {
+  ABANDONED, REDRAW, appendTranscript, canName, renderTranscript, startEditing, stopEditing,
+  whoButton
+} from "./speakers.js";
+import { dropSearches, play, playFrom } from "./playback.js";
+import { confirmDialog, confirmFinal } from "./confirm.js";
+import { openHandoff } from "./handoff.js";
+import { putText } from "./drafts.js";
+import { refresh } from "./polling.js";
 
 // -- one meeting ---------------------------------------------------------------
 // What the drawn transcript depends on, apart from how far transcription has
@@ -414,3 +426,9 @@ function transcriptRow(item, audio, turn) {
   li.dataset.id = item.id;
   return li;
 }
+
+// What the page's other modules import from this one (#488).
+export {
+  dateWord, fitTitle, initials, mergeIcon, playIcon, plural, renderMeeting, setTab, speakerClass,
+  transcriptRow, viewVersion, whenWord
+};

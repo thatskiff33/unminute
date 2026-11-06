@@ -1,7 +1,14 @@
 // Unminute UI: live drafts, and the recording card's controls.
-// One of the page's ordered scripts (index.html, #414): it only declares.
-// main.js, the last, runs the page.
+// One of the page's modules (#414, #488): it only declares, and main.js,
+// which index.html loads, runs the page.
 "use strict";
+import { $, attempt, call, el, pollError, pollOk, say, sayDone, state } from "./core.js";
+import { declined } from "./meetings.js";
+import { confirmDialog } from "./confirm.js";
+import {
+  REC_KIND, deviceLabel, deviceName, eventLine, micLists, micsStale, relistMics, relistOnFocus,
+  renderRecCard, reportItem, showRecMics, stopViz, wireRecMic
+} from "./recording.js";
 
 // -- live drafts while recording (#104) -------------------------------------------------
 // Rough text a few seconds behind speech. The app keeps it in memory only and
@@ -120,6 +127,7 @@ function toggleDraft() {
   renderRecorder().catch(() => {});
 }
 
+let recTimer = null;                 // the recording card's 100 ms updates
 let recReading = false;
 async function renderRecorder(tick = false) {
   if (state.locked) { stopRecTimer(); return; }     // only the locked screen (#111 C4b, #346)
@@ -242,3 +250,6 @@ function wireRecorder() {
     renderRecorder();
   }));
 }
+
+// What the page's other modules import from this one (#488).
+export { putText, renderRecorder, stopRecTimer, wireRecorder };

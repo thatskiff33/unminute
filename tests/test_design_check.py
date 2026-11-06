@@ -116,11 +116,22 @@ class PageTagTests(unittest.TestCase):
         html = (design_check.UI / "index.html").read_text(encoding="utf-8")
         main = design_check.MAIN_TAG
         for extra in ('<SCRIPT src="stray.js"></SCRIPT>', '<script src="stray.js"></script >',
-                      '<Script\n src="stray.js"/>'):
+                      '<Script\n src="stray.js"/>',
+                      '<script type="module" src="core.js"></script>'):
             with self.subTest(extra=extra):
                 self.assertFalse(design_check.page_tags_found(html.replace(main, main + extra)))
+                self.assertFalse(design_check.page_tags_found(html.replace(main, extra + main)))
         self.assertFalse(design_check.page_tags_found(html.replace(main, main.upper())))
         self.assertFalse(design_check.page_tags_found(html.replace(main, main + main)))
+        self.assertFalse(design_check.page_tags_found(
+            html.replace(main, '<script src="main.js"></script>')))      # not a module
+
+    def test_the_page_scripts_are_served_as_javascript(self):
+        # A module script served as anything else does not run (#488).
+        handler = object.__new__(design_check.Handler)
+        self.assertEqual(handler.guess_type(str(design_check.UI / "main.js")), "text/javascript")
+        self.assertEqual(design_check.after_page("steps.js"),
+                         '<script type="module" src="steps.js"></script>')
 
 
 if __name__ == "__main__":

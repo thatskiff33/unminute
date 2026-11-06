@@ -82,8 +82,9 @@ real time, and remove it when the cause is fixed.
   goes into `node_modules/` (ignored by git) and is a development tool only, under the
   Apache License 2.0, never in the package. `.npmrc` turns off install scripts, the audit
   and funding calls and the update check. Only scripts with a `// @ts-check` line before
-  `"use strict";` are checked (`checkJs` is off); the rest are still read, as the scripts
-  share one global scope. Type notes are JSDoc comments only, so the shipped code does not
+  `"use strict";` are checked (`checkJs` is off); the rest are still read, as the checked
+  ones import from them, so a name a checked module uses without importing it is reported
+  too. Type notes are JSDoc comments only, so the shipped code does not
   change; `tools/page_globals.d.ts` declares what the page uses but does not declare (the
   pywebview bridge). To opt a script in, add the line, run `python tools/ts_check.py
   --update` and commit the baseline; fix an error rather than add it where that is cheap.
@@ -150,55 +151,92 @@ real time, and remove it when the cause is fixed.
 
 ## Page scripts
 
-- **The page is several ordered classic scripts, not one app.js** (#414 step 3, the owner's
-  decision DEC-082). `workspace/ui/index.html` lists them in order, each a plain
-  `<script src>` with no `async`, `defer` or `type="module"`: until #488 part A the window
-  loaded the page from a `file://` URL, where Chromium refuses ES modules (origin `null`).
-  It now serves the page from a WebView2 virtual host (`https://unminute.invalid/`, "WebView2
-  virtual host" below), which allows them; turning the scripts into modules is #488's step 4,
-  a later change. They share one global
-  scope, as app.js's code did. Only the last, `main.js`, runs anything as the page loads
-  (wiring, start-up, the error listeners); the others only declare, so a function can live in
-  any of them as long as it loads before `main.js`.
-- **Adding a script.** List it in `index.html` before `main.js`, in `PAGE_SCRIPTS` in
-  `main.js` in the same order, and in `packaging/app-allowlist.json`. Start it with
-  `"use strict";` and declare only. `tests/test_page_scripts.py` fails if the three sets or
-  the order differ, if a script other than `main.js` runs code at load, or if two scripts
-  declare the same top-level name: a repeated `const`, `let` or `class` stops the later
-  script loading at all, and a repeated `function` silently replaces the earlier one. It
-  also fails if a script other than `main.js` reads, outside a function body, a name
-  declared in a later script (`const probe = wire();` in `polling.js`): declarations do not
-  hoist across scripts, so that would throw as the page loads.
+- **The page is several ES modules, not one app.js** (#414 step 3, the owner's decision
+  DEC-082; modules since #488, the user's decision DEC-090). `workspace/ui/index.html` loads
+  one script, `main.js`, as a module (`type="module"`), and it imports the others. Each
+  module imports by name what it uses from another (`import { $, call } from "./core.js";`)
+  and lists what it gives the others at its end (`export { ... };`), so every declaration
+  reads as it did. Until #488 part A the window loaded the page from `file://`, where
+  Chromium refuses ES modules (origin `null`); the WebView2 virtual host
+  (`https://unminute.invalid/`, "WebView2 virtual host" below) allows them under the same
+  `script-src 'self'`. Only `main.js` runs anything as the page loads (wiring, start-up, the
+  error listeners); the others only declare. The modules import each other in cycles, which
+  is safe because of that: the browser evaluates every module `main.js` reaches before
+  `main.js` itself, but one module may be evaluated before another it imports from, whose
+  `const` and `let` are not set until then (a function is). So no module but `main.js` reads
+  an imported name outside a function body. A module's top-level `let` can be assigned only
+  by that module: another calls a function of its owner (`stopPolling()` in `polling.js`).
+- **Nothing is global.** The page's names are its modules' own. The window's close
+  (`askClose`) and the check tools reach the page only through `window.workspace`
+  (`main.js`), which lists what they call (`groupOf`, `showError` and `errorHome` are there
+  for the checks only). A check's own script added after the page's tag must be a module
+  too (`tools/design_check.py` `after_page`): a classic script there runs before the page's
+  module, which waits until the document is parsed. A classic script before it (the design
+  check's `fixtures.js` bridge) still runs first.
+- **Start-up (#488).** A module script runs once the document is parsed, before
+  `DOMContentLoaded`; pywebview 6.2.1 injects its bridge and sends `pywebviewready` only
+  after WebView2's `NavigationCompleted`, which comes with the page's `load`. So `main.js`'s
+  listeners are in place before the event, as they were for the classic scripts, and the
+  page starts on it as before (`tests/test_page_scripts.py`, `StartUpTests`). The checks'
+  stand-in bridges send the event on `load` too. The page does not look for a bridge that is
+  already ready: that would read `window.pywebview.api` outside `call()`, which the I3 guard
+  forbids (`tests/test_consistency.py`). The real window shows whether the order holds.
+- **Adding a module.** Import it where it is used, list it in `PAGE_SCRIPTS` in `main.js`
+  and in `packaging/app-allowlist.json`, start it with `"use strict";` and declare only,
+  with plain `import { ... } from "./x.js";` and `export { ... };` lists.
+  `tests/test_page_scripts.py` fails if the modules `main.js` reaches, `PAGE_SCRIPTS`, the
+  `.js` files in the folder and the allowlist differ; if `index.html` loads anything but
+  that one module tag; if an import or export is not a plain list, or names a file outside
+  the folder or a name the other module does not export, or a module imports at run time
+  (`import()`) or uses `import.meta`; if a module other than `main.js` runs code at load or
+  reads an imported name as it loads (`const probe = wire();` in `polling.js`); or if two
+  modules declare the same top-level name, which the tests reach in one namespace.
+- **CI's "JavaScript syntax" job does not check the modules.** It runs `node --check` on
+  each `.js` file, and Node.js passes a file with `import` or `export` without checking it:
+  on Node.js 24 (6 Nov 2026) it exits 0 even for one that does not parse. Every page test
+  loads every module through `tests/page_vm.js`, which stops on one that does not parse
+  (`HarnessModuleTests`), so the tests check them instead.
 - **Tests that read the page's code** use `tests/page_scripts.py`: `source()` joins the
-  scripts in load order, so a function is found by name whichever file it is in. It reads
-  `index.html` with the standard library's HTML parser, never a pattern, so a script tag is
-  found however it is spelt (`<SCRIPT>`, `</script >`), as the browser finds it (CodeQL
-  `py/bad-tag-filter`); `tools/design_check.py` `page_tags_found` does the same. The I3
-  bridge-name guard and the T1 "opens no link" guard read `every_source()`, every `.js` file
-  under `workspace/ui`, whether `index.html` loads it or not.
+  modules in `PAGE_SCRIPTS` order, so a function is found by name whichever file it is in.
+  It reads `index.html` with the standard library's HTML parser, never a pattern, so a
+  script tag is found however it is spelt (`<SCRIPT>`, `</script >`), as the browser finds
+  it (CodeQL `py/bad-tag-filter`); `tools/design_check.py` `page_tags_found` does the same.
+  The I3 bridge-name guard and the T1 "opens no link" guard read `every_source()`, every
+  `.js` file under `workspace/ui`, whether `main.js` imports it or not.
 - **Tests that run the page's code** call the real functions, never a copy cut out of the
-  source with a pattern (#414 step 3b). `page_scripts.run(code)` starts Node.js on
-  `tests/page_vm.js`, which loads every script in `index.html`'s order into one `vm` context
-  (top-level names shared, as in the browser; `main.js` wires stand-in elements and waits
-  for a `pywebviewready` that never comes), runs the test's code after them and returns what
-  it printed as JSON. The test replaces what the page reaches by assigning it:
-  `document = {...}`, `window = {...}`, `setTimeout = ...`, a page function
-  (`say = ...`) or a `let`. A page `const` (`$`, `button`, `state`) cannot be replaced:
+  source with a pattern (#414 step 3b). `page_scripts.run(code)` starts Node.js with
+  `--experimental-vm-modules` on `tests/page_vm.js`, which loads the real modules from
+  `main.js` through their own imports into one `vm` context (`vm.SourceTextModule`; an
+  import of anything but a `./name.js` beside `main.js`, or of a name not exported, stops
+  the run), evaluates them (`main.js` wires stand-in elements and waits for a
+  `pywebviewready` that never comes), runs the test's code after them and returns what it
+  printed as JSON. `run(code, before=...)` runs code before the page loads (a bridge already
+  in place, say). Each module is evaluated with one line added after its own text, which
+  moves none of its lines (`import.meta.pageVm(...)`: two arrow functions that read and
+  assign a name in the module's own scope), and `page_vm.js` puts an accessor on the
+  context's global object for each top-level name of each module. So the test replaces what
+  the page reaches by assigning it: `document = {...}`, `window = {...}`,
+  `setTimeout = ...`, a page function (`say = ...`) or a `let`. That changes the name in the
+  module that declares it, so its own functions and every module that imports it see the
+  replacement, as in the page. A page `const` (`$`, `button`, `state`) cannot be replaced:
   replace the `document` that `$` reads, or change the object (`state.view = ...`).
   Declaring a page or stand-in name again (`const document`) fails with "already declared",
-  so a test cannot quietly use its own copy while the page uses the real one. Assignments
-  are covered too (#495): a stub of a name that neither the page nor the test declares (a
-  function since renamed or removed, `renamedAway = () => 0`) fails with "is not defined"
-  instead of creating a new global the page never calls. The test's code runs in strict
-  mode, which stops most such assignments where they happen; Node.js's `vm` lets the
-  assignment of a function through even in strict mode (it cannot tell it from a function
-  declaration), so `page_vm.js` also fails the run if the test's code added a global, both
-  once that code has run and as Node.js exits (for a callback or a timer). For a check on
-  how a function is written, `page_scripts.function_text(name)` and `listener_texts()` give
-  the loaded function's own text. Without Node.js these tests skip; CI has it, and
-  `--strict-skips` does not allow that skip.
+  so a test cannot quietly use its own copy while the page uses the real one. The accessors
+  are for the test's code only: a module that uses another module's name without importing
+  it throws "is not defined" in the browser, and an accessor reached from a page module
+  throws the same (it knows the caller's file from the stack), so a missing import does not
+  pass the tests. Assignments are covered too (#495): a stub of a name that neither the page
+  nor the test declares (a function since renamed or removed, `renamedAway = () => 0`)
+  fails with "is not defined" instead of creating a new global the page never calls. The
+  test's code runs in strict mode, which stops most such assignments where they happen;
+  Node.js's `vm` lets the assignment of a function through even in strict mode (it cannot
+  tell it from a function declaration), so `page_vm.js` also fails the run if the test's
+  code added a global, both once that code has run and as Node.js exits (for a callback or
+  a timer). For a check on how a function is written, `page_scripts.function_text(name)` and
+  `listener_texts()` give the loaded function's own text. Without Node.js these tests skip;
+  CI has it, and `--strict-skips` does not allow that skip.
 - **A page error's line names its script by number.** `report_ui_error` still takes a fixed
-  kind, a line and a column, and no file name. For an error in one of the page's scripts, the
+  kind, a line and a column, and no file name. For an error in one of the page's modules, the
   page sends the script's place in `PAGE_SCRIPTS` (`core.js` is 1) times
   100000 plus the line: 300120 is line 120 of the third script, `meetings.js`. A line from
   any other script (none in the app; `fixtures.js` in the design check) is sent as it is.

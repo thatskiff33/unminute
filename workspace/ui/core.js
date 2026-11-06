@@ -2,10 +2,12 @@
 // never innerHTML, so markup in a transcript is shown as text, not executed.
 // The page holds no file paths: recordings arrive through the native file
 // dialog or a native drop, handled in Python.
-// One of the page's ordered scripts (index.html, #414): it only declares.
-// main.js, the last, runs the page.
+// One of the page's modules (#414, #488): it only declares, and main.js,
+// which index.html loads, runs the page.
 // @ts-check: the type notes below are comments; CI checks them (report only, #489).
 "use strict";
+import { icon } from "./navigation.js";
+import { putText } from "./drafts.js";
 
 /** @param {string} id */
 const $ = (id) => document.getElementById(id);
@@ -180,4 +182,11 @@ const SCOPES = { all: "everything", audio: "the audio", transcript: "the transcr
 const STAGES = {
   inbox: "Transcribing", review: "In review", handoff: "Reviewed: hand off",
   cleanup: "Cleanup",
+};
+
+// What the page's other modules import from this one (#488).
+export {
+  $, DAY, IDLE_POLL_MS, LIST_REFRESH_POLLS, PAGE, POLL_MS, SAVE_DELAY_MS, SCOPES, attempt, call,
+  clearError, clearErrorsIn, el, errorHome, fmtTime, pollError, pollOk, say, sayDone, sayError,
+  showError, state
 };

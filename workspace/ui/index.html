@@ -784,21 +784,9 @@
   </form>
 </dialog>
 
-<!-- The page's scripts, in order (#414): each only declares, and main.js,
-     the last, runs the page. No async or defer: they run one after another. -->
-<script src="core.js"></script>
-<script src="navigation.js"></script>
-<script src="meetings.js"></script>
-<script src="meeting.js"></script>
-<script src="speakers.js"></script>
-<script src="playback.js"></script>
-<script src="confirm.js"></script>
-<script src="handoff.js"></script>
-<script src="setup.js"></script>
-<script src="settings.js"></script>
-<script src="recording.js"></script>
-<script src="drafts.js"></script>
-<script src="polling.js"></script>
-<script src="main.js"></script>
+<!-- The page's scripts are ES modules (#414, #488): main.js imports the others,
+     which only declare, and runs the page. A module script is deferred: it runs
+     once the document is parsed, before DOMContentLoaded. -->
+<script type="module" src="main.js"></script>
 </body>
 </html>

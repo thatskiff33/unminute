@@ -1,7 +1,14 @@
 // Unminute UI: speaker names.
-// One of the page's ordered scripts (index.html, #414): it only declares.
-// main.js, the last, runs the page.
+// One of the page's modules (#414, #488): it only declares, and main.js,
+// which index.html loads, runs the page.
 "use strict";
+import { $, PAGE, SAVE_DELAY_MS, attempt, call, el, fmtTime, say, sayDone, state } from "./core.js";
+import {
+  initials, mergeIcon, playIcon, plural, renderMeeting, speakerClass, transcriptRow
+} from "./meeting.js";
+import {
+  markHits, newSearch, play, searchSeq, showHits, takeJump, updatePlayer
+} from "./playback.js";
 
 // -- speaker names (#21) ---------------------------------------------------------
 function canName() {
@@ -347,3 +354,9 @@ async function undo() {
   } else if (r === null) say("Nothing to undo");
   renderMeeting();
 }
+
+// What the page's other modules import from this one (#488).
+export {
+  ABANDONED, REDRAW, appendTranscript, canName, openNames, renderTranscript, startEditing,
+  stopEditing, undo, undoSpeakers, whoButton
+};

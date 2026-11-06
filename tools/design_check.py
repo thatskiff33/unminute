@@ -36,11 +36,15 @@ UI = ROOT / "workspace" / "ui"
 SERVED = ("docs/design/", "docs/screenshots/", "tools/design_check/", "workspace/ui/")
 EDGE = [Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
         Path(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe")]
-# The page's first and last scripts (index.html; #414 split app.js into ordered
-# scripts): the fake bridge is injected before the first, and a check that runs
-# steps once the page has started adds them after the last.
-APP_TAG = '<script src="core.js"></script>'
-MAIN_TAG = '<script src="main.js"></script>'
+# The page's one script tag (index.html): main.js, a module that imports the
+# page's other modules (#414, #488). The fake bridge, a classic script, is
+# inserted before it and runs first; a module script waits until the page is
+# parsed. A check that runs steps once the page has started adds them after it
+# as a module too (after_page), since a classic script there would run before
+# the page. APP_TAG and MAIN_TAG name the same tag, for the checks that insert
+# a script on either side of it.
+MAIN_TAG = '<script type="module" src="main.js"></script>'
+APP_TAG = MAIN_TAG
 VISIBLE = 40         # a channel difference above this counts as a visible change
 EDGE_LIMIT_S = 120   # this tool's own limit for one headless Edge screenshot
 NOT_MEASURED = 2     # exit code: headless Edge timed out, so nothing was measured
@@ -162,21 +166,30 @@ class _ScriptStarts(HTMLParser):
 
 
 def page_tags_found(html=None):
-    """Whether index.html loads APP_TAG first and MAIN_TAG last, each once and
-    written exactly so (the checks insert their scripts beside them)."""
+    """Whether index.html's only script is MAIN_TAG, once and written exactly
+    so (the checks insert their scripts beside it)."""
     if html is None:
         html = (UI / "index.html").read_text(encoding="utf-8")
     parser = _ScriptStarts()
     parser.feed(html)
     parser.close()
-    starts = parser.starts
-    return (bool(starts) and len(set(starts)) == len(starts)
-            and starts[0] + "</script>" == APP_TAG and starts[-1] + "</script>" == MAIN_TAG
-            and html.count(APP_TAG) == 1 and html.count(MAIN_TAG) == 1)
+    return ([start + "</script>" for start in parser.starts] == [MAIN_TAG]
+            and html.count(MAIN_TAG) == 1)
+
+
+def after_page(src):
+    """The tag for a check's own script, added after MAIN_TAG to run once the
+    page's modules have: a module, as a classic script there runs before them."""
+    return f'<script type="module" src="{src}"></script>'
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     """Serves the app under /app/ with the fake bridge, and a few repo folders."""
+
+    # The browser runs a module script only when it is served as JavaScript;
+    # on Windows the standard library's guess can come from the registry.
+    extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map,
+                      ".js": "text/javascript"}
 
     def log_message(self, *args):
         pass
@@ -293,8 +306,8 @@ def main():
     if not cases:
         sys.exit("No such case. Known: " + ", ".join(c["name"] for c in CASES))
     if not page_tags_found():
-        sys.exit("index.html no longer loads core.js and main.js as expected; "
-                 "update APP_TAG and MAIN_TAG.")
+        sys.exit("index.html no longer loads main.js as its one module script; "
+                 "update MAIN_TAG.")
     args.out.mkdir(parents=True, exist_ok=True)
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)

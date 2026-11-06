@@ -1,7 +1,13 @@
 // Unminute UI: downloads, managed policy and settings.
-// One of the page's ordered scripts (index.html, #414): it only declares.
-// main.js, the last, runs the page.
+// One of the page's modules (#414, #488): it only declares, and main.js,
+// which index.html loads, runs the page.
 "use strict";
+import { $, attempt, call, el, say, state } from "./core.js";
+import { SVG_NS, button, icon, joinParts, linkButton } from "./navigation.js";
+import { declined } from "./meetings.js";
+import { dateWord, plural, whenWord } from "./meeting.js";
+import { confirmDialog } from "./confirm.js";
+import { cardsSig, downloadRow, replaceKeeping, updateProgress } from "./setup.js";
 
 // -- downloads -------------------------------------------------------------------------
 async function renderDownloads() {
@@ -298,3 +304,9 @@ function setSetting(changes, near) {
   attempt(async () => { await call("set_settings", changes); saved = true; await renderSettings(); }, near)
     .then(() => { if (!saved) attempt(renderSettings); });
 }
+
+// What the page's other modules import from this one (#488).
+export {
+  computerLocked, computerNote, downloadOff, itManaged, modelDownloadsOff, renderDownloads,
+  renderSettings, setSetting
+};

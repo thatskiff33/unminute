@@ -1,8 +1,14 @@
 // Unminute UI: confirmations.
-// One of the page's ordered scripts (index.html, #414): it only declares.
-// main.js, the last, runs the page.
+// One of the page's modules (#414, #488): it only declares, and main.js,
+// which index.html loads, runs the page.
 // @ts-check: the type notes below are comments; CI checks them (report only, #489).
 "use strict";
+import { $, attempt, call, say, state } from "./core.js";
+import { show } from "./navigation.js";
+import { viewVersion } from "./meeting.js";
+import { handoffState } from "./handoff.js";
+import { pollSoon, refresh } from "./polling.js";
+import { guarded } from "./main.js";
 
 // -- confirmations ---------------------------------------------------------------
 // danger: the confirm button is red, for deleting (discard, delete, remove).
@@ -103,3 +109,6 @@ function confirmFinal(d) {
     })),
   });
 }
+
+// What the page's other modules import from this one (#488).
+export { confirmDialog, confirmFinal, confirmReviewed, transcribeAgain };

@@ -1,16 +1,17 @@
 // Unminute UI: microphone recording, the level meter and the microphone lists.
-// One of the page's ordered scripts (index.html, #414): it only declares.
-// main.js, the last, runs the page.
+// One of the page's modules (#414, #488): it only declares, and main.js,
+// which index.html loads, runs the page.
 "use strict";
+import { $, attempt, call, el, pollError, pollOk, say, state } from "./core.js";
+import { button, linkButton, notice } from "./navigation.js";
+import { confirmDialog } from "./confirm.js";
+import { putText, renderRecorder } from "./drafts.js";
 
-// -- refresh loop ----------------------------------------------------------------
-let refreshing = false;
 // -- microphone recording (#30) ---------------------------------------------------
 
 const REC_TEXT = { recording: "Recording", paused: "Paused", stopped: "Saving",
                    saving: "Saving", device_lost: "Microphone lost", slept: "Computer went to sleep",
                    failed: "Could not save" };
-let recTimer = null;
 
 function fmtSeconds(s) {
   const t = Math.floor(s), h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60);
@@ -527,3 +528,10 @@ function reportItem(rep) {
     return notice("alert", `Microphone lost. ${fmtSeconds(rep.seconds)} recorded before it disconnected was saved.${done}`, dismiss);
   return notice("done", `Recording: ${fmtSeconds(rep.seconds)}${rep.computer ? " of microphone and computer audio" : ""} saved.${done}${events}`, dismiss);
 }
+
+// What the page's other modules import from this one (#488).
+export {
+  REC_KIND, deviceLabel, deviceName, eventLine, meterClock, micLists, micsStale, readVizColours,
+  relistMics, relistOnFocus, renderRecCard, reportItem, restartMeter, showRecMics, showSuMics,
+  stopViz, viz, wireRecMic
+};

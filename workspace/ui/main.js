@@ -1,8 +1,27 @@
-// Unminute UI: diagnostics, wiring and start-up. The last of the page's
-// ordered scripts (index.html, #414), and the only one that runs anything as
-// the page loads: the other scripts only declare, so it does not matter which
-// of them a function is in, as long as each loads before this one.
+// Unminute UI: diagnostics, wiring and start-up. The page's one module script
+// (index.html, #488): it imports the page's other modules (#414), which only
+// declare, and it is the only one that runs anything as the page loads. Its
+// imports are all evaluated before it runs, whatever order they import in.
 "use strict";
+import {
+  $, LIST_REFRESH_POLLS, attempt, call, errorHome, say, sayDone, showError, state
+} from "./core.js";
+import { openMeeting, setMenu, show } from "./navigation.js";
+import { groupOf, renderLocked, wireLocked } from "./meetings.js";
+import { fitTitle, setTab } from "./meeting.js";
+import { openNames, stopEditing, undo, undoSpeakers } from "./speakers.js";
+import {
+  dropSearches, nextHit, nextPassage, play, runSearch, stopAudio, togglePlay, wirePlayer
+} from "./playback.js";
+import { confirmDialog, confirmReviewed, transcribeAgain } from "./confirm.js";
+import {
+  closeHandoff, closeTemplateEditor, handoffState, openHandoff, wireHandoff
+} from "./handoff.js";
+import { setStep, suState, wireSetup } from "./setup.js";
+import { setSetting } from "./settings.js";
+import { meterClock, micsStale, readVizColours, restartMeter, viz } from "./recording.js";
+import { renderRecorder, stopRecTimer, wireRecorder } from "./drafts.js";
+import { pollNow, pollSoon, refresh, schedulePoll, stopPolling, wireDrop } from "./polling.js";
 
 // -- diagnostics (R9b, #130) ---------------------------------------------------
 // The page's own script errors reach the app's log as a fixed kind and a line
@@ -10,7 +29,7 @@
 // rate-limits them; a failed report is not reported again. The first error
 // before the bridge is ready (in wire(), say) is kept until it is.
 let reporting = false, bridgeReady = false, earlyError = null;
-// Since the split into ordered scripts (#414), a line alone does not say
+// Since the split into several scripts (#414), a line alone does not say
 // which file: an error in one of PAGE_SCRIPTS is sent as the script's place
 // in the list times 100000 plus its line (file 3, line 120: 300120), within
 // the bridge's limit of 10,000,000; any other line is sent as it is. No file
@@ -361,8 +380,7 @@ window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", rea
 
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
-    clearTimeout(pollTimer);
-    pollTimer = null;
+    stopPolling();
     stopRecTimer();
     restartMeter(viz, meterClock);           // minimised: the meter's frames pause (#216)
   } else {
@@ -399,7 +417,10 @@ window.addEventListener("pywebviewready", () => {
   if (early) reportUiError(...early);
 });
 
-window.workspace = { call, show, openMeeting, refresh, state, play, say, setStep, askClose };   // check tools, close
+// The window's close (askClose) and the check tools reach the page here: its
+// modules share no global names (#488), so a check calls only what is listed.
+window.workspace = { call, show, openMeeting, refresh, state, play, say, setStep, askClose,
+                     errorHome, showError, groupOf };
 
 guarded(wire)();                      // an error in wiring has its place too (#491)
 window.addEventListener("pywebviewready", async () => {
@@ -422,3 +443,9 @@ window.addEventListener("pywebviewready", async () => {
   } else show("meetings");
   schedulePoll();
 });
+// A module script runs once the document is parsed, before DOMContentLoaded
+// (#488), and pywebview sends pywebviewready only after the page has loaded
+// (WebView2's NavigationCompleted), so both listeners above are in place first.
+
+// What the page's other modules import from this one (#488).
+export { guarded };

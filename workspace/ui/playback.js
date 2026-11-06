@@ -1,7 +1,9 @@
 // Unminute UI: search and playback.
-// One of the page's ordered scripts (index.html, #414): it only declares.
-// main.js, the last, runs the page.
+// One of the page's modules (#414, #488): it only declares, and main.js,
+// which index.html loads, runs the page.
 "use strict";
+import { $, attempt, call, fmtTime, sayError, state } from "./core.js";
+import { joinParts } from "./navigation.js";
 
 // -- search --------------------------------------------------------------------
 // Every search request takes the next number, and only the latest request's
@@ -194,3 +196,9 @@ function wirePlayer() {
     if (e.key === "End") { e.preventDefault(); playFrom(Math.max(0, meetingLength() - 5)); }
   });
 }
+
+// What the page's other modules import from this one (#488).
+export {
+  dropSearches, markHits, newSearch, nextHit, nextPassage, play, playFrom, runSearch, searchSeq,
+  showHits, stopAudio, takeJump, togglePlay, updatePlayer, wirePlayer
+};

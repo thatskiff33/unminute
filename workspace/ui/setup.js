@@ -1,7 +1,16 @@
 // Unminute UI: setup.
-// One of the page's ordered scripts (index.html, #414): it only declares.
-// main.js, the last, runs the page.
+// One of the page's modules (#414, #488): it only declares, and main.js,
+// which index.html loads, runs the page.
 "use strict";
+import { $, attempt, call, el, errorHome, say, sayDone, showError, state } from "./core.js";
+import { button, icon, joinParts, linkButton, show } from "./navigation.js";
+import { confirmDialog } from "./confirm.js";
+import {
+  computerLocked, computerNote, downloadOff, itManaged, modelDownloadsOff
+} from "./settings.js";
+import { micLists, relistMics, relistOnFocus, showSuMics } from "./recording.js";
+import { putText } from "./drafts.js";
+import { refresh } from "./polling.js";
 
 // -- setup (#19) ----------------------------------------------------------------------
 // First run in five steps. The token is typed into a password field and
@@ -342,3 +351,8 @@ function wireSetup() {
     show("meetings");
   }));
 }
+
+// What the page's other modules import from this one (#488).
+export {
+  cardsSig, downloadRow, renderSetup, replaceKeeping, setStep, suState, updateProgress, wireSetup
+};

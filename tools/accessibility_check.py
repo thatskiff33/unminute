@@ -931,8 +931,9 @@ VIEWS = {
     # finds the place with errorHome). Late, after Help, so the microphone
     # chooser and the recording draft are audited as before; the meeting view
     # next leaves Meetings.
-    "meetings import error": "window.workspace.show('meetings'); await wait(1500);"
-                             f"showError(errorHome('import'), {json.dumps(IMPORT_ERROR)},"
+    "meetings import error": "const ws = window.workspace;"
+                             "ws.show('meetings'); await wait(1500);"
+                             f"ws.showError(ws.errorHome('import'), {json.dumps(IMPORT_ERROR)},"
                              " document.getElementById('import')); await wait(400);",
     "meeting": "await window.workspace.openMeeting('{mid}'); await wait(1500);",
     "versions tab": "document.querySelector('.wide-tabs [data-tab=versions]').click();"
@@ -961,7 +962,8 @@ VIEWS = {
                     "document.getElementById('m-primary').click(); await wait(2500);",
     # Copy's error on the hand off page (#416), placed as handoffFailed places
     # it, without copying anything.
-    "handoff copy error": f"showError(errorHome('ho-copy'), {json.dumps(HANDOFF_ERROR)},"
+    "handoff copy error": "const ws = window.workspace;"
+                          f"ws.showError(ws.errorHome('ho-copy'), {json.dumps(HANDOFF_ERROR)},"
                           " document.getElementById('ho-copy')); await wait(400);",
 }
 

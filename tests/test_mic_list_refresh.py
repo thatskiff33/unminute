@@ -390,7 +390,8 @@ class Handler(design_check.Handler):
                                 '<script src="mic-bridge.js"></script>\n'
                                 + design_check.APP_TAG)
             page = page.replace(design_check.MAIN_TAG,
-                                design_check.MAIN_TAG + '\n<script src="mic-steps.js"></script>')
+                                design_check.MAIN_TAG + "\n"
+                                + design_check.after_page("mic-steps.js"))
             return self._send(page.encode("utf-8"), "text/html; charset=utf-8")
         return super().do_GET()
 

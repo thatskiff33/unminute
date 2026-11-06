@@ -1,8 +1,16 @@
 // Unminute UI: drops, the refresh and polling.
-// One of the page's ordered scripts (index.html, #414): it only declares.
-// main.js, the last, runs the page.
+// One of the page's modules (#414, #488): it only declares, and main.js,
+// which index.html loads, runs the page.
 // @ts-check: the type notes below are comments; CI checks them (report only, #489).
 "use strict";
+import {
+  $, IDLE_POLL_MS, LIST_REFRESH_POLLS, POLL_MS, call, pollError, pollOk, state
+} from "./core.js";
+import { renderLists, renderReminders, renderStatus } from "./meetings.js";
+import { renderMeeting } from "./meeting.js";
+import { renderSetup } from "./setup.js";
+import { renderDownloads, renderSettings } from "./settings.js";
+import { renderRecorder } from "./drafts.js";
 
 // While files are dragged over the window, show where to let go. The drop
 // itself is handled natively; dragover repeats while over the window, so the
@@ -22,6 +30,7 @@ function wireDrop() {
   document.addEventListener("drop", () => { clearTimeout(dragTimer); hide(); pollSoon(); });
 }
 
+let refreshing = false;               // a refresh is running
 let refreshAgain = false;
 
 async function refresh() {
@@ -116,7 +125,17 @@ function schedulePoll() {
   pollTimer = setTimeout(pollNow, pollTimerDelay);
 }
 
+// No poll until schedulePoll or pollSoon starts one: while locked, or the
+// window is hidden. pollTimer is this module's own, so other modules stop it here.
+function stopPolling() {
+  clearTimeout(pollTimer);
+  pollTimer = null;
+}
+
 async function pollNow() {
   await refresh();
   schedulePoll();
 }
+
+// What the page's other modules import from this one (#488).
+export { pollNow, pollSoon, refresh, schedulePoll, stopPolling, wireDrop };
