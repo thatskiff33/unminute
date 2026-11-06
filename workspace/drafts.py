@@ -936,12 +936,13 @@ class DraftSession:
         is still under way (D4: processing waits for that)."""
         with self._lock:
             already = self._stopped
+            # Read together, under the lock detach_instant changes them in (D4).
+            instant, detach_budget = self.instant, self._detach_budget
         if already:
             # As long as the first stop may take, its instant words' end too (D4).
-            instant = self.instant
             self._ended.wait(self._end_wait() + STOP_JOIN_S * (len(self._threads) + 1)
                              + (instant.end_budget() if instant is not None else 0.0)
-                             + self._detach_budget)
+                             + detach_budget)
             return
         with self._lock:
             if self._stopped:

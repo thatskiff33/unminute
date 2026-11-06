@@ -835,7 +835,7 @@ class DraftSessionWiringTests(unittest.TestCase):
                 mock.patch.object(s, "_end_wait", lambda: 0.0):
             detacher.start()
             self.assertTrue(wait_for(lambda: s.instant is None))   # detach under way
-            s.stop()                                   # raised AttributeError before
+            s.stop()                                   # before: returned at once
             self.assertEqual(slow.calls, ["stop"])     # stop() waited for the detach's end
             self.assertTrue(s._ended.is_set())
         detacher.join(10)
@@ -868,7 +868,7 @@ class DraftSessionWiringTests(unittest.TestCase):
         s._lock = ClearingLock()
         with mock.patch.object(drafts, "STOP_JOIN_S", 0.05), \
                 mock.patch.object(s, "_end_wait", lambda: 0.0):
-            s.stop()                                   # AttributeError before the fix
+            s.stop()                                   # before: read after the lock
         self.assertTrue(s._ended.is_set())
         self.assertEqual(stand_in.calls, ["stop"])     # the words it held were ended
 
