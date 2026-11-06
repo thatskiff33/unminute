@@ -1388,12 +1388,26 @@ def error_text(exc):
 
 
 def interpreter():
-    """This Python as it was started, with its options (-I -B -X ... for a
-    package), to start the locked scenario's own process the same way."""
+    """This Python with the options it was started with (-I -B -X ... for a
+    package), to start the locked scenario's own process the same way. The
+    program is sys.executable, not orig_argv[0]: in a Windows virtual
+    environment orig_argv[0] is the base interpreter, which lacks the
+    environment's numpy and PyAV, so the child could not set up the decoder
+    (decoder_runtime.use() does nothing without them) and every decode there
+    was refused."""
     argv = list(getattr(sys, "orig_argv", None) or [])
     if sys.argv and sys.argv[0] in argv:
-        return argv[:argv.index(sys.argv[0])]
+        return [sys.executable, *argv[1:argv.index(sys.argv[0])]]
     return [sys.executable]
+
+
+def expected_setup_cards():
+    """How many model cards Setup shows: four speech models (Parakeet v2,
+    Parakeet v3, turbo, large-v3) and the speaker model; the instant-words
+    model while the app offers it (#105, setup.OFFER_INSTANT); and two
+    graphics card components (speakers, Whisper) on an NVIDIA machine."""
+    from workspace import gpu, setup
+    return 5 + int(bool(setup.OFFER_INSTANT)) + 2 * (gpu.detected() is not None)
 
 
 def run_locked_child(args, flag, timeout=300, extra=()):
@@ -1664,10 +1678,7 @@ def main():
             and c.get("final_offered")):
         bad.append("review confirmation")
     st = report.get("setup") or {}
-    from workspace import gpu          # the graphics card component cards need NVIDIA
-    # Four speech models (Parakeet v2, Parakeet v3, turbo, large-v3) and the speaker model,
-    # plus two graphics card components (speakers, Whisper) on an NVIDIA machine.
-    if not (st.get("cards") == 5 + 2 * (gpu.detected() is not None)
+    if not (st.get("cards") == expected_setup_cards()
             and st.get("token_field_type") == "password"
             and st.get("token_cleared") and not st.get("token_in_page")
             and st.get("remove_visible") and report.get("setup_vault") == ["token"]):
