@@ -199,6 +199,21 @@ class DiffTests(unittest.TestCase):
         self.assertEqual(commit_emails.check_diff(crlf),
                          ["f:1: adds a personal address (gmail.com)"])
 
+    def test_licence_texts_lines_are_not_checked(self):
+        # Upstream texts kept byte for byte (#176): their lines are not checked; their
+        # names still are, and so is every other folder.
+        lic = "packaging/licences/some-lib-1.0/LICENSE"
+        diff = f"diff --git a/{lic} b/{lic}\n+++ b/{lic}\n@@ -0,0 +1 @@\n+(c) {GMAIL}\n"
+        self.assertEqual(commit_emails.check_diff(diff), [])
+        name = "packaging/licences/zz" + "@gmail.com.txt"
+        diff = f"diff --git a/{name} b/{name}\n+++ b/{name}\n@@ -0,0 +1 @@\n+(c) {GMAIL}\n"
+        self.assertEqual(commit_emails.check_diff(diff),
+                         ["a file name holds a personal address (gmail.com)"])
+        near = "packaging/licences.md"
+        diff = f"diff --git a/{near} b/{near}\n+++ b/{near}\n@@ -0,0 +1 @@\n+{GMAIL}\n"
+        self.assertEqual(commit_emails.check_diff(diff),
+                         ["packaging/licences.md:1: adds a personal address (gmail.com)"])
+
     def test_removed_lines_are_not_findings(self):
         diff = f"diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +0,0 @@\n-{GMAIL}\n"
         self.assertEqual(commit_emails.check_diff(diff), [])

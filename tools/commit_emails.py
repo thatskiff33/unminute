@@ -10,8 +10,8 @@ decision DEC-094: main's history is not rewritten). It checks:
 - every ``Co-authored-by:`` trailer: a noreply address (GitHub's, or any whose local
   part is ``noreply`` or ``no-reply``, such as an AI tool's attribution line);
 - commit messages, and the lines and file names a pull request adds: no address at a
-  personal or work domain (``PERSONAL_DOMAIN``); a finding never quotes a file name
-  that holds "@";
+  personal or work domain (``PERSONAL_DOMAIN``), except the lines of the third-party
+  licence texts (``UPSTREAM_TEXTS``); a finding never quotes a file name that holds "@";
 - the pull request's title and description: the same.
 
 A pull request runs it on its commits (``.github/workflows/email-guard.yml``), and
@@ -63,6 +63,11 @@ PERSONAL = re.compile(
 PERSONAL_NAME = re.compile(rf"[^\s<>@\"'`(),;:\[\]/]+@{PERSONAL_DOMAIN}(?![\w-])", re.IGNORECASE)
 # A Co-authored-by trailer line (any case, spaces allowed before the colon).
 TRAILER_LINE = re.compile(r"^\s*co-authored-by\s*:(.*)$", re.IGNORECASE | re.MULTILINE)
+# Third-party licence texts, kept byte for byte as published (the build checks each
+# against its SHA-256 in packaging/licences/manifest.json, #176): they hold upstream
+# authors' public addresses and cannot be edited, so their lines are not checked.
+# Their file names still are.
+UPSTREAM_TEXTS = ("packaging/licences/",)
 # The only bot whose descriptions are skipped: they quote upstream release notes.
 BODY_EXEMPT_AUTHORS = {"dependabot[bot]"}
 # The pull request commits endpoint lists at most 250 commits.
@@ -147,7 +152,7 @@ def check_diff(diff: str) -> list[str]:
     """Personal addresses on the lines a diff adds, by file and new line number, and in
     the names of the files it touches. A finding never quotes a file name holding "@"."""
     problems: list[str] = []
-    path, line_no = "?", 0
+    path, line_no, upstream = "?", 0, False
     # File headers (---, +++) come only before a file's first hunk; inside a hunk an
     # added line "++ x" also starts with "+++ ".
     in_header = True
@@ -156,13 +161,14 @@ def check_diff(diff: str) -> list[str]:
     for line in diff.split("\n"):
         line = line.removesuffix("\r")
         if line.startswith("diff --git "):
-            in_header, path = True, "?"
+            in_header, path, upstream = True, "?", False
             # The header names the file even when nothing else does (an empty new file,
             # a rename, a mode change).
             problems.extend(f"a file name holds a personal address ({found})"
                             for found in sorted(set(find_personal_name(line))))
         elif in_header and line.startswith("+++ "):
             path = line[4:].strip('"').removeprefix("b/")
+            upstream = path.startswith(UPSTREAM_TEXTS)
             if "@" in path:
                 path = "(a file with @ in its name)"
         elif line.startswith("@@"):
@@ -172,8 +178,9 @@ def check_diff(diff: str) -> list[str]:
         elif in_header or line.startswith(("-", "\\")):
             continue        # header lines, removed lines, "\ No newline at end of file"
         elif line.startswith("+"):
-            problems.extend(f"{path}:{line_no}: adds a personal address ({found})"
-                            for found in find_personal(line))
+            if not upstream:
+                problems.extend(f"{path}:{line_no}: adds a personal address ({found})"
+                                for found in find_personal(line))
             line_no += 1
         else:
             line_no += 1
