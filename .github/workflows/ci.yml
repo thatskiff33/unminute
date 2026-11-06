@@ -551,5 +551,12 @@ jobs:
         with:
           persist-credentials: false
       # The runner image's Node.js; nothing is installed from npm.
+      # The page's scripts are ES modules (#488). Node.js's --check passes a
+      # .js file with import or export without parsing it as a module (Node.js
+      # 24, 7 Nov 2026), so each one is checked from standard input as a module.
       - name: Check every tracked JavaScript file parses
-        run: git ls-files -z '*.js' | xargs -0 -n1 node --check
+        run: |
+          git ls-files -z 'workspace/ui/*.js' | while IFS= read -r -d '' f; do
+            node --input-type=module --check < "$f" || { echo "::error file=$f::does not parse as a module"; exit 1; }
+          done
+          git ls-files -z '*.js' ':!workspace/ui/*.js' | xargs -0 -n1 node --check

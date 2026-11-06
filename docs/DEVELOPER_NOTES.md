@@ -191,11 +191,13 @@ real time, and remove it when the cause is fixed.
   (`import()`) or uses `import.meta`; if a module other than `main.js` runs code at load or
   reads an imported name as it loads (`const probe = wire();` in `polling.js`); or if two
   modules declare the same top-level name, which the tests reach in one namespace.
-- **CI's "JavaScript syntax" job does not check the modules.** It runs `node --check` on
-  each `.js` file, and Node.js passes a file with `import` or `export` without checking it:
-  on Node.js 24 (6 Nov 2026) it exits 0 even for one that does not parse. Every page test
-  loads every module through `tests/page_vm.js`, which stops on one that does not parse
-  (`HarnessModuleTests`), so the tests check them instead.
+- **`node --check` on a module file checks nothing.** Node.js passes a `.js` file with
+  `import` or `export` without parsing it as a module: on Node.js 24 (6 Nov 2026) it exits 0
+  even for one that does not parse. So CI's "JavaScript syntax" job checks each page module
+  from standard input as a module (`node --input-type=module --check < file`), which fails
+  on one that does not parse, and the other `.js` files with `node --check` as before. Every
+  page test also loads every module through `tests/page_vm.js`, which stops on one that does
+  not parse (`HarnessModuleTests`).
 - **Tests that read the page's code** use `tests/page_scripts.py`: `source()` joins the
   modules in `PAGE_SCRIPTS` order, so a function is found by name whichever file it is in.
   It reads `index.html` with the standard library's HTML parser, never a pattern, so a
