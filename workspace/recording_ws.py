@@ -479,13 +479,20 @@ class RecordingMixin:
             return None
         session = self._drafts
         if session is not None:
+            inst = session.instant
+            # Instant words (#105): a number that changes whenever their words
+            # or state do (the page fetches the text only then), and a note
+            # once they have stopped. None without them. Never their text.
             return {"state": session.state, "note": session.note,
                     "count": session.count, "generation": session.generation,
-                    "mix": session.mixing}
+                    "mix": session.mixing,
+                    "instant_seq": inst.seq if inst is not None else None,
+                    "instant_note": inst.note if inst is not None else None}
         if self._draft_why == "off":
             return None
         return {"state": self._draft_why, "note": drafts.REASONS.get(self._draft_why),
-                "count": 0, "generation": self._draft_gen, "mix": False}
+                "count": 0, "generation": self._draft_gen, "mix": False,
+                "instant_seq": None, "instant_note": None}
 
     def _draft_mix(self, rec, session):
         """The draft follows a live mix of both tracks when the user chose it
@@ -531,6 +538,10 @@ class RecordingMixin:
         reason = self._draft_reason(p)
         session = self._drafts
         if session is not None:
+            if session.instant is not None and not self._instant_wanted(p):
+                # Turned off or withheld (K3): ended and their words forgotten
+                # now, also while drafts wait on battery (#105, review of #541).
+                session.detach_instant()
             if reason == "battery":
                 session.suspend()            # the worker ends; the text so far is kept
             elif reason:
@@ -540,6 +551,7 @@ class RecordingMixin:
                 session.resume()
             if not reason:
                 self._draft_mix(rec, session)
+                self._instant_tick(rec, session, p)
                 session.set_visible(self._window_shown)   # also catches a missed change
             return
         with self._lock:                  # the mark and its note, set together
@@ -595,13 +607,27 @@ class RecordingMixin:
             self.log.incident("drafts", exc)      # type name and code frames, never its text (P3)
             self._end_drafts(rec, final=True, why="failed")   # not "ended" (#381)
 
-    def _instant_session(self, rec):
-        """Instant words for a new draft session (#105), or None: only while
-        instant.ENABLED (until the setting and policy key arrive) and with
-        their model downloaded and passing its quick checks. Their worker
-        starts once the draft worker has loaded (D4's exception during a
-        recording, the user's decision DEC-092)."""
-        if not instant.ENABLED:
+    def _instant_words_allowed(self, p=None):
+        """Managed policy allows instant words (#105): AllowInstantWords and
+        AllowLiveDrafts both (the user's decision DEC-092). A bad value or an
+        unreadable key withholds them (K3)."""
+        if p is not None:
+            return bool(p.get("AllowInstantWords") and p.get("AllowLiveDrafts"))
+        return self._allowed("AllowInstantWords") and self._allowed("AllowLiveDrafts")
+
+    def _instant_wanted(self, p=None):
+        """The user's switch is on and policy allows instant words."""
+        return bool(self.settings["live_words"]) and self._instant_words_allowed(p)
+
+    def _instant_session(self, rec, p=None):
+        """Instant words for a draft session (#105), or None: only while the
+        user has turned them on ("live_words"), policy allows them, no model
+        is being downloaded or removed, and their model is downloaded and
+        passes its quick checks. Their worker starts once the draft worker has
+        loaded (D4's exception during a recording, the user's decision DEC-092)."""
+        if not (self.settings["live_words"] and self._instant_words_allowed(p)):
+            return None
+        if self.downloads.busy() or self._removing:
             return None
         if self.instant_model.startswith(engines.TEST_PREFIX):
             ready = self.handle.allow_test_engines
@@ -613,6 +639,21 @@ class RecordingMixin:
                                       log=self.log,
                                       allow_test_engines=self.handle.allow_test_engines,
                                       visible=self._window_shown)
+
+    def _instant_tick(self, rec, session, p):
+        """Instant words follow the switch and policy during a recording
+        (#105): turned on, they start (once their model is ready); turned off
+        or withheld, they end and their words are forgotten. Instant words
+        that stopped (a second crash) stay stopped until the switch is turned
+        off and on again. Draft text carries on either way."""
+        if not self._instant_wanted(p):
+            if session.instant is not None:
+                session.detach_instant()
+            return
+        if session.instant is None:
+            made = self._instant_session(rec, p)
+            if made is not None:
+                session.attach_instant(made)
 
     def window_minimised(self, minimised):
         """The window was minimised or hidden (True), or shown again (False):
@@ -667,18 +708,22 @@ class RecordingMixin:
 
     def recording_draft(self, since=0):
         """The live draft of the recording in progress: state, a note, and the
-        phrases after index since (text and times only, at most 200), for the
-        recording card (bridge method recording_draft, #104). The page asks
-        only when recording_status's draft count or generation changes."""
+        phrases after index since (text and times only, at most 200), and the
+        instant words after the newest phrase (#105), for the recording card
+        (bridge method recording_draft, #104). The page asks only when
+        recording_status's draft count, generation or instant_seq changes."""
         if not isinstance(since, int) or isinstance(since, bool) or not 0 <= since <= 10 ** 7:
             raise WorkspaceError("Expected a position.")
         if self._recording is None:
             raise WorkspaceError("Nothing is being recorded.")
         session = self._drafts
         if session is not None:
-            return session.snapshot(since)
+            # Instant words (#105): the words after the newest phrase's end, as
+            # one line of text, and that end (from_s); None without them.
+            return {**session.snapshot(since), "instant": session.instant_view()}
         return {"state": self._draft_why, "note": drafts.REASONS.get(self._draft_why),
-                "generation": self._draft_gen, "count": 0, "since": since, "phrases": []}
+                "generation": self._draft_gen, "count": 0, "since": since, "phrases": [],
+                "instant": None}
 
     def _add_report(self, report):
         import uuid

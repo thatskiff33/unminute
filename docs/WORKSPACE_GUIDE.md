@@ -65,6 +65,17 @@ Unminute can show rough text of what is said while you record, a few seconds beh
 - **With computer audio** on, you choose whether the draft follows your microphone only or both mixed. The full transcript always uses both.
 - **When there is no draft**, a line in the draft area says why: Parakeet v2 is not downloaded or needs repair; your IT team's copy of Parakeet v2 is damaged (ask your IT team to repair it); draft text waits while a speech model is downloaded or removed; draft text stopped for this recording because a speech model was downloaded or removed; or your organisation has turned it off. If draft text fails or cannot start while you record, the line says it stopped, or that it is not available if its speech model could not be loaded (naming your IT team when its copy of Parakeet v2 turns out to be damaged). If your organisation turns it off, or a speech model is downloaded or removed, while you record, the draft text shown so far is cleared. The recording is not affected.
 
+### Instant words
+
+With draft text on, Unminute can also show words in grey moments after people speak, before the draft text for them arrives. Turn on **Show instant words** in Settings > Recording and speakers. Your organisation can turn them off.
+
+- **They need their own download.** Get **Instant words** in Settings > Manage downloads (about 0.66 GB). It is NVIDIA's Nemotron Speech Streaming model, under the NVIDIA Open Model License; Details in Manage downloads names it.
+- **Where they show.** As the last line of the draft text, in the same grey. When the draft text for a stretch of talk arrives, it replaces the instant words for it: words already in the draft never change.
+- **Rough, and never saved,** like draft text: they go at **Stop and save** or Discard, and **Hide draft** hides them too.
+- **They pause while Unminute is minimised,** and carry on when you open it again. On battery they pause with the draft text.
+- **They use more memory and processor time** than draft text alone while you record.
+- **If they stop**, for example because their model could not be loaded, the draft area says "Instant words stopped. Draft text and the recording carry on." Turn the switch off and on again to try once more.
+
 ### Recording calls (computer audio)
 
 Unminute can also record the sound playing on this computer, such as the other side of a Teams or Zoom call, beside the microphone. It is off until you turn on **Also record computer audio** in Settings > Recording and speakers (or in Setup). It needs microphone recording on, and your organisation can turn it off. The Meetings page then shows **Computer audio on** beside the microphone.

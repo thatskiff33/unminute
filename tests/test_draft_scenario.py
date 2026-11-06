@@ -75,7 +75,8 @@ class FeedTests(WorkspaceCase):
         ws = self.ws
         ws._drafts = (types.SimpleNamespace(state=state, count=count,
                                             note=drafts.NOTES.get(state),
-                                            generation=self.feed.generation, mixing=False)
+                                            generation=self.feed.generation, mixing=False,
+                                            instant=None)
                       if state else None)
         ws._draft_why, ws._draft_gen = why, self.feed.generation
         try:
@@ -105,6 +106,23 @@ class FeedTests(WorkspaceCase):
                          {drafts.STARTING, drafts.RUNNING, drafts.BATTERY, drafts.FAILED,
                           drafts.UNAVAILABLE, drafts.STOPPED})
 
+    def test_instant_words_are_answered_as_the_app_answers(self):
+        # #105: recording_status's draft gains instant_seq and instant_note
+        # (None while off), recording_draft gains instant {text, from_s}.
+        self.feed.begin(drafts.RUNNING)
+        self.feed.say(2)
+        status = self.feed.draft_status()
+        self.assertEqual((status["instant_seq"], status["instant_note"]), (None, None))
+        self.assertIsNone(self.feed.recording_draft(0)["instant"])
+        self.feed.instant(draft_scenario.WORDS)
+        seq = self.feed.draft_status()["instant_seq"]
+        self.assertIsInstance(seq, int)
+        self.assertEqual(self.feed.recording_draft(2)["instant"],
+                         {"text": draft_scenario.WORDS, "from_s": 5.5})
+        self.feed.say(1)                                  # the phrase replaces them
+        self.assertGreater(self.feed.draft_status()["instant_seq"], seq)
+        self.assertEqual(self.feed.recording_draft(3)["instant"], {"text": "", "from_s": 8.5})
+
     def test_draft_text_is_answered_as_a_draft_session_snapshot(self):
         self.feed.begin(drafts.RUNNING)
         self.feed.say(3)
@@ -116,7 +134,8 @@ class FeedTests(WorkspaceCase):
         session._phrases = [dict(p) for p in self.feed.phrases]
         for since in (0, 2, 5, 9):
             with self.subTest(since=since):
-                self.assertEqual(self.feed.recording_draft(since), session.snapshot(since))
+                self.assertEqual(self.feed.recording_draft(since),
+                                 {**session.snapshot(since), "instant": session.instant_view()})
 
     def test_no_session_is_answered_as_the_workspace_answers(self):
         self.feed.begin(drafts.RUNNING)
@@ -332,16 +351,21 @@ def good_report():
         "followed": dict(look, lines=n + 3, last=True, at_end=True),
         "scrolled_up": dict(look, lines=n + 6, scroll_top=0, at_end=False),
         "followed_again": dict(look, lines=n + 8, last=True, at_end=True),
+        # Instant words (#105): a line after the phrases, then a phrase replaces it.
+        "instant": dict(look, lines=n + 8, instant=draft_scenario.WORDS, instant_last=True,
+                        instant_colour="rgb(86, 101, 145)", line_colour="rgb(86, 101, 145)",
+                        lines_kept=n + 8),
+        "instant_replaced": dict(look, lines=n + 9),
         "said_while_lines_arrived": 0,
         "hidden_by_user": dict(look, box=False, toggle="Show draft", expanded="false",
                                status="Draft text is hidden for this recording."),
         "fetches_while_hidden_by_user": 0,
         "still_hidden": dict(look, box=False),
-        "shown_by_user": dict(look, lines=n + 10, status="Draft text is on."),
-        "window_hidden": dict(look, lines=n + 10, hidden_page=True),
+        "shown_by_user": dict(look, lines=n + 11, status="Draft text is on."),
+        "window_hidden": dict(look, lines=n + 11, hidden_page=True),
         "fetches_while_window_hidden": 0,
-        "while_window_hidden": dict(look, lines=n + 10, hidden_page=True),
-        "window_shown": dict(look, lines=n + 13),
+        "while_window_hidden": dict(look, lines=n + 11, hidden_page=True),
+        "window_shown": dict(look, lines=n + 14),
         "fetches_after_shown": 1,
         "states": states,
         "stopped": dict(look, area=False),
@@ -380,6 +404,11 @@ class VerdictTests(unittest.TestCase):
             "the area stayed after stop": ("stopped", {"area": True}),
             "starting placeholder": ("starting", {"empty": ""}),
             "running note shown": ("running", {"status_shown": True}),
+            "instant words missing": ("instant", {"instant": None}),
+            "instant words not last": ("instant", {"instant_last": False}),
+            "a phrase lost to instant words": ("instant", {"lines_kept": 3}),
+            "instant words in another colour": ("instant", {"instant_colour": "rgb(0, 0, 0)"}),
+            "instant words kept after a phrase": ("instant_replaced", {"lines": 3}),
         }
         for what, (step, change) in breaks.items():
             with self.subTest(what=what):

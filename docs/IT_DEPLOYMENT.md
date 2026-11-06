@@ -275,6 +275,7 @@ Policy values live under `HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Unminute` and ove
 | `AllowComputerAudioRecording` | Allow recording computer audio | Computer audio | Allowed (each user's switch is still off by default) |
 | `AllowLidOverride` | Allow keeping a recording going with the lid closed | Microphone | Allowed |
 | `AllowLiveDrafts` | Allow draft text while recording | Live drafts | Allowed |
+| `AllowInstantWords` | Allow instant words while recording | Live drafts | Allowed |
 | `RequireRecordingConsent` | Confirm before each recording that everyone has been told | Microphone | Required |
 | `AllowWatchedFolders` | Allow watched folders | Watched folders | Allowed |
 | `AllowDeleteOriginals` | Allow deleting original recordings from watched folders | Watched folders | Allowed |
@@ -289,6 +290,8 @@ Policy values live under `HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Unminute` and ove
 | `HandoffAssistantUrl` | Hand off assistant address | Handoff | `https://chatgpt.com/` |
 
 New in v0.5.0-preview.4: `AllowHandoffAssistant`, `HandoffAssistantName` and `HandoffAssistantUrl`, and the Copy and open button they control; `AllowComputerAudioRecording`; `AllowLiveDrafts`; and `ReviewReminderDays` and `ActionRequiredDays`, and the retention reminders they set (#111 C6). Earlier versions ignore them, as they ignore any value name they do not know. Users can turn on **Also record computer audio** (#108; off until each user turns it on): it records everything the computer plays, such as the other side of a Teams or Zoom call, and also notification sounds. Set `AllowComputerAudioRecording` to 0 to turn it off. It never applies when `AllowMicrophoneRecording` is 0. `AllowLiveDrafts` governs draft text while recording (#104): rough text of what is said, kept in memory only and replaced by the full transcript. The recording card shows it and Settings has the switch, off until the user turns it on. Set to 0, it cannot be turned on, and a draft in progress is stopped and cleared when the app next reads the policy, while the recording carries on. The template's revision number did not change when they were added, and Intune does not overwrite an imported template: to take the new values, delete the profiles that use the template and the old template, then import again ([PACKAGING.md](PACKAGING.md)).
+
+New in the next release: `AllowInstantWords` (#105, the user's decision DEC-092). Users with draft text on can turn on **Show instant words** in Settings > Recording and speakers: words in grey moments after people speak, replaced by the draft text, kept in memory only. They need NVIDIA's Nemotron Speech Streaming model, an optional download of about 0.66 GB under the NVIDIA Open Model License (Settings > Manage downloads, or a model package from IT, "Models for everyone" above). Set `AllowInstantWords` to 0 to turn them off and stop the model being downloaded in the app; they also never apply when `AllowLiveDrafts` is 0. Earlier versions ignore it. The template's revision number does not change for it, so import the template again as above.
 
 New in v0.5.0-preview.7: `AllowUserModels`, read on machine installs only (#111 B7a; "Models for everyone" above). Earlier versions ignore it. The template's revision number did not change for it either, so import the template again as above.
 

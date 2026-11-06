@@ -13,6 +13,10 @@
 // user has hidden the draft, and at most DRAFT_KEEP phrases stay on the page.
 // renderDraft runs with every clock tick (10 a second), so it changes the
 // page only when something has changed (#216's budget; #340's ratchets).
+// Instant words (#105): one more line at the bottom of the box, the words
+// after the newest phrase (the app leaves out those the phrase text has
+// replaced, so final text never changes), fetched when instant_seq changes.
+// Text only, in the box that is never announced; Hide draft hides it too.
 const DRAFT_KEEP = 300;
 const DRAFT_EMPTY = {
   starting: "Getting draft text ready…",
@@ -20,7 +24,7 @@ const DRAFT_EMPTY = {
 };
 // shown: how many times Hide or Show was selected, so a fetch that either
 // overtook is dropped rather than added to the box.
-const draft = { rec: null, gen: null, count: 0, hidden: false, reading: false, said: null, shown: 0 };
+const draft = { rec: null, gen: null, count: 0, iseq: null, hidden: false, reading: false, said: null, shown: 0 };
 
 function putText(node, text) { if (node.textContent !== text) node.textContent = text; }
 function putHidden(node, hidden) { if (node.hidden !== hidden) node.hidden = hidden; }
@@ -34,7 +38,7 @@ function draftLine(p) {
 
 function draftEmpty(stateName) {
   const box = $("rec-draft-box");
-  const lines = box.querySelector(".rec-draft-line, .rec-draft-skip");
+  const lines = box.querySelector(".rec-draft-line, .rec-draft-skip, .rec-draft-instant");
   const text = lines ? "" : DRAFT_EMPTY[stateName] || "";
   const empty = box.querySelector(".rec-draft-empty");
   if (!text) { if (empty) empty.remove(); return; }
@@ -45,6 +49,16 @@ function draftEmpty(stateName) {
 function clearDraft() {
   $("rec-draft-box").replaceChildren();
   draft.count = 0;
+  draft.iseq = null;
+}
+
+// The instant words' line, last in the box; gone when there are none.
+function putInstant(box, words) {
+  let line = box.querySelector(".rec-draft-instant");
+  if (!words) { if (line) line.remove(); return; }
+  if (!line) line = el("p", { class: "rec-draft-instant" });
+  if (box.lastElementChild !== line) box.append(line);
+  putText(line, words);
 }
 
 async function renderDraft(rec, d) {
@@ -62,12 +76,12 @@ async function renderDraft(rec, d) {
   if (draft.gen !== d.generation) { clearDraft(); draft.gen = d.generation; }
   // The status line: a change of state is announced once (polite).
   const said = draft.hidden ? "Draft text is hidden for this recording."
-    : d.note || (d.state === "running" ? "Draft text is on." : "");
+    : d.note || d.instant_note || (d.state === "running" ? "Draft text is on." : "");
   if (said !== draft.said) {
     draft.said = said;
     $("rec-draft-status").textContent = said;
   }
-  $("rec-draft-status").classList.toggle("sr", !draft.hidden && !d.note);
+  $("rec-draft-status").classList.toggle("sr", !draft.hidden && !d.note && !d.instant_note);
   putHidden($("rec-draft-box"), draft.hidden);
   const toggle = $("rec-draft-toggle");
   putText(toggle, draft.hidden ? "Show draft" : "Hide draft");
@@ -75,7 +89,8 @@ async function renderDraft(rec, d) {
     toggle.setAttribute("aria-expanded", String(!draft.hidden));
   if (draft.hidden) return;
   draftEmpty(d.state);
-  if (d.count === draft.count || draft.reading || document.hidden) return;
+  const iseq = d.instant_seq == null ? null : d.instant_seq;
+  if ((d.count === draft.count && iseq === draft.iseq) || draft.reading || document.hidden) return;
   draft.reading = true;
   const shown = draft.shown;
   try {
@@ -87,7 +102,9 @@ async function renderDraft(rec, d) {
     box.append(...got.phrases.map(draftLine));
     const lines = box.querySelectorAll(".rec-draft-line, .rec-draft-skip");
     for (let i = 0; i < lines.length - DRAFT_KEEP; i++) lines[i].remove();
+    putInstant(box, got.instant ? got.instant.text : "");
     draft.count = got.since + got.phrases.length;
+    draft.iseq = iseq;
     draftEmpty(got.state);
     if (atEnd) box.scrollTop = box.scrollHeight;    // follow the newest, unless scrolled up
   } finally {

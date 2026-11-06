@@ -754,7 +754,7 @@ class DraftSession:
         self.instant = instant
         self._instant_due = False
         if instant is not None:
-            instant.gate = lambda: self._ready.is_set() and self._conn is not None
+            instant.gate = self._draft_ready
         self.cache_dir, self.model, self.threads = str(cache_dir), model, threads
         self.log, self.allow_test_engines = log, bool(allow_test_engines)
         self._target = target            # tests: another process target
@@ -787,6 +787,12 @@ class DraftSession:
         self._proc = self._conn = None
         self._stopped = False
         self._ended = threading.Event()  # stop() has finished: the worker has exited
+        # Instant words being detached on another thread (the switch or
+        # policy, #105): stop() waits for their end too (D4), up to
+        # _detach_budget, the longest such end could take.
+        self._detach_cv = threading.Condition()
+        self._detaching = 0
+        self._detach_budget = 0.0
         self._ready = threading.Event()
         self._threads = []
 
@@ -910,8 +916,9 @@ class DraftSession:
             self.state = state
             proc, conn = self._proc, self._conn
             self._proc = self._conn = None
-        if self.instant is not None:
-            self.instant.suspend()
+            instant = self.instant        # read once: detach_instant may clear it
+        if instant is not None:
+            instant.suspend()
         self._end_process(proc, conn)
         self._drain()
 
@@ -929,11 +936,13 @@ class DraftSession:
         is still under way (D4: processing waits for that)."""
         with self._lock:
             already = self._stopped
+            # Read together, under the lock detach_instant changes them in (D4).
+            instant, detach_budget = self.instant, self._detach_budget
         if already:
             # As long as the first stop may take, its instant words' end too (D4).
-            instant = self.instant
             self._ended.wait(self._end_wait() + STOP_JOIN_S * (len(self._threads) + 1)
-                             + (instant.end_budget() if instant is not None else 0.0))
+                             + (instant.end_budget() if instant is not None else 0.0)
+                             + detach_budget)
             return
         with self._lock:
             if self._stopped:
@@ -944,8 +953,13 @@ class DraftSession:
             self._proc = self._conn = None
             kept = self._phrase_count
             self._phrases, self._first = [], 0
-        if self.instant is not None:
-            self.instant.stop()              # ended and waited for too (D4)
+            instant = self.instant        # read once: detach_instant may clear it
+        if instant is not None:
+            instant.stop()                   # ended and waited for too (D4)
+        with self._detach_cv:
+            # Instant words detached just before this stop may still be ending
+            # on another thread: processing waits for them too (D4).
+            self._detach_cv.wait_for(lambda: self._detaching == 0, self._detach_budget)
         self._end_process(proc, conn)
         self._drain()
         try:
@@ -1015,12 +1029,13 @@ class DraftSession:
 
     def _feed_loop(self):
         batch, batch_start, batch_frames = [], None, 0
-        # With instant words the audio goes on a block at a time: a 0.5 s
-        # batch would hold their first piece back by up to that long (#105).
-        limit = self._batch_frames()
         comp = _ComputerBatch(self)
         taken = -math.inf                # end of the microphone audio taken (frames)
         while True:
+            # With instant words the audio goes on a block at a time: a 0.5 s
+            # batch would hold their first piece back by up to that long
+            # (#105). Read each time: they can be turned on or off meanwhile.
+            limit = self._batch_frames()
             try:
                 start, block = self._tap.get(timeout=0.2)
             except queue.Empty:
@@ -1131,11 +1146,12 @@ class DraftSession:
                 ended = self.state in (UNAVAILABLE, FAILED)
                 if ended:
                     self._proc = self._conn = None  # it reported it cannot go on: end it
-            if start_instant and self.instant is not None:
+            instant = self.instant if start_instant else None   # read once (detach)
+            if instant is not None:
                 # After the lock: starting a process takes time. Whatever goes
                 # wrong there, this reader (and so the draft) carries on.
                 try:
-                    self.instant.start()
+                    instant.start()
                 except Exception as exc:
                     if self.log is not None:
                         self.log.incident("drafts", exc)   # type name and frames only (P3)
@@ -1223,11 +1239,62 @@ class DraftSession:
             return REASONS["machine"]
         return NOTES.get(self.state)
 
+    def _draft_ready(self):
+        """Whether the draft worker is loaded and running (instant words' gate)."""
+        return self._ready.is_set() and self._conn is not None
+
+    def attach_instant(self, instant):
+        """Instant words turned on during the recording (the switch or policy,
+        #105): their worker starts now if this one is ready, otherwise once it
+        is. False once stopped, or while instant words are attached."""
+        with self._lock:
+            if self._stopped or self.instant is not None:
+                return False
+            instant.gate = self._draft_ready
+            self.instant = instant
+            ready = self._draft_ready() and self.state == RUNNING
+        if ready:
+            try:
+                instant.start()              # outside the lock: starting a process takes time
+            except Exception as exc:         # never the draft's concern
+                if self.log is not None:
+                    self.log.incident("drafts", exc)   # type name and frames only (P3)
+        return True
+
+    def detach_instant(self):
+        """Instant words turned off during the recording: their worker ends and
+        their words are forgotten. The draft carries on."""
+        with self._lock:
+            instant, self.instant = self.instant, None
+            if instant is None:
+                return
+            with self._detach_cv:         # counted before stop() can look (D4)
+                self._detaching += 1
+                self._detach_budget = max(self._detach_budget, instant.end_budget())
+        try:
+            instant.stop()
+        finally:
+            with self._detach_cv:
+                self._detaching -= 1
+                self._detach_cv.notify_all()
+
+    def instant_view(self):
+        """The instant words for the page (#105), or None without them: the
+        words after the newest phrase's end (from_s, seconds in the
+        recording), which the phrase text has replaced up to there."""
+        instant = self.instant
+        if instant is None:
+            return None
+        with self._lock:
+            after = self._last_end
+        return {"text": instant.words_after(after), "from_s": round(after, 3)}
+
     def set_visible(self, visible):
         """The window was shown or hidden (minimised): instant words pause
         while it is hidden (#105). Drafts carry on either way."""
-        if self.instant is not None:
-            self.instant.set_visible(visible)
+        instant = self.instant           # read once: detach_instant may clear it
+        if instant is not None:
+            instant.set_visible(visible)
 
     def instant_words(self):
         """The instant words (#105) after the newest phrase, which replaces

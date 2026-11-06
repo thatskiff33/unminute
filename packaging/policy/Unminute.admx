@@ -82,6 +82,15 @@
       <enabledValue><decimal value="1" /></enabledValue>
       <disabledValue><decimal value="0" /></disabledValue>
     </policy>
+    <policy name="AllowInstantWords" class="Machine"
+            displayName="$(string.AllowInstantWords)"
+            explainText="$(string.AllowInstantWords_Help)" key="SOFTWARE\Policies\Unminute"
+            valueName="AllowInstantWords">
+      <parentCategory ref="Unminute" />
+      <supportedOn ref="SUPPORTED_Unminute" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
     <policy name="RequireRecordingConsent" class="Machine"
             displayName="$(string.RequireRecordingConsent)"
             explainText="$(string.RequireRecordingConsent_Help)" key="SOFTWARE\Policies\Unminute"

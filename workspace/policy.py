@@ -51,6 +51,11 @@ SPEC = {
     # Live draft text while recording (#104), if the user turns it on. Off by
     # policy: never started, and stopped and cleared when the app reads it.
     "AllowLiveDrafts": ("bool", True, True),
+    # Instant words while recording (#105, the user's decision DEC-092), if the
+    # user turns them on: also needs AllowLiveDrafts. Off by policy: never
+    # started, their model not downloaded, and stopped and cleared when the app
+    # reads it; draft text carries on.
+    "AllowInstantWords": ("bool", True, True),
     # A confirmation before each recording that everyone present has
     # been told (#111 A6). Not a permission: a bad value keeps the confirmation.
     "RequireRecordingConsent": ("bool", True, False),

@@ -140,22 +140,24 @@ class SetupTests(unittest.TestCase):
                 card = next(c for c in self.ws.setup_state()["cards"] if c["name"] == name)
                 self.assertEqual((card["state"], card["removable"]), ("missing", False))
 
-    def test_instant_words_model_is_not_offered_until_the_app_uses_it(self):
-        # #105 PR A: the model is pinned and downloadable by the same path as the
-        # others, but Setup and Downloads offer it only once the engine, the
-        # setting and the policy key exist (setup.OFFER_INSTANT). Until then the
-        # bridge refuses every action on it, so nothing downloads a model that
-        # nothing uses.
+    def test_instant_words_model_is_offered_and_can_be_withdrawn(self):
+        # #105: Setup and Downloads offer the model now that the app uses it.
+        # setup.OFFER_INSTANT False would take the card away, and the bridge
+        # would refuse every action on it (as before the setting existed).
         name = asr_engines.INSTANT_MODEL.name
-        self.assertFalse(setup.OFFER_INSTANT)
-        self.assertNotIn(name, [c["name"] for c in self.ws.setup_state()["cards"]])
-        self.assertFalse(setup.known(name))
-        for action in (self.ws.download_model, self.ws.verify_model, self.ws.remove_model,
-                       self.ws.cancel_download):
-            with self.subTest(action=action.__name__):
-                with self.assertRaisesRegex(WorkspaceError, "Unknown model"):
-                    action(name)
-        self.assertEqual(self.ws.downloads.state.get(name), None)
+        self.assertTrue(setup.OFFER_INSTANT)
+        self.assertIn(name, [c["name"] for c in self.ws.setup_state()["cards"]])
+        self.assertTrue(setup.known(name))
+        with mock.patch.object(setup, "OFFER_INSTANT", False):
+            self.ws._forget_display()
+            self.assertNotIn(name, [c["name"] for c in self.ws.setup_state()["cards"]])
+            self.assertFalse(setup.known(name))
+            for action in (self.ws.download_model, self.ws.verify_model, self.ws.remove_model,
+                           self.ws.cancel_download):
+                with self.subTest(action=action.__name__):
+                    with self.assertRaisesRegex(WorkspaceError, "Unknown model"):
+                        action(name)
+            self.assertEqual(self.ws.downloads.state.get(name), None)
 
     def test_instant_words_model_downloads_checks_repairs_and_removes_once_offered(self):
         # The card, sized from the pinned files, under the NVIDIA Open Model

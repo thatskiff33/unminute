@@ -50,6 +50,11 @@ Disabled: the setting cannot be turned on, and a change already in force is put 
 
 Disabled: draft text is off and cannot be turned on, and draft text in progress is stopped and cleared when the app next reads the policy (within 15 minutes). Recording is not affected.</string>
 
+      <string id="AllowInstantWords">Allow instant words while recording</string>
+      <string id="AllowInstantWords_Help">Enabled or not configured: instant words while recording are allowed when draft text is allowed too. They are off until the user turns on "Show instant words" in Settings, with draft text on. While a meeting is recorded, Unminute then shows words in grey moments after people speak, made on this computer with NVIDIA's Nemotron Speech Streaming model (under the NVIDIA Open Model License), until the draft text replaces them. The words are kept in memory only, never saved. The model is an optional download of about 0.66 GB, and it needs extra memory and processor time while recording. Instant words pause while the window is minimised.
+
+Disabled: instant words are off and cannot be turned on, their model cannot be downloaded in the app, and instant words in progress are stopped and cleared when the app next reads the policy (within 15 minutes). Draft text and the recording are not affected.</string>
+
       <string id="RequireRecordingConsent">Confirm before each recording that everyone has been told</string>
       <string id="RequireRecordingConsent_Help">Enabled or not configured: before each microphone recording, the person recording confirms that everyone in the meeting has been told that it is being recorded, and why. The recording starts only after they tick that statement and select Start recording. The confirmation is a window the app draws outside its web page, so the page cannot answer it.
 

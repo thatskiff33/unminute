@@ -366,7 +366,9 @@
    "workspace/worker.py"
   ],
   "test_instant": [
+   "workspace/api.py",
    "workspace/app.py",
+   "workspace/app_common.py",
    "workspace/asr_engines.py",
    "workspace/consent.py",
    "workspace/diag.py",

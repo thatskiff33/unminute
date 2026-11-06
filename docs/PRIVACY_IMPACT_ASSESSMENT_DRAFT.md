@@ -107,6 +107,7 @@ Managed policy (`HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Unminute`) overrides the u
 - `AllowUserModels` (machine installs only): whether the app may use models staff downloaded, or only the models IT installed.
 - `ReviewReminderDays` and `ActionRequiredDays`: after how many days a meeting's next step shows "Review due" (30 when not set) and "Action required" (off when not set). They remind; they delete nothing.
 - `AllowLiveDrafts`: whether draft text while recording may be turned on (#104). It is off until the user turns it on in Settings. Set to 0, a draft in progress is stopped and cleared; the recording carries on.
+- `AllowInstantWords`: whether instant words while recording may be turned on (#105), with draft text. They are off until the user turns them on in Settings, and kept in memory only. Set to 0, instant words in progress are stopped and cleared; draft text and the recording carry on.
 
 A value name the app does not recognise, such as a misspelling, grants and withholds nothing; the app keeps the first 20 such names, never their data. Settings lists them (#300) and Copy diagnostics says how many there are. The audit log has no policy value: it is always on. The full table is in [PACKAGING.md](PACKAGING.md), "Managed settings (policy)". Users can also replace speaker names with Speaker 1, Speaker 2, redact words and leave out passages for a single handoff.
 

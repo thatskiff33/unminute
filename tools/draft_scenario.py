@@ -41,6 +41,8 @@ SENTENCES = (
     "The tool shed lock sticks when it is cold.",
     "We will check the budget for a second wheelbarrow.",
 )
+# Invented instant words (#105), shown after the newest phrase.
+WORDS = "synthetic instant words about the compost"
 FEED_DEVICE = "Synthetic microphone (draft check)"
 FEED_PREFIX = "synthetic-draft-recording-"
 LIMIT = 200                          # phrases one recording_draft answer holds (the app's)
@@ -70,6 +72,8 @@ class DraftFeed:
         self.said = 0                # sentences said so far, for the next line's text
         self.started = 0.0
         self._recordings = 0
+        self.words = None            # instant words' text (#105), or None when they are off
+        self.instant_seq = 0
 
     # -- installing ------------------------------------------------------------------
 
@@ -132,7 +136,17 @@ class DraftFeed:
                                  "end": start + 2.5})
             self.said += 1
             out.append(text)
+        if self.words:                    # the phrase replaced the words before it
+            self.words = ""
+            self.instant_seq += 1
         return out
+
+    def instant(self, text):
+        """Instant words on (#105), showing `text` after the newest phrase; None
+        turns them off."""
+        self._need_recording()
+        self.words = text
+        self.instant_seq += 1
 
     def skip(self, seconds):
         """A skipped note, as when the draft worker falls behind."""
@@ -143,6 +157,7 @@ class DraftFeed:
     def end(self):
         """The recording stops: nothing is kept."""
         self.recording, self.state, self.why, self.phrases = None, None, "off", []
+        self.words = None
 
     def _need_recording(self):
         if self.recording is None:
@@ -159,12 +174,15 @@ class DraftFeed:
         if self.recording is None:
             return None
         if self.state is not None:
+            on = self.words is not None
             return {"state": self.state, "note": self.note(), "count": len(self.phrases),
-                    "generation": self.generation, "mix": False}
+                    "generation": self.generation, "mix": False,
+                    "instant_seq": self.instant_seq if on else None, "instant_note": None}
         if self.why == "off":
             return None
         return {"state": self.why, "note": self.note(), "count": 0,
-                "generation": self.generation, "mix": False}
+                "generation": self.generation, "mix": False,
+                "instant_seq": None, "instant_note": None}
 
     def recording_dict(self):
         """recording_status's "recording", shaped as recorder.Recording.status()."""
@@ -199,10 +217,14 @@ class DraftFeed:
         self.fetches.append(since)
         if self.state is None:
             return {"state": self.why, "note": self.note(), "generation": self.generation,
-                    "count": 0, "since": since, "phrases": []}
+                    "count": 0, "since": since, "phrases": [], "instant": None}
+        ends = [p["end"] for p in self.phrases if p["kind"] == "phrase"]
+        instant = (None if self.words is None
+                   else {"text": self.words, "from_s": max(ends) if ends else 0.0})
         return {"state": self.state, "note": self.note(), "generation": self.generation,
                 "count": len(self.phrases), "since": since,
-                "phrases": [dict(p) for p in self.phrases[since:since + LIMIT]]}
+                "phrases": [dict(p) for p in self.phrases[since:since + LIMIT]],
+                "instant": instant}
 
 
 # -- the scenario on the page (tools/workspace_ui_check.py) --------------------------------
@@ -308,8 +330,28 @@ def draft_checks(window, feed, evaluate, hide, show):
             return Object.assign(look(), {{at_end: atEnd(),
                 last: texts().pop() === {json.dumps(last)}}});""")
         out["fetches_for_lines"] = len(feed.fetches) - mark
+        # Instant words (#105): one grey line after the newest phrase, text
+        # only, gone when a phrase replaces them; never announced.
+        feed.instant(WORDS)
+        out["instant"] = page(f"""
+            await until(() => box().lastElementChild
+                        && box().lastElementChild.classList.contains('rec-draft-instant')
+                        && box().lastElementChild.textContent === {json.dumps(WORDS)});
+            await frames();
+            const line = box().querySelector('.rec-draft-instant');
+            return Object.assign(look(), {{instant: line ? line.textContent : null,
+                instant_last: box().lastElementChild === line,
+                instant_colour: line ? getComputedStyle(line).color : null,
+                line_colour: getComputedStyle(box().querySelector('.rec-draft-line')).color,
+                lines_kept: texts().length}});""")
+        feed.say(1)
+        out["instant_replaced"] = page(f"""
+            await until(() => !box().querySelector('.rec-draft-instant')
+                        && lines() === {FOLLOW_LINES + 9}); await frames();
+            return look();""")
+        feed.instant(None)
         # The status line said nothing from "Draft text is on." to here.
-        out["said_while_lines_arrived"] = (out["followed_again"].get("said", -1)
+        out["said_while_lines_arrived"] = (out["instant_replaced"].get("said", -1)
                                            - out["running"].get("said", 0))
         # Hide draft: the text goes from the page and nothing is fetched.
         out["hidden_by_user"] = page("""
@@ -392,6 +434,15 @@ def draft_problems(dr):
     s = dr.get("followed_again") or {}
     if not (s.get("lines") == FOLLOW_LINES + 8 and s.get("last") and s.get("at_end")):
         bad.append("back at the end: the box did not follow again")
+    s = dr.get("instant") or {}
+    if not (s.get("instant") == WORDS and s.get("instant_last")
+            and s.get("lines_kept") == FOLLOW_LINES + 8):
+        bad.append("instant words: not one line after the phrases, or a phrase changed")
+    if s.get("instant_colour") != s.get("line_colour"):
+        bad.append("instant words: not in the box's muted text colour")
+    s = dr.get("instant_replaced") or {}
+    if s.get("lines") != FOLLOW_LINES + 9:
+        bad.append("instant words: their line stayed after a phrase replaced them")
     if dr.get("said_while_lines_arrived") != 0:
         bad.append("the status line changed as lines arrived (it must announce state only)")
     s = dr.get("hidden_by_user") or {}

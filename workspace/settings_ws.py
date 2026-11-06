@@ -44,6 +44,7 @@ DEFAULT_SETTINGS = {
     "recording_display": "flow",                   # flow | spectrum | wave, while recording
     "lid_override": False,                         # lid "Do nothing" while recording (#172)
     "live_drafts": False,                          # draft text while recording (#104), off
+    "live_words": False,                           # instant words with them (#105), off
     # What the draft follows with computer audio on (#104, the owner's
     # decision of 22 Oct 2026): microphone | mix (both tracks, mixed live).
     "live_drafts_audio": "microphone",
@@ -168,7 +169,8 @@ class Settings:
                 or (self.allow_test_engines and value.startswith(engines.TEST_PREFIX)))):
             raise WorkspaceError("Unknown speech model.")
         if (key in ("speakers", "battery_override", "onboarded", "microphone",
-                    "computer_audio", "gpu_speakers", "lid_override", "live_drafts")
+                    "computer_audio", "gpu_speakers", "lid_override", "live_drafts",
+                    "live_words")
                 and not isinstance(value, bool)):
             raise WorkspaceError("Expected on or off.")
 
