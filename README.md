@@ -147,7 +147,7 @@ The full walkthrough is in the [user guide](docs/WORKSPACE_GUIDE.md).
 
 - **Processing:** Quiet (the default) leaves most of the computer free. Faster uses more of it. On battery, automatic work waits unless you allow it.
 - **Speech model:** which model new meetings use, and **Manage downloads** for models and the graphics card components. A model that is not ready is marked "(not downloaded)" or "(damaged)", as on the Downloads page. Choosing one still saves the choice, and a note beside the picker says how to download or repair it.
-- **Recording and speakers:** microphone recording, naming speakers after transcription, the curve shown while recording (Flowing wave, Spectrum or Sound wave), the graphics card for speaker identification and Whisper (Faster mode only) and **Keep recording when the lid is closed**.
+- **Recording and speakers:** microphone recording, computer audio, naming speakers after transcription, draft text and instant words while recording, the curve shown while recording (Flowing wave, Spectrum or Sound wave), the graphics card for speaker identification and Whisper (Faster mode only) and **Keep recording when the lid is closed**.
 - **Watched folders, Updates, Cleanup receipts.**
 
 On a managed computer, IT can set some of these by policy. Settings then says that some settings are managed by your organisation, and those controls cannot be changed.

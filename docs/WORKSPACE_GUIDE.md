@@ -69,6 +69,8 @@ Unminute can show rough text of what is said while you record, a few seconds beh
 
 With draft text on, Unminute can also show words in grey moments after people speak, before the draft text for them arrives. Turn on **Show instant words** in Settings > Recording and speakers. Your organisation can turn them off.
 
+![Recording with draft text: the last line, "they were going to email the supplier this week", is instant words (sample)](screenshots/workspace-instant-words.png)
+
 - **They need their own download.** Get **Instant words** in Settings > Manage downloads (about 0.66 GB). It is NVIDIA's Nemotron Speech Streaming model, under the NVIDIA Open Model License; Details in Manage downloads names it.
 - **Where they show.** As the last line of the draft text, in the same grey. When the draft text for a stretch of talk arrives, it replaces the instant words for it: words already in the draft never change.
 - **Rough, and never saved,** like draft text: they go at **Stop and save** or Discard, and **Hide draft** hides them too.
