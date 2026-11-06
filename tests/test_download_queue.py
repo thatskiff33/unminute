@@ -334,18 +334,20 @@ call = async (name, model) => reply;
         self.assertFalse(self.queue_file(ws2).exists())
 
     def test_a_saved_queue_never_starts_the_hidden_instant_words_model(self):
-        # #539 review: until the app uses the instant-words model (#105 PR C,
-        # setup.OFFER_INSTANT), a queue file naming it resumes nothing for it,
-        # and the rewritten file no longer names it.
-        self.assertFalse(setup.OFFER_INSTANT)
+        # #539 review: while the app does not offer the instant-words model
+        # (setup.OFFER_INSTANT False, as before #105 PR C, or if it is ever
+        # withdrawn), a queue file naming it resumes nothing for it, and the
+        # rewritten file no longer names it. PR C offers it, so the flag is
+        # set here rather than asserted (test_setup checks it is offered).
         self.ws.close()
         self.workspaces.remove(self.ws)
         saved = {"queue": [asr_engines.INSTANT_MODEL.name, self.b]}
         self.queue_file().write_text(json.dumps(saved), encoding="utf-8")
-        ws2 = self.open(start=True)
-        self.wait_started(self.b)
-        self.assertIsNone(self.state(asr_engines.INSTANT_MODEL.name, ws=ws2))
-        self.assertEqual(self.saved_queue(ws2), [self.b])
+        with mock.patch.object(setup, "OFFER_INSTANT", False):
+            ws2 = self.open(start=True)
+            self.wait_started(self.b)
+            self.assertIsNone(self.state(asr_engines.INSTANT_MODEL.name, ws=ws2))
+            self.assertEqual(self.saved_queue(ws2), [self.b])
         self.assertNotIn(asr_engines.INSTANT_MODEL.name, self.order())
 
     def test_closing_waits_for_the_download_process_to_exit(self):
