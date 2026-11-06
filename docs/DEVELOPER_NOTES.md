@@ -792,10 +792,11 @@ real time, and remove it when the cause is fixed.
 - **Every commit uses a GitHub noreply address**, as author and committer:
   `<id>+<login>@users.noreply.github.com`. The repository is public, and so is every address on
   `main`. The "Commit emails" check fails a pull request whose commits use another address, or
-  whose `Co-authored-by` trailers, messages, added lines, title or description hold a personal or
-  work address; "Main commit emails" checks each push to `main` the same way
+  whose `Co-authored-by` trailers are not noreply addresses, or whose messages, added lines, file
+  names, title or description hold a personal or work address; "Main commit emails" checks each push to `main` the same way
   (`tools/commit_emails.py`, `.github/workflows/email-guard.yml`, DEC-094). Findings name the
-  domain only, never the address.
+  domain only, never the address. It catches mistakes, not disguise: an address written as
+  `name%40gmail.com` or an HTML entity passes.
 - **Set the address per clone**, or for one command: `git config user.email <noreply address>`,
   or `GIT_COMMITTER_EMAIL=<noreply address>` with `--author="Name <noreply address>"`. A rebase
   writes a new committer, so amend again after one. GitHub also declines a push that would publish

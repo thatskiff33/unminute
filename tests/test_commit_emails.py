@@ -88,6 +88,10 @@ class CommitTests(unittest.TestCase):
             # A trailer at any other domain names a person too.
             (commit(message="Fix\n\nCo-authored-by: B <b" + "@example.com>"),
              "a Co-authored-by trailer is not a noreply address (another domain)"),
+            # Every address on a trailer, not only the first.
+            (commit(message="Fix\n\nCo-authored-by: A <noreply@anthropic.com> <b"
+                            + "@example.com>"),
+             "a Co-authored-by trailer is not a noreply address (another domain)"),
             (commit(message=f"Thanks {GMAIL}"),
              "abcdef1: commit message contains a personal address (gmail.com)"),
             (commit(message="x\n\nReviewed-by: B <b.c" + "@googlemail.com>"),
@@ -97,7 +101,7 @@ class CommitTests(unittest.TestCase):
             # Full-width forms and invisible characters do not hide one.
             (commit(message="x ｓｏｍｅｏｎｅ" + "＠ｇｍａｉｌ．ｃｏｍ"),
              "commit message contains a personal address (gmail.com)"),
-            (commit(message="x someone​" + "@gmail.com"),
+            (commit(message="x someone\u200b" + "@gmail.com"),
              "commit message contains a personal address (gmail.com)"),
         ]
         for one, expected in cases:
@@ -163,6 +167,38 @@ class DiffTests(unittest.TestCase):
         self.assertEqual(found, ["docs/a.md:5: adds a personal address (gmail.com)",
                                  "b.py:1: adds a personal address (unlimit.co.nz)"])
 
+    def test_file_names(self):
+        # A name holding an address is a finding, and never quoted in one.
+        name = "docs/zz" + "@gmail.com.txt"
+        diff = (f"diff --git a/{name} b/{name}\nnew file mode 100644\n--- /dev/null\n"
+                f"+++ b/{name}\n@@ -0,0 +1 @@\n+mail {GMAIL}\n")
+        found = commit_emails.check_diff(diff)
+        self.assertEqual(found, [
+            "a file name holds a personal address (gmail.com)",
+            "(a file with @ in its name):1: adds a personal address (gmail.com)"])
+        # An empty new file has no +++ line: its header still names it.
+        empty = f"diff --git a/{name} b/{name}\nnew file mode 100644\nindex 0000000..e69de29\n"
+        self.assertEqual(commit_emails.check_diff(empty),
+                         ["a file name holds a personal address (gmail.com)"])
+        # Any other "@" in a name keeps it out of the finding too.
+        other = "x/b" + "@example.com"
+        diff = f"diff --git a/{other} b/{other}\n+++ b/{other}\n@@ -0,0 +1 @@\n+{GMAIL}\n"
+        self.assertEqual(commit_emails.check_diff(diff),
+                         ["(a file with @ in its name):1: adds a personal address (gmail.com)"])
+
+    def test_only_newlines_split_lines(self):
+        # Form feed, lone CR, NEL, U+2028 and the file separators do not end an added
+        # line, so an address after one is still on it.
+        for sep in (chr(0x0C), chr(0x0D), chr(0x85), chr(0x2028), chr(0x1C)):
+            with self.subTest(sep=hex(ord(sep))):
+                diff = f"diff --git a/f b/f\n+++ b/f\n@@ -0,0 +1 @@\n+text{sep}{GMAIL}\n"
+                self.assertEqual(commit_emails.check_diff(diff),
+                                 ["f:1: adds a personal address (gmail.com)"])
+        # A CRLF diff still reads by line.
+        crlf = f"diff --git a/f b/f\r\n+++ b/f\r\n@@ -0,0 +1 @@\r\n+{GMAIL}\r\n"
+        self.assertEqual(commit_emails.check_diff(crlf),
+                         ["f:1: adds a personal address (gmail.com)"])
+
     def test_removed_lines_are_not_findings(self):
         diff = f"diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +0,0 @@\n-{GMAIL}\n"
         self.assertEqual(commit_emails.check_diff(diff), [])
@@ -196,6 +232,9 @@ class WorkflowTests(unittest.TestCase):
     def test_pull_requests_run_the_bases_checker(self):
         self.assertIn('git show "$BASE_SHA:tools/commit_emails.py" > "$RUNNER_TEMP/check.py"',
                       self.jobs)
+        # Only a base commit that is here and has no checker falls back to the PR's copy.
+        self.assertIn('elif git cat-file -e "$BASE_SHA^{commit}"; then', self.jobs)
+        self.assertIn("--text --unified=0", self.jobs)
         self.assertIn('python3 -I "$RUNNER_TEMP/check.py" "$RUNNER_TEMP/commits.jsonl" '
                       '"$RUNNER_TEMP/added.diff"', self.jobs)
 

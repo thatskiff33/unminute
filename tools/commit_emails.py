@@ -9,8 +9,9 @@ decision DEC-094: main's history is not rewritten). It checks:
   GitHub writes for squash and web commits;
 - every ``Co-authored-by:`` trailer: a noreply address (GitHub's, or any whose local
   part is ``noreply`` or ``no-reply``, such as an AI tool's attribution line);
-- commit messages, and the lines a pull request adds: no address at a personal or
-  work domain (``PERSONAL_DOMAIN``);
+- commit messages, and the lines and file names a pull request adds: no address at a
+  personal or work domain (``PERSONAL_DOMAIN``); a finding never quotes a file name
+  that holds "@";
 - the pull request's title and description: the same.
 
 A pull request runs it on its commits (``.github/workflows/email-guard.yml``), and
@@ -58,6 +59,8 @@ PERSONAL = re.compile(
     rf"[^\s<>@\"'`(),;:\[\]]+@{PERSONAL_DOMAIN}(?![\w-]|\.[\w-])",
     re.IGNORECASE,
 )
+# The same in a file name, where an extension may follow the domain.
+PERSONAL_NAME = re.compile(rf"[^\s<>@\"'`(),;:\[\]/]+@{PERSONAL_DOMAIN}(?![\w-])", re.IGNORECASE)
 # A Co-authored-by trailer line (any case, spaces allowed before the colon).
 TRAILER_LINE = re.compile(r"^\s*co-authored-by\s*:(.*)$", re.IGNORECASE | re.MULTILINE)
 # The only bot whose descriptions are skipped: they quote upstream release notes.
@@ -85,6 +88,12 @@ def find_personal(text: str) -> list[str]:
     return [match[1] for match in PERSONAL.finditer(normalise(text))]
 
 
+def find_personal_name(text: str) -> list[str]:
+    """As find_personal, for file names: an extension may follow the address
+    (``someone@gmail.com.txt``), so a dot after the domain does not end the match."""
+    return [match[1].lower() for match in PERSONAL_NAME.finditer(normalise(text))]
+
+
 def domain(address: str) -> str:
     """Name a personal or work domain; any other could identify a machine or a person."""
     if "@" not in address:
@@ -99,14 +108,14 @@ def is_noreply(address: str) -> bool:
 
 
 def trailer_problems(sha: str, message: str) -> list[str]:
-    """Each Co-authored-by trailer must carry a noreply address."""
+    """Every address on a Co-authored-by trailer must be a noreply address."""
     problems = []
     for line in TRAILER_LINE.findall(normalise(message)):
-        found = re.search(r"<([^<>]*)>", line)
-        address = (found[1] if found else line).strip()
-        if not (is_noreply(address) or SERVICE_NOREPLY.fullmatch(address)):
-            problems.append(f"{sha}: a Co-authored-by trailer is not a noreply address "
-                            f"({domain(address)})")
+        addresses = re.findall(r"<([^<>]*)>", line) or [line]
+        for address in (a.strip() for a in addresses):
+            if not (is_noreply(address) or SERVICE_NOREPLY.fullmatch(address)):
+                problems.append(f"{sha}: a Co-authored-by trailer is not a noreply address "
+                                f"({domain(address)})")
     return problems
 
 
@@ -135,17 +144,27 @@ def check_commits(lines: list[str]) -> list[str]:
 
 
 def check_diff(diff: str) -> list[str]:
-    """Personal addresses on the lines a diff adds, by file and new line number."""
+    """Personal addresses on the lines a diff adds, by file and new line number, and in
+    the names of the files it touches. A finding never quotes a file name holding "@"."""
     problems: list[str] = []
     path, line_no = "?", 0
     # File headers (---, +++) come only before a file's first hunk; inside a hunk an
     # added line "++ x" also starts with "+++ ".
     in_header = True
-    for line in diff.splitlines():
+    # Split on newlines only: str.splitlines() also breaks at form feeds, lone CRs,
+    # U+2028 and others, and the piece after one would pass as an unchanged line.
+    for line in diff.split("\n"):
+        line = line.removesuffix("\r")
         if line.startswith("diff --git "):
-            in_header = True
+            in_header, path = True, "?"
+            # The header names the file even when nothing else does (an empty new file,
+            # a rename, a mode change).
+            problems.extend(f"a file name holds a personal address ({found})"
+                            for found in sorted(set(find_personal_name(line))))
         elif in_header and line.startswith("+++ "):
             path = line[4:].strip('"').removeprefix("b/")
+            if "@" in path:
+                path = "(a file with @ in its name)"
         elif line.startswith("@@"):
             in_header = False
             hunk = re.search(r"\+(\d+)", line)

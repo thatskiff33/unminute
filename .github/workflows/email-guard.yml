@@ -4,8 +4,8 @@
 # commit, the field and the domain only, never an address, because these logs are public.
 #
 # - On a pull request (pushed, or its title or description edited): every commit's
-#   author and committer, its Co-authored-by trailers and message, the lines the pull
-#   request adds, and its title and description.
+#   author and committer, its Co-authored-by trailers and message, the lines and file
+#   names the pull request adds, and its title and description.
 # - On a push to main: the commits pushed. GitHub writes a squash commit at merge time,
 #   with the merging account's commit address and a message made from the pull
 #   request, so no pull request check saw it. A finding there cannot
@@ -64,15 +64,22 @@ jobs:
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           set -euo pipefail
-          # The base's checker; the pull request's own copy only where the base has none.
-          if ! git show "$BASE_SHA:tools/commit_emails.py" > "$RUNNER_TEMP/check.py" 2>/dev/null; then
+          # The base's checker; the pull request's own copy only where the base commit
+          # is here and has none. Any other failure stops the check.
+          if git cat-file -e "$BASE_SHA:tools/commit_emails.py" 2>/dev/null; then
+            git show "$BASE_SHA:tools/commit_emails.py" > "$RUNNER_TEMP/check.py"
+          elif git cat-file -e "$BASE_SHA^{commit}"; then
             echo "The base has no checker yet: running this pull request's copy."
             cp tools/commit_emails.py "$RUNNER_TEMP/check.py"
+          else
+            echo "::error::The base commit is not in this checkout."
+            exit 1
           fi
           gh api --paginate "repos/$REPO/pulls/$PR/commits" \
             --jq '.[] | {sha, author: .commit.author.email, committer: .commit.committer.email, message: .commit.message} | @json' \
             > "$RUNNER_TEMP/commits.jsonl"
-          git diff --no-color --unified=0 "$BASE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/added.diff"
+          # --text: a file git takes for binary (a NUL byte) is still read line by line.
+          git diff --no-color --text --unified=0 "$BASE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/added.diff"
           python3 -I "$RUNNER_TEMP/check.py" "$RUNNER_TEMP/commits.jsonl" "$RUNNER_TEMP/added.diff"
 
   main:
