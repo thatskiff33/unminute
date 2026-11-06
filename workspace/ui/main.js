@@ -38,9 +38,9 @@ const PAGE_SCRIPTS = ["core.js", "navigation.js", "meetings.js", "meeting.js", "
                       "playback.js", "confirm.js", "handoff.js", "setup.js", "settings.js",
                       "recording.js", "drafts.js", "polling.js", "main.js"];
 const SCRIPT_LINES = 100000;
-function scriptLine(url, line) {
+function scriptLine(url, lineNo) {
   const at = PAGE_SCRIPTS.findIndex((name) => String(new URL(name, document.baseURI)) === url);
-  return at < 0 ? line : (at + 1) * SCRIPT_LINES + Math.max(0, line | 0);
+  return at < 0 ? lineNo : (at + 1) * SCRIPT_LINES + Math.max(0, lineNo | 0);
 }
 
 // From file://, as the window opened the page until #488, WebView2 hid an
@@ -178,11 +178,11 @@ function guardCallbacks(win) {
     if (typeof real === "function") win[name] = (fn, ...rest) => real.call(win, guarded(fn), ...rest);
   }
 }
-function reportUiError(event, line, col) {
-  if (!bridgeReady) { earlyError = earlyError || [event, line, col]; return; }
+function reportUiError(event, lineNo, col) {
+  if (!bridgeReady) { earlyError = earlyError || [event, lineNo, col]; return; }
   if (reporting) return;
   reporting = true;
-  call("report_ui_error", event, Math.max(0, line | 0), Math.max(0, col | 0))
+  call("report_ui_error", event, Math.max(0, lineNo | 0), Math.max(0, col | 0))
     .catch(() => {}).finally(() => { reporting = false; });
 }
 

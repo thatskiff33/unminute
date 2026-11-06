@@ -161,17 +161,17 @@ function renderBanner(d) {
   const jobs = d.cleanup || [];
   const failed = jobs.find((j) => j.state === "failed");
   const waiting = jobs.find((j) => j.state === "awaiting_confirmation");
-  let kind = "", text = "", icon = "lock", action = null;
+  let kind = "", text = "", bannerIcon = "lock", action = null;
   if (state.version !== null) {
-    kind = "hold"; icon = "clock";
+    kind = "hold"; bannerIcon = "clock";
     text = "You are viewing an earlier version (read only). Its edits are kept as they were.";
     action = ["Back to the current version", () => viewVersion(null)];
   } else if (failed) {
-    kind = "bad"; icon = "clock";
+    kind = "bad"; bannerIcon = "clock";
     text = `Cleanup failed: ${failed.note || "unknown reason"}`;
     action = ["Try again", () => attempt(() => call("retry_cleanup", failed.id).then(refresh))];
   } else if (waiting) {
-    kind = "hold"; icon = "clock";
+    kind = "hold"; bannerIcon = "clock";
     text = `A hold was released. The ${waiting.phase} cleanup is waiting for your confirmation.`;
     action = ["Confirm cleanup…", () => confirmCleanup(waiting)];
   } else if (d.final_saved_at) {
@@ -185,8 +185,8 @@ function renderBanner(d) {
   $("m-banner").hidden = !text;
   $("m-banner").className = `m-banner ${kind}`.trim();
   putText($("m-playback"), text);                  // in #m-banner, a live region: only on change
-  $("m-banner-lock").toggleAttribute("hidden", icon !== "lock");
-  $("m-banner-clock").toggleAttribute("hidden", icon !== "clock");
+  $("m-banner-lock").toggleAttribute("hidden", bannerIcon !== "lock");
+  $("m-banner-clock").toggleAttribute("hidden", bannerIcon !== "clock");
   $("m-banner-action").hidden = !action;
   if (action) putText($("m-banner-action"), action[0]);
   state.bannerAction = action ? action[1] : null;

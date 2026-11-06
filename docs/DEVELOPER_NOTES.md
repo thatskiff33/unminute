@@ -189,8 +189,12 @@ real time, and remove it when the cause is fixed.
   that one module tag; if an import or export is not a plain list, or names a file outside
   the folder or a name the other module does not export, or a module imports at run time
   (`import()`) or uses `import.meta`; if a module other than `main.js` runs code at load or
-  reads an imported name as it loads (`const probe = wire();` in `polling.js`); or if two
-  modules declare the same top-level name, which the tests reach in one namespace.
+  reads an imported name as it loads (`const probe = wire();` in `polling.js`); if two
+  modules declare the same top-level name, which the tests reach in one namespace; or if a
+  module uses another module's top-level name without importing it. That last rule reads
+  every module's code, so it does not depend on a test running the line. It has no scope
+  analysis, so a local (a `const`, `let`, parameter or destructured name) may not take
+  another module's top-level name either: give it a name of its own.
 - **`node --check` on a module file checks nothing.** Node.js passes a `.js` file with
   `import` or `export` without parsing it as a module: on Node.js 24 (6 Nov 2026) it exits 0
   even for one that does not parse. So CI's "JavaScript syntax" job checks each page module
@@ -226,8 +230,8 @@ real time, and remove it when the cause is fixed.
   so a test cannot quietly use its own copy while the page uses the real one. The accessors
   are for the test's code only: a module that uses another module's name without importing
   it throws "is not defined" in the browser, and an accessor reached from a page module
-  throws the same (it knows the caller's file from the stack), so a missing import does not
-  pass the tests. Assignments are covered too (#495): a stub of a name that neither the page
+  throws the same (it knows the caller's file from the stack), for the code a test runs.
+  Code no test runs is covered by the static rule in "Adding a module" above. Assignments are covered too (#495): a stub of a name that neither the page
   nor the test declares (a function since renamed or removed, `renamedAway = () => 0`)
   fails with "is not defined" instead of creating a new global the page never calls. The
   test's code runs in strict mode, which stops most such assignments where they happen;

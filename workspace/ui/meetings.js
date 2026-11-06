@@ -205,10 +205,10 @@ async function renderStatus() {
   const parts = [];
   if (s.importing) parts.push(`Importing ${s.importing} recording${s.importing > 1 ? "s" : ""}`);
   if (s.message) parts.push(s.message);
-  const line = parts.join(" · ");
-  if (line !== state.statusLine) {
-    state.statusLine = line;
-    if (line) say(line, { sticky: true });
+  const statusText = parts.join(" · ");
+  if (statusText !== state.statusLine) {
+    state.statusLine = statusText;
+    if (statusText) say(statusText, { sticky: true });
     else if ($("status").dataset.sticky) say("");
   }
   $("import-errors").replaceChildren(...s.import_errors.map((e) => notice("alert", e,

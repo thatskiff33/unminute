@@ -2260,7 +2260,7 @@ class DraftPageTests(unittest.TestCase):
         js = page_scripts.source()
         body = js[js.index("function putInstant"):js.index("async function renderDraft")]
         self.assertNotRegex(body, r"innerHTML|outerHTML|insertAdjacentHTML")
-        self.assertIn("putText(line, words)", body)               # textContent only
+        self.assertIn("putText(instantLine, words)", body)        # textContent only
         # In the draft box, which is aria-live="off": read on demand, not on change.
         self.assertIn('box.querySelector(".rec-draft-instant")', body)
         css = (ui / "app.css").read_text(encoding="utf-8")

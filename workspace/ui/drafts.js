@@ -61,11 +61,11 @@ function clearDraft() {
 
 // The instant words' line, last in the box; gone when there are none.
 function putInstant(box, words) {
-  let line = box.querySelector(".rec-draft-instant");
-  if (!words) { if (line) line.remove(); return; }
-  if (!line) line = el("p", { class: "rec-draft-instant" });
-  if (box.lastElementChild !== line) box.append(line);
-  putText(line, words);
+  let instantLine = box.querySelector(".rec-draft-instant");
+  if (!words) { if (instantLine) instantLine.remove(); return; }
+  if (!instantLine) instantLine = el("p", { class: "rec-draft-instant" });
+  if (box.lastElementChild !== instantLine) box.append(instantLine);
+  putText(instantLine, words);
 }
 
 async function renderDraft(rec, d) {

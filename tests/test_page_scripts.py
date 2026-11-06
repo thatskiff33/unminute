@@ -259,6 +259,29 @@ def links(src):
     return imports, exports
 
 
+def unimported(src, own, others):
+    """The names a module's code uses that another module declares at top
+    level (others) but this one neither imports nor declares (own): each a
+    name token that is not a property (.name, ?.name) or an object key
+    (name:), outside the module's import and export lists. There is no scope
+    analysis: a local of the same name counts as a use, so no module may give
+    a local another module's top-level name (it would hide a missing import)."""
+    imported = {w for _, names in links(src)[0] for w in names}
+    found = set()
+    for statement in statements(src):
+        if module_list(statement):
+            continue
+        for i, (kind, text, _, _) in enumerate(statement):
+            if kind != "name" or text not in others or text in own or text in imported:
+                continue
+            before = statement[i - 1][1] if i else None
+            after = statement[i + 1][1] if i + 1 < len(statement) else None
+            if before in (".", "?.") or (after == ":" and before in ("{", ",")):
+                continue
+            found.add(text)
+    return found
+
+
 
 def _group_end(toks, i):
     """The index just past the bracket that closes the one at toks[i]."""
@@ -464,6 +487,22 @@ class PageScriptRuleTests(unittest.TestCase):
         self.assertIn('"./core.js"', [s for s, _ in found["meetings.js"][0]],
                       "the reading no longer finds the imports")
 
+    def test_every_name_from_another_module_is_imported(self):
+        # In the browser a name a module uses without importing it throws "is
+        # not defined" only when that code runs, and the tests run only some
+        # of it (#488 review: settings.js without its import of whenWord
+        # passed every page test). This reads every module's code instead. It
+        # has no scope analysis, so a local may not take another module's
+        # top-level name either (it would hide a missing import).
+        owner = {w: name for name, src in self.sources.items() for st in statements(src)
+                 if st[0][1] in DECLARES for w in declared(st)}
+        for name, src in self.sources.items():
+            own = {w for w, home in owner.items() if home == name}
+            with self.subTest(script=name):
+                self.assertEqual(set(), unimported(src, own, set(owner) - own),
+                                 f"{name} uses these without importing them, or has a local "
+                                 "of the same name as another module's")
+
     def test_no_module_reads_an_imported_name_as_it_loads(self):
         # The modules import each other in cycles, so a module may be
         # evaluated before one it imports from, whose const, let and class are
@@ -565,6 +604,27 @@ class TokeniserTests(unittest.TestCase):
                  for n in declared(st)]
         self.assertEqual(names, ["a", "a", "b", "a"])
 
+    def test_it_finds_a_name_used_without_its_import(self):
+        others = {"say", "wire", "when"}
+        def found(src):
+            return unimported(src, {"own"}, others)
+        # Used, and not imported: in a call, a template, a shorthand property,
+        # as a value; a local or parameter of the same name counts as a use.
+        for src in ("function own() { say(1); }\n", "const own = () => `${wire()}`;\n",
+                    "function own() { return { when }; }\n", "const own = [when];\n",
+                    "function own() { const say = 1; return say; }\n",
+                    "function own(wire) { return wire; }\n"):
+            with self.subTest(src=src):
+                self.assertTrue(found(src), src)
+        # Imported, a property, an object key, a string, a comment or the
+        # export list: not a missing import.
+        for src in ('import { say } from "./core.js";\nfunction own() { say(1); }\n',
+                    "function own(x) { return x.wire + x?.when; }\n",
+                    "const own = { say: 1, wire: 2 };\n", 'const own = "say(1)";\n',
+                    "// wire()\nfunction own() {}\n", "function own() {}\nexport { own };\n"):
+            with self.subTest(src=src):
+                self.assertEqual(set(), found(src), src)
+
 
 class RealScriptsTests(unittest.TestCase):
     """tests/page_vm.js, which the page tests use to call the page's real
@@ -656,7 +716,7 @@ console.log(JSON.stringify(deviceOption({ index: 3, name: "Synthetic microphone"
 
     def test_function_text_is_the_loaded_function(self):
         text = page_scripts.function_text("scriptLine")
-        self.assertTrue(text.startswith("function scriptLine(url, line) {\n"), text)
+        self.assertTrue(text.startswith("function scriptLine(url, lineNo) {\n"), text)
         self.assertTrue(text.endswith("\n}"), text)
         self.assertNotIn("\r", text)
         with self.assertRaisesRegex(AssertionError, "not a function declared"):
@@ -667,10 +727,11 @@ console.log(JSON.stringify(deviceOption({ index: 3, name: "Synthetic microphone"
 
 class HarnessModuleTests(unittest.TestCase):
     """What tests/page_vm.js refuses, as the browser would, shown with
-    synthetic modules in a folder of their own. CI's syntax job runs node
-    --check, which passes a file with import or export without checking it
-    (Node.js 24, 6 Nov 2026), so a page module that does not parse is found
-    here: every page test loads every module."""
+    synthetic modules in a folder of their own. Plain node --check passes a
+    file with import or export without checking it (Node.js 24, 6 Nov 2026),
+    so CI's syntax job checks each page module from standard input with
+    --input-type=module. The harness also stops on a module that does not
+    parse, and every page test loads every module."""
 
     FILES = {
         "main.js": '"use strict";\nimport { twice } from "./a.js";\n'
