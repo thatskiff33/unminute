@@ -2588,6 +2588,10 @@ class Workspace(RecordingMixin, SettingsMixin, HandoffMixin, WatchedFoldersMixin
         if not self._allowed("AllowModelDownloads"):
             raise setup.QueueStopped(DOWNLOADS_OFF)
         gpu_only = gpu.component(name) is not None
+        if asr_engines.is_instant(name) and not self._instant_words_allowed():
+            # K3: the model for a feature IT turned off is not downloaded (#105),
+            # whether it was queued behind another or resumed at the next start.
+            raise setup.SetupError(MANAGED_OFF.format(what="Instant words while recording"))
         if gpu_only and not self._allowed("AllowGpuComponent"):
             raise setup.SetupError(MANAGED_OFF.format(what="The graphics card component"))
         if not gpu_only and not self._user_models_allowed():
@@ -2615,8 +2619,9 @@ class Workspace(RecordingMixin, SettingsMixin, HandoffMixin, WatchedFoldersMixin
 
     def _queue_policy(self):
         """Waiting downloads that policy no longer allows end now, and say
-        why (#366, K3): all of them when downloads are off, or the graphics
-        card components when those are. A running download carries on."""
+        why (#366, K3): all of them when downloads are off, the graphics
+        card components when those are, or the instant-words model when
+        instant words are (#105). A running download carries on."""
         if not self.downloads.queued():
             return
         if not self._allowed("AllowModelDownloads"):
@@ -2627,6 +2632,9 @@ class Workspace(RecordingMixin, SettingsMixin, HandoffMixin, WatchedFoldersMixin
                                        only=lambda n: gpu.component(n) is not None)
         if not self._user_models_allowed():
             self.downloads.drop_queued(USER_MODELS_OFF, only=lambda n: gpu.component(n) is None)
+        if not self._instant_words_allowed():
+            self.downloads.drop_queued(MANAGED_OFF.format(what="Instant words while recording"),
+                                       only=asr_engines.is_instant)
 
     def remove_model(self, name):
         """Remove a downloaded model, or the graphics card component, from this

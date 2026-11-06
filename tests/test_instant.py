@@ -816,6 +816,62 @@ class DraftSessionWiringTests(unittest.TestCase):
             self.assertIn("stop", slow.calls)      # without the budget: back after 0.1 s
             first.join(10)
 
+    def test_a_stop_racing_a_detach_never_raises_and_waits_for_it(self):
+        # Review of #541: detach_instant (the switch or policy, on the policy
+        # thread) may clear session.instant while stop() runs. stop() reads it
+        # once, never raises, and returns only once the detached instant words
+        # have ended too (D4: processing waits for them).
+        class SlowInstant(InstantStandIn):
+            def stop(self):
+                time.sleep(1.0)
+                super().stop()
+
+            def end_budget(self):
+                return 5.0
+        slow = SlowInstant()
+        s = drafts.DraftSession("rec1", SR, self.root, instant=slow)
+        detacher = threading.Thread(target=s.detach_instant)
+        with mock.patch.object(drafts, "STOP_JOIN_S", 0.05), \
+                mock.patch.object(s, "_end_wait", lambda: 0.0):
+            detacher.start()
+            self.assertTrue(wait_for(lambda: s.instant is None))   # detach under way
+            s.stop()                                   # raised AttributeError before
+            self.assertEqual(slow.calls, ["stop"])     # stop() waited for the detach's end
+            self.assertTrue(s._ended.is_set())
+        detacher.join(10)
+
+    def test_stop_reads_the_instant_words_once(self):
+        # Review of #541: a detach between stop()'s check and its call left it
+        # calling stop() on None. Cleared at the worst moment, stop still ends.
+        stand_in = InstantStandIn()
+        s = drafts.DraftSession("rec1", SR, self.root, instant=stand_in)
+        real_lock = s._lock
+
+        class ClearingLock:
+            """The lock stop() takes to mark itself stopped; on release, the
+            instant words are cleared as a detach on another thread would."""
+            def __init__(self):
+                self.entries = 0
+
+            def __enter__(self):
+                real_lock.acquire()
+                self.entries += 1
+
+            def __exit__(self, *exc):
+                real_lock.release()
+                if self.entries == 2:                  # the one that marks it stopped
+                    s.instant = None
+                return False
+
+            def locked(self):
+                return real_lock.locked()
+        s._lock = ClearingLock()
+        with mock.patch.object(drafts, "STOP_JOIN_S", 0.05), \
+                mock.patch.object(s, "_end_wait", lambda: 0.0):
+            s.stop()                                   # AttributeError before the fix
+        self.assertTrue(s._ended.is_set())
+        self.assertEqual(stand_in.calls, ["stop"])     # the words it held were ended
+
 
 @unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
 class WorkspaceTests(unittest.TestCase):
@@ -924,6 +980,39 @@ class WorkspaceTests(unittest.TestCase):
         self.assertIsNotNone(session.instant)
         self.assertIsNot(session.instant, inst)
         self.ws.stop_recording()
+
+    def turned_off_on_battery(self, turn_off):
+        # Review of #541 (K3, T31): on battery drafts wait, but instant words
+        # turned off still end at the next tick and their words are forgotten,
+        # and the page is told (instant_seq), rather than at mains power.
+        self.words_on()
+        self.record()
+        self.ws._policy_tick()
+        session = self.ws._drafts
+        self.assertTrue(wait_for(lambda: session.instant is not None
+                                 and session.instant.state == instant.RUNNING))
+        inst = session.instant
+        self.holder["stream"].play(self.speech(1.0))
+        self.assertTrue(wait_for(lambda: inst.word_count >= 1))
+        self.ws._battery = True                                # unplugged
+        self.ws._policy_tick()
+        self.assertEqual(session.state, drafts.BATTERY)
+        seq = self.ws.recording_status()["draft"]["instant_seq"]
+        turn_off()
+        self.ws._policy_tick()
+        self.assertIsNone(session.instant)
+        self.assertEqual(inst.state, instant.STOPPED)
+        self.assertEqual(inst.words_after(0.0), "")
+        self.assertIsNone(self.ws.recording_draft()["instant"])
+        self.assertNotEqual(self.ws.recording_status()["draft"]["instant_seq"], seq)
+        self.assertEqual(session.state, drafts.BATTERY)        # the draft still waits
+        self.ws.stop_recording()
+
+    def test_turned_off_by_policy_on_battery_they_end_at_once(self):
+        self.turned_off_on_battery(lambda: self.set_policy({"AllowInstantWords": False}))
+
+    def test_turned_off_by_the_switch_on_battery_they_end_at_once(self):
+        self.turned_off_on_battery(lambda: self.ws.set_settings({"live_words": False}))
 
     def test_the_switch_starts_and_ends_them_during_a_recording(self):
         self.record()

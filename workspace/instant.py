@@ -184,7 +184,7 @@ class InstantSession:
         self._words = []                           # [[start_s, text, number]]
         self._latest = -math.inf
         self.word_count = 0
-        self.seq = 0                               # changes whenever the words or state do
+        self.seq = 0                               # changes as words arrive and when it fails
         self.dropped_s = 0.0                       # audio let go to keep up (not while hidden)
         self.hidden_s = 0.0                        # audio not sent while the window was hidden
         self.state, self.reason = STARTING, None

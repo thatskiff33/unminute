@@ -474,6 +474,59 @@ call = async (name, model) => reply;
         self.wait(asr_engines.PARAKEET_V2, "ready")
         self.assertEqual(self.order(), [self.a, self.b, self.c, asr_engines.PARAKEET_V2])
 
+    def test_a_queued_instant_words_model_policy_turned_off_fails_alone(self):
+        # Review of #541 (K3): the model for instant words is not downloaded
+        # once IT turns them off, also when it was queued behind another.
+        instant_model = asr_engines.INSTANT_MODEL.name
+        self.assertEqual(self.ws.download_model(self.a), "started")
+        self.wait_started(self.a)
+        self.assertEqual(self.ws.download_model(instant_model), "queued")
+        self.assertEqual(self.ws.download_model(self.b), "queued")
+        self.policy["AllowInstantWords"] = False
+        self.ws.policy.refresh()
+        self.ws.setup_state()                                  # the page's next poll
+        self.assertIn("Instant words while recording is turned off",
+                      self.ws.downloads.state[instant_model]["message"])
+        self.release(self.a)
+        self.release(self.b)
+        self.wait(self.b, "ready")
+        self.assertEqual(self.order(), [self.a, self.b])
+
+    def test_instant_words_policy_read_when_their_model_would_start(self):
+        # Review of #541 (K3): with no poll in between (the next one starts as
+        # the running one ends) and with live drafts off, which gates instant
+        # words too (DEC-092), their model still does not start.
+        instant_model = asr_engines.INSTANT_MODEL.name
+        self.assertEqual(self.ws.download_model(self.a), "started")
+        self.wait_started(self.a)
+        self.assertEqual(self.ws.download_model(instant_model), "queued")
+        self.assertEqual(self.ws.download_model(self.b), "queued")
+        self.policy["AllowLiveDrafts"] = False
+        self.ws.policy.refresh()
+        self.release(self.a)                                   # before any poll
+        self.assertIn("Instant words while recording is turned off",
+                      self.wait(instant_model, "failed")["message"])
+        self.release(self.b)
+        self.wait(self.b, "ready")
+        self.assertEqual(self.order(), [self.a, self.b])
+
+    def test_a_resumed_instant_words_model_is_not_downloaded_once_turned_off(self):
+        # Review of #541 (K3): a queue saved before IT turned instant words off
+        # carries on at the next start without their model.
+        instant_model = asr_engines.INSTANT_MODEL.name
+        self.ws.close()
+        self.workspaces.remove(self.ws)
+        saved = {"queue": [instant_model, self.b]}
+        self.queue_file().write_text(json.dumps(saved), encoding="utf-8")
+        self.policy["AllowInstantWords"] = False
+        ws2 = self.open(start=True)
+        self.assertIn("Instant words while recording is turned off",
+                      self.wait(instant_model, "failed", ws=ws2)["message"])
+        self.wait_started(self.b)
+        self.release(self.b)
+        self.wait(self.b, "ready", ws=ws2)
+        self.assertEqual(self.order(), [self.b])
+
     # -- the token (criterion 5) -------------------------------------------------------
 
     def test_a_queued_speaker_model_gets_its_token_by_pipe(self):

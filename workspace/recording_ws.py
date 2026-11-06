@@ -538,6 +538,10 @@ class RecordingMixin:
         reason = self._draft_reason(p)
         session = self._drafts
         if session is not None:
+            if session.instant is not None and not self._instant_wanted(p):
+                # Turned off or withheld (K3): ended and their words forgotten
+                # now, also while drafts wait on battery (#105, review of #541).
+                session.detach_instant()
             if reason == "battery":
                 session.suspend()            # the worker ends; the text so far is kept
             elif reason:
@@ -611,6 +615,10 @@ class RecordingMixin:
             return bool(p.get("AllowInstantWords") and p.get("AllowLiveDrafts"))
         return self._allowed("AllowInstantWords") and self._allowed("AllowLiveDrafts")
 
+    def _instant_wanted(self, p=None):
+        """The user's switch is on and policy allows instant words."""
+        return bool(self.settings["live_words"]) and self._instant_words_allowed(p)
+
     def _instant_session(self, rec, p=None):
         """Instant words for a draft session (#105), or None: only while the
         user has turned them on ("live_words"), policy allows them, no model
@@ -638,8 +646,7 @@ class RecordingMixin:
         or withheld, they end and their words are forgotten. Instant words
         that stopped (a second crash) stay stopped until the switch is turned
         off and on again. Draft text carries on either way."""
-        want = bool(self.settings["live_words"]) and self._instant_words_allowed(p)
-        if not want:
+        if not self._instant_wanted(p):
             if session.instant is not None:
                 session.detach_instant()
             return
