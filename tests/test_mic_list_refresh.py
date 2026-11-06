@@ -331,15 +331,20 @@ STEPS = """
       c = n();
       $("su-test").click();
       await wait(1500);
+      // Step 4's Test errors sit beside the button, not in the toast (#416).
+      const stepError = () => {
+        const box = $("su-4").querySelector(".inline-error-text");
+        return box ? box.textContent : "";
+      };
       out.changed_test = { calls: n() - c, ...look(sel), value: sel.value,
-                           toast: $("status").textContent };
+                           toast: stepError() };
       out.by_code = {};
       for (const how of ["code only", "wording only"]) {
         t.changed = how;
         c = n();
         $("su-test").click();
         await wait(1500);
-        out.by_code[how] = { calls: n() - c, toast: $("status").textContent };
+        out.by_code[how] = { calls: n() - c, toast: stepError() };
       }
       t.changed = false;
       // The list cannot be read: asked once when the step is shown, not on
