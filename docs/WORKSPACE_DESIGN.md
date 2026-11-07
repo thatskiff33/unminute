@@ -456,7 +456,7 @@ Nothing in the pass reads meeting content or opens the key. Since B5b (the owner
 - **Inbox:** import, plus meetings still being processed, with progress, Pause, Stop now and Resume.
 - **Active meetings:** meetings in review, handoff or cleanup. Each shows its age, next action and held status, and a "Review due" or "Action required" chip when its next step has waited past the threshold in force (#111 C6). Nothing is scheduled outside the app.
 - **Meeting:**
-  - the transcript, with speaker labels and overlap notes;
+  - the transcript, with speaker labels and overlap notes, a sentence split across passages shown as one line ("Joined lines" below);
   - search: Ctrl+F, Enter for the next match;
   - playback of bounded clips (30 s or less) from a passage's time, at a standard level for listening (below);
   - autosaved edits;
@@ -489,6 +489,15 @@ Nothing in the pass reads meeting content or opens the key. Since B5b (the owner
 - `content-visibility: auto` lets the browser skip off-screen rows.
 - On the UI check, a 5000-passage transcript rendered in under 0.5 s.
 - **While transcribing (#127).** When only the progress has moved, the page fetches from the last row it drew onwards (the existing `transcript(mid, start, count)` call, no new bridge method) and appends the new rows. Passages are only ever added to a version, never removed or moved, so if that last row is still at its place with the same speaker, every row drawn is still there in order. The whole list is redrawn instead when that cannot be shown: an earlier passage added (a chunk done after a later one), a different version, speakers identified or changed, a search open, totals that do not line up while paging, or an error. With a search open, the redraw finds the matches before it draws and shows them with the rows, so the new rows never appear with the old list's count and highlights (search opens every passage, so on a long meeting it takes longer than drawing them); it checks first that it will draw at all (no edit started, the same meeting and version). Only the latest search request's answer is shown: each request takes the next number, and typing or opening another meeting or version drops the answers to earlier ones. A typed search jumps to its first match whichever request for it answers last; a redraw keeps the current match while it still matches. While a passage is being edited nothing is drawn; the rows follow once the edit ends. An append given up because an edit, another meeting or version, or a newer draw started while it loaded draws nothing, not even a full redraw (that would be thrown away too), and the next refresh tries the append again. Measured by `tools/ui_idle_check.py` (transcribing run, ratchets in `tests/budgets.json`) and `tools/workspace_ui_check.py` ("growing transcript").
+
+### Joined lines (#561)
+
+The owner's decision DEC-100. The speech engine, or a chunk boundary, can split one sentence into two stored passages, which read as two broken lines. The transcript view, copy and the handoff show such a sentence as one line; the stored passages never change (their text, edits, speaker runs and commits stay as they are, D1), and the reviewed snapshot (`cleanup.render_reviewed`) is unchanged.
+
+- **The rule** (`workspace/joins.py`, one place for the bridge and the handoff): a passage joins the one before it when that one's text as shown (its edit, if any) does not end a sentence (`.`, `?` or `!`, possibly followed by closing quotes or brackets and spaces), it starts within 1.0 s (`JOIN_GAP_S`) of that one's end, both have the same final speaker after corrections and merges (or neither has one), and neither carries the overlapping-speech mark, so the mark always has a line of its own.
+- **The bridge.** Each item of the `transcript` reply carries `joined`: whether it joins the item before it. The app reads one passage before the page to set the first item's flag, so it is right whatever the paging, and the same for an earlier version. No bridge method or argument changed.
+- **The page.** A joined passage is drawn inside the line before it (`meeting.js` `joinPiece`), after a space: one line (`li`), one time and one speaker label, the first passage's. Each passage keeps its own text span and id, so editing, Undo, search and playback still work passage by passage; a search match marks the line that holds it. An edit or Undo that adds or removes a sentence end (the page's `endsSentence`, which mirrors the rule and is tested against it) asks the app for the next passage's flag, and the list is redrawn if it changed (1a); any other edit asks for nothing. Moving a speaker redraws the list as before, so a passage moved to someone else leaves the line (2a); on a joined line, the Move box also asks which of its passages moves. While transcribing, a new passage that joins the last line drawn is appended into it, and the append's check that the last row is unchanged includes its `joined` flag.
+- **The handoff** joins the same lines, with the first passage's time and speaker. Redaction and replaced names apply to the line as shown, so a phrase split between two of its passages is found too. See "Omissions and redactions" below for leaving lines out.
 
 ## Speaker names (#21)
 
@@ -562,6 +571,7 @@ Nothing in the pass reads meeting content or opens the key. Since B5b (the owner
 
 ### Omissions and redactions
 - Leaving passages out and redacting words (case-insensitive, longest phrase first, applied to the title, speaker names and text) changes the handoff only. The transcript is not changed.
+- The Leave out list has one choice per line as the transcript shows it (joined lines, #561, 3a of the owner's decision DEC-100). Ticking a line stores every passage in it, and a line with any of its passages stored as left out is left out whole, so no part of a line left out goes. The count left out, in the handoff's own note, on the page and in the audit record, is of lines.
 - Both are stored in `handoff_options` and removed with the transcript at cleanup.
 
 ### Length

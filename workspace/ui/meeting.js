@@ -409,26 +409,59 @@ function renderHolds(d) {
 // -- transcript ----------------------------------------------------------------
 // A passage shows its speaker's label when the speaker changes; the others
 // show theirs on hover or focus, so any passage can be moved.
+// Joined lines (#561, the owner's decision DEC-100): a passage the bridge
+// marks `joined` is drawn inside the line before it, after a space, so a
+// sentence split in two reads as one line with one time and one speaker (the
+// first passage's). Each passage keeps its own text span and id, so it is
+// still edited, undone, searched and played on its own. The rule is the
+// app's (workspace/joins.py); the page only follows the flag.
 function transcriptRow(item, audio, turn) {
   const t = el("button", { type: "button", class: "t", textContent: fmtTime(item.t),
     disabled: !audio, title: audio ? "Play from here" : "Audio removed after review",
     on: { click: () => playFrom(item.t) } });
-  const text = el("span", { class: "text" + (item.edited ? " edited" : ""), textContent: item.text,
-    title: "Select to edit", tabIndex: 0 });
-  text.dataset.id = item.id;
-  text.addEventListener("click", () => startEditing(text));
-  text.addEventListener("keydown", (e) => { if (e.key === "Enter" && !text.isContentEditable) { e.preventDefault(); startEditing(text); } });
   const chip = item.who || canName();
   const li = el("li", { class: turn ? "turn" : "" }, t,
-    el("div", { class: "row-body" }, chip && turn ? whoButton(item, false) : null, text,
+    el("div", { class: "row-body" }, chip && turn ? whoButton(item, false) : null, pieceText(item),
        item.overlap ? el("span", { class: "overlap", textContent: "(overlapping speech)" }) : null),
     chip && !turn ? whoButton(item, true) : null);
   li.dataset.id = item.id;
   return li;
 }
 
+// One passage's text: selected (or Enter) to edit it.
+function pieceText(item) {
+  const text = el("span", { class: "text" + (item.edited ? " edited" : ""), textContent: item.text,
+    title: "Select to edit", tabIndex: 0 });
+  text.dataset.id = item.id;
+  text.addEventListener("click", () => startEditing(text));
+  text.addEventListener("keydown", (e) => { if (e.key === "Enter" && !text.isContentEditable) { e.preventDefault(); startEditing(text); } });
+  return text;
+}
+
+// A joined passage added to its line (li, from transcriptRow): the line's
+// first passage moves into a .line wrapper the first time, so the passages
+// flow as one paragraph rather than stacking.
+function joinPiece(li, item) {
+  const first = li.querySelector(".row-body > .text");
+  let flow = li.querySelector(".row-body > .line");
+  if (!flow && first) {
+    flow = el("span", { class: "line" });
+    first.replaceWith(flow);
+    flow.append(first);
+  }
+  if (flow) flow.append(" ", pieceText(item));
+}
+
+// Whether text ends a sentence, as workspace/joins.py ends_sentence: ., ? or
+// !, possibly followed by closing quotes or brackets and spaces. The page uses
+// it only to tell whether an edit could have changed a join, and then asks
+// the app (speakers.js, followJoin).
+function endsSentence(text) {
+  return /[.?!][\s"')\]}\u2019\u201d\u00bb]*$/.test(String(text || ""));
+}
+
 // What the page's other modules import from this one (#488).
 export {
-  dateWord, fitTitle, initials, mergeIcon, playIcon, plural, renderMeeting, setTab, speakerClass,
-  transcriptRow, viewVersion, whenWord
+  dateWord, endsSentence, fitTitle, initials, joinPiece, mergeIcon, playIcon, plural, renderMeeting,
+  setTab, speakerClass, transcriptRow, viewVersion, whenWord
 };

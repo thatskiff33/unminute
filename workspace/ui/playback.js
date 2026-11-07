@@ -50,7 +50,12 @@ function markHits() {
   if (row) row.classList.add("current");
 }
 
-function rowFor(id) { return document.querySelector(`#transcript li[data-id="${Number(id)}"]`); }
+// The line a passage is drawn in: its own, or the line it is joined to (#561),
+// found by the passage's text span, which keeps its id either way.
+function rowFor(id) {
+  const span = document.querySelector(`#transcript .text[data-id="${Number(id)}"]`);
+  return span ? span.closest("li") : null;
+}
 
 function nextHit(dir) {
   if (!state.hits.length) return;

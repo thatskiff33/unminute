@@ -27,6 +27,7 @@ import time
 import unicodedata
 from pathlib import Path
 
+from workspace.joins import lines as joined_lines
 from workspace.speaker_names import given_names, resolve
 from workspace.store import DamagedContent
 
@@ -606,9 +607,18 @@ def _build(store, mid, template, anonymise, title_in_name):
     v = store.active_version(mid)
     opts = options(store, mid)
     redact = _redactor(opts["redactions"])
-    omitted = set(opts["omitted"])
     view = resolve(store, v["id"])
     rows = store.transcript(v["id"], words=False)      # the text only, no word timings
+    # One line per joined line (#561, DEC-100), by the rule the transcript
+    # view uses (workspace/joins.py). A line is left out whole when any of its
+    # passages is (3a: the page offers one choice per line), so no part of a
+    # line left out ever goes.
+    groups = joined_lines([{"row": row, "text": row["text"], "start": row["start_s"],
+                            "end": row["end_s"], "label": view["labels"].get(row["id"]),
+                            "overlap": bool(view["overlap"].get(row["id"]))} for row in rows])
+    chosen = set(opts["omitted"])
+    left_out = [g for g in groups if any(p["row"]["id"] in chosen for p in g)]
+    omitted = {p["row"]["id"] for g in left_out for p in g}
     pseudo = _pseudonyms(view, rows, omitted) if anonymise else {}
     rename = lambda text: text      # noqa: E731
     if anonymise:
@@ -627,17 +637,20 @@ def _build(store, mid, template, anonymise, title_in_name):
     title = r(m["title"]) or "Meeting"
     names = (pseudo if anonymise else
              {lbl: r(name) for lbl, name in view["names"].items()})   # counted once each
-    lines, speakers, skipped = [], [], 0
-    for row in rows:
-        if row["id"] in omitted:
-            skipped += 1
+    lines, speakers, skipped = [], [], len(left_out)
+    for group in groups:
+        first = group[0]["row"]
+        if first["id"] in omitted:
             continue
-        label = view["labels"].get(row["id"])
+        # The first passage's time and speaker (every passage in a line has
+        # the same speaker). Redaction and names are applied to the line as
+        # shown, so a phrase split between two of its passages is found too.
+        label = group[0]["label"]
         who = names.get(label) if label else None
         if who and who not in speakers:
             speakers.append(who)
-        lines.append(f"[{_stamp(row['start_s'])}] " + (f"**{who}:** " if who else "")
-                     + r(row["text"]))
+        lines.append(f"[{_stamp(first['start_s'])}] " + (f"**{who}:** " if who else "")
+                     + r(" ".join(_one_line(p["row"]["text"]) for p in group)))
     head = [f"# {title}", "",
             f"- Date imported: {time.strftime('%d %B %Y', time.localtime(m['created_at']))}",
             f"- Speakers (as labelled): {', '.join(speakers) if speakers else 'not identified'}",
