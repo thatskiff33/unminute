@@ -301,10 +301,11 @@ WebView2 version; nothing that names the computer or its user), the app
 version, the display block above, every run's figures, the medians
 (for the worker's unload, the slowest run: a pass or fail, not a noisy
 figure), anything over budget or not measured, and budgets proposed from these
-figures (plus 20%). There is no named reference machine: the budgets in
-docs/perf-budgets.json apply to whichever machine measures, and release
-evidence (--zip) needs the specification in full, so a machine it cannot read
-stops the run before it starts (exit 2).
+figures (plus 20%). The budgets in docs/perf-budgets.json apply to the
+machine that measures (from v0.5.0-preview.9 one standard evidence machine,
+docs/RELEASING.md, step 3), and release evidence (--zip) needs the
+specification in full, so a machine it cannot read stops the run before it
+starts (exit 2).
 
 Exit codes: 0 within budget (or no budgets file yet); 1 a figure is over its
 budget (a worker that did not unload counts as over), or a budgeted figure was
@@ -1415,8 +1416,8 @@ def refresh_now():
 
 # -- the machine it ran on (pure apart from WindowsProbe; tested with a fake) ------------
 #
-# No named reference machine (owner decision, 18 Oct 2026, #121): a release is
-# measured on whichever Windows machine prepares it, and the report records
+# From v0.5.0-preview.9 a release is measured on one standard evidence machine
+# (DEC-097; before that, whichever machine prepared it, DEC-005), and the report records
 # that machine's specification (tools/evidence.py, PERF_MACHINE, which a
 # release's evidence must hold in full). Specification only: never the
 # computer's or the user's name, an account, a serial number or a path

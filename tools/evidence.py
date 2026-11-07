@@ -33,9 +33,9 @@
 #
 # Exit codes for "check": 0 every kind present and passing; 1 otherwise.
 #
-# There is no named reference machine (owner decision, 18 Oct 2026, #121): the
-# performance check runs on whichever Windows machine prepares the release, and
-# that machine's specification goes in evidence-perf.json and in the release
+# From v0.5.0-preview.9 the performance check runs on one standard evidence
+# machine (DEC-097; before that, whichever machine prepared the release, DEC-005),
+# and that machine's specification goes in evidence-perf.json and in the release
 # notes. "machine" prints it as one line for the notes:
 #
 #   python -I tools/evidence.py machine evidence-perf.json
