@@ -1126,18 +1126,50 @@ def processes():
     return out
 
 
+def created(pid):
+    """When a process started, in Windows file-time ticks, or 0 if it cannot
+    be read (it has ended, or is not ours to query)."""
+    ctypes, wintypes = _win()
+    k32 = ctypes.WinDLL("kernel32")
+    k32.OpenProcess.restype = wintypes.HANDLE
+    h = k32.OpenProcess(0x1000, False, pid)                     # QUERY_LIMITED_INFORMATION
+    if not h:
+        return 0
+    try:
+        times = [wintypes.FILETIME() for _ in range(4)]
+        if not k32.GetProcessTimes(h, *(ctypes.byref(t) for t in times)):
+            return 0
+        return times[0].dwHighDateTime << 32 | times[0].dwLowDateTime
+    finally:
+        k32.CloseHandle(h)
+
+
 def tree(root_pid):
-    """root_pid and all its descendants: [(pid, exe name)]."""
+    """root_pid and all its descendants: [(pid, exe name)]. A process that
+    started before the parent it names is not its child: its parent ended and
+    Windows reused the PID (tools/process_listeners.py, descendants; found in
+    v0.5.0-preview.9's release evidence). Otherwise another program's process
+    could be measured as the app's."""
     table = processes()
     kids = {}
     for pid, (ppid, _) in table.items():
-        kids.setdefault(ppid, []).append(pid)
+        if pid != ppid:
+            kids.setdefault(ppid, []).append(pid)
+    born = {}
+
+    def started(pid):
+        if pid not in born:
+            born[pid] = created(pid)
+        return born[pid]
     seen, todo = [], [root_pid]
     while todo:
         pid = todo.pop()
         if pid in table and pid not in seen:
             seen.append(pid)
-            todo += kids.get(pid, [])
+            for kid in kids.get(pid, []):
+                parent_at, kid_at = started(pid), started(kid)
+                if not (parent_at and kid_at and kid_at < parent_at):
+                    todo.append(kid)
     return [(pid, table[pid][1]) for pid in seen]
 
 

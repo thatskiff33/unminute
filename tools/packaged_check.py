@@ -100,9 +100,10 @@ import time
 from ctypes import wintypes
 from pathlib import Path
 
-# evidence.py, residue.py and windows_powershell.py, also under -I
+# evidence.py, process_listeners.py, residue.py and windows_powershell.py, also under -I
 sys.path.append(str(Path(__file__).resolve().parent))
 import evidence  # noqa: E402
+import process_listeners  # noqa: E402
 import residue  # noqa: E402
 import session_state  # noqa: E402
 import windows_powershell  # noqa: E402
@@ -182,21 +183,12 @@ def cpu_seconds(pid):
 
 
 def tree(root_pid):
-    # Windows PowerShell by full path, with a minimal environment (#237).
-    out = windows_powershell.run("Get-CimInstance Win32_Process | ForEach-Object "
-                                 "{ \"$($_.ProcessId) $($_.ParentProcessId)\" }").stdout
-    kids = {}
-    for line in out.splitlines():
-        parts = line.split()
-        if len(parts) == 2:
-            kids.setdefault(int(parts[1]), []).append(int(parts[0]))
-    seen, todo = [], [root_pid]
-    while todo:
-        p = todo.pop()
-        if p not in seen:
-            seen.append(p)
-            todo += kids.get(p, [])
-    return seen
+    """The root's PID and its descendants', root first. A process that names
+    the root (or a descendant) as its parent but started before it is not
+    counted: its PID was reused (tools/process_listeners.py, descendants), and
+    the check ends this tree with taskkill, so it must never take in another
+    program's process."""
+    return list(process_listeners.descendants(process_listeners.processes(), root_pid))
 
 
 def running(pid):
@@ -858,6 +850,7 @@ def record(ws, pc, base):
     bridge = api.make_api(ws, lambda: None, confirm=confirm)
     before = len(ws.meetings())
     required = ws.consent_required()
+    offered = ws.computer_audio_offered()       # as the bridge reads it (#554)
     r = bridge.start_recording(0, pc.SYNTHETIC_DEVICE["name"])
     if not r.get("ok"):
         return {"error": "the recording did not start: " + str(r.get("error"))[:200]}
@@ -865,7 +858,7 @@ def record(ws, pc, base):
     rid = rec.folder.name
     out["consent"] = pc.consent_outcome(required, rec.journal.get("consent"), list(asked),
                                         consent.RECORDING_TITLE,
-                                        consent.valid_recording_record)
+                                        consent.valid_recording_record, offered)
     asked.clear()
     seconds = wait_seconds(ws, 8)
     out["recording_windows"] = recording_windows(pc.synthetic_blocks(), base)
