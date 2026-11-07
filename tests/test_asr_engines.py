@@ -540,7 +540,31 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(list(segs), [ae.Segment(0.0, 1.0, "Hi.", ((0.1, 0.4, " Hi."),))])
         self.assertEqual(duration, 42.0)
         self.assertEqual(fw.kw, {"language": "en", "vad_filter": True, "beam_size": 5,
-                                 "word_timestamps": True})
+                                 "word_timestamps": True,
+                                 "initial_prompt": ae.WHISPER_PROMPT})
+
+    def test_whisper_starts_every_chunk_with_a_punctuated_prompt(self):
+        # #553: each ~45 s chunk is transcribed cold, and without a prompt
+        # Whisper wrote about a third of chunks on public meetings in lower
+        # case with no punctuation at all. Every call gets the same short,
+        # punctuated prompt, so no chunk depends on another's text.
+        calls = []
+
+        class Info:
+            duration = 1.0
+
+        class FakeWhisper:
+            def transcribe(self, audio, **kw):
+                calls.append(kw.get("initial_prompt"))
+                return iter(()), Info()
+
+        engine = ae.WhisperEngine(FakeWhisper(), "large-v3-turbo", "int8", "en")
+        for _ in range(3):
+            engine.transcribe("x.wav")
+        self.assertEqual(calls, [ae.WHISPER_PROMPT] * 3)
+        prompt = ae.WHISPER_PROMPT
+        self.assertTrue(prompt[:1].isupper() and prompt.rstrip().endswith("."), prompt)
+        self.assertLessEqual(len(prompt.split()), 6, "keep the prompt short (#553)")
 
     def test_parakeet_refuses_to_load_incomplete_install(self):
         with tempfile.TemporaryDirectory() as tmp:

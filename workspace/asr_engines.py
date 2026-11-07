@@ -1142,6 +1142,16 @@ def _token_words(start, end, tokens, timestamps):
     return words
 
 
+# Every Whisper call starts from this short, punctuated prompt (#553). The app
+# transcribes a meeting in chunks of about 45 s (workspace/chunking.py), each
+# with no text before it, and without a prompt Whisper wrote about a third of
+# the chunks of public AMI meetings in lower case with no punctuation at all.
+# A fixed prompt keeps every chunk independent of the others' text (a prompt
+# from the previous chunk spread one unpunctuated chunk to the next). Chosen
+# on public audio only: docs/ENGINE_EVALUATION.md "Whisper punctuation by chunk".
+WHISPER_PROMPT = "Okay. Let's begin."
+
+
 class WhisperEngine:
     """faster-whisper behind the shared interface, always with word times:
     chunk ownership is decided per word."""
@@ -1163,7 +1173,7 @@ class WhisperEngine:
         """`audio` is a path or a 16 kHz float32 waveform. Returns (segments, duration)."""
         segments, info = self.model.transcribe(
             audio, language=self.language, vad_filter=True, beam_size=self.beam_size,
-            word_timestamps=True)
+            word_timestamps=True, initial_prompt=WHISPER_PROMPT)
         return (Segment(s.start, s.end, s.text.strip(),
                         tuple((w.start, w.end, w.word) for w in (s.words or ())))
                 for s in segments), info.duration

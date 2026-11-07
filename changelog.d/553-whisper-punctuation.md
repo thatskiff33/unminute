@@ -1,0 +1,1 @@
+- **Whisper transcripts keep their capitals and punctuation.** Whisper large-v3 turbo and large-v3 could write whole stretches of about 45 seconds in lower case with no punctuation, often from partway through a meeting. Each stretch now starts from a short punctuated prompt, so the formatting holds to the end. Parakeet is not affected.

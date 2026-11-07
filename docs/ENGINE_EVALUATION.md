@@ -239,6 +239,32 @@ Through Unminute's own path (45-second parts with context, `workspace/chunking.p
 
 For measurement: measure Whisper through the app's parts, as the whole-meeting test above did, or record the windows that fell back. Never compare single one-call runs. A part that does fall back is still random: through the parts with speech detection off, one window in 49 fell back.
 
+## Whisper punctuation by chunk (#553)
+
+A user's transcript of a read script, made with Whisper large-v3 turbo, lost its capitals and punctuation partway through (#553). Measured 7 November 2026 on an Intel Core i7-12700 desktop (12 cores, 32 GB, Windows 11), on the processor at int8 with 8 threads, one run per setting, through the app's own path (`workspace/chunking.py` parts, `WhisperEngine`, word ownership), on public AMI headset-mix meetings (CC BY 4.0) scored against the AMI manual words as above. Only counts and error rates were looked at.
+
+**Cause.** Each part of about 45 seconds is transcribed with no text before it. Without a prompt, Whisper wrote whole parts in lower case with no punctuation: 8 of 24 parts of ES2004a, 12 of 52 of ES2004b and 23 of 51 of ES2004c (43 of 127 in all). The same audio in one call had punctuation throughout. A recording of about 2 minutes has three parts, with boundaries near 0:47 and 1:33, which is where the user's transcript changed.
+
+**Settings tried** (ES2004a and ES2004b to choose; ES2004c held out and run only for the settings still in the running):
+
+| Setting | Parts with no punctuation | Word error rate, ES2004a / b / c |
+| --- | --- | --- |
+| No prompt (before) | 8 / 12 / 23 | 22.10% / 18.18% / 19.70% |
+| Fixed prompt "Okay. Let's begin." (chosen) | 1 / 0 / 0 | 22.62% / 18.93% / 19.78% |
+| Fixed prompt of three sentences | 0 / 0 / not run | 24.64% / 19.37% / not run |
+| The previous part's last 200 characters | 0 / 37 / not run | 20.87% / 17.90% / not run |
+| The previous part's text when it has capitals and full stops, otherwise the long fixed prompt | 0 / 0 / 0 | 20.60% / 18.93% / 19.67% |
+| One call for the whole meeting (reference only, see #374) | 0 / 0 / 0 | 20.08% / 17.28% / 17.69% |
+
+- Pooled over the three meetings, the chosen prompt moved the word error rate from 19.45% to 19.88%; on the held-out meeting from 19.70% to 19.78%.
+- The previous part's text spreads a fault: once one part comes out without punctuation, its text prompts the next one the same way (37 of 52 parts on ES2004b). So a prompt never carries another part's text.
+- The mixed setting had the best error rate, but Whisper then returned passages about two and a half times longer (199 against 496 on ES2004c). The app gives each passage one speaker, so longer passages risk wrong speaker names. With the chosen prompt, passages stayed close to their earlier length (434 against 496). It would also have carried transcript text from one part to the next through the worker.
+- The prompt's words did not appear in any transcript (counted against the reference).
+
+**Not fixed here.** A part boundary often falls inside a sentence (on ES2004c, 33 of 50 boundaries before the change and 23 of 50 with the chosen prompt; 18 of 23 on ES2004a before), so a sentence can still be split over two passages there. Joining them safely is a separate change (#553 follow-up).
+
+**Limits.** One desktop, one run per setting, three meetings of one AMI series (the same four people), headset audio only, turbo only (large-v3 was not run; it takes the same prompt). The prompt was chosen from two candidates on two of the meetings.
+
 ## Limits
 
 - Public datasets only. Some models may have been trained on AMI; this was not checked. Treat these results as a filter, not proof of performance on New Zealand business meetings.
