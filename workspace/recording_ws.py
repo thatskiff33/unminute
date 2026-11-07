@@ -600,8 +600,12 @@ class RecordingMixin:
             self._draft_mix(rec, session)
         try:
             # D4: one heavy model at a time. The main worker lets go of a model
-            # it may still hold (idle) before the draft worker loads one.
+            # it may still hold (idle) before the draft worker loads one; its
+            # companions on the graphics card end side by side (#552). How long
+            # that took is kept for the session's diagnostics record.
+            began = time.monotonic()
             self.handle.shutdown()
+            session.wait_s = round(time.monotonic() - began, 1)
             session.start()
         except Exception as exc:
             self.log.incident("drafts", exc)      # type name and code frames, never its text (P3)

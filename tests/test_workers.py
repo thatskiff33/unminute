@@ -590,6 +590,31 @@ class WorkerEndTests(unittest.TestCase):
         self.assertEqual(worker.END_WAIT_S, clock[0])        # not once for each
         self.assertEqual([None] * 3, [h._proc for h in handles])
 
+    def test_shutdown_ends_its_workers_side_by_side_and_waits_for_all(self):
+        # #552: a recording's drafts wait for this; a worker on the graphics card
+        # can take a while to let go of its model. The wait is the slowest
+        # worker's, not the sum, and none is left running (D4).
+        import time as real_time
+        handles = [self.h, self.h.gpu_worker(self.tmp.name),
+                   self.h.whisper_gpu_worker(self.tmp.name, "whisper")]
+        ended = []
+
+        def slow_own(h):
+            def run():
+                real_time.sleep(1.0)
+                ended.append(h)
+            return run
+        patches = [mock.patch.object(h, "_shutdown_own", slow_own(h)) for h in handles]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        began = real_time.monotonic()
+        self.h.shutdown()
+        took = real_time.monotonic() - began
+        self.assertCountEqual(ended, handles)               # every one ended first
+        self.assertGreaterEqual(took, 0.95)
+        self.assertLess(took, 2.0, "the workers ended one after another")   # 3 s in turn
+
     def test_stop_now_waits_briefly_for_all_its_workers_together(self):
         # It runs while the app holds its own lock (pause, discard).
         from workspace import worker

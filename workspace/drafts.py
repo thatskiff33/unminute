@@ -144,6 +144,10 @@ AUDIO_CHOICES = (MICROPHONE, MIX)
 # Session states (what the page part will show, #104 slice 3):
 STARTING, RUNNING, BATTERY, FAILED, UNAVAILABLE, STOPPED = (
     "starting", "running", "battery", "failed", "unavailable", "stopped")
+# While the session waits for processing to let go of its models before the
+# draft worker starts (#552: a recording takes precedence, the user's
+# decision DEC-096), so the draft area never looks stuck.
+WAITING_NOTE = "Pausing processing so draft text can start. The recording is running."
 NOTES = {
     STARTING: "Getting draft text ready.",
     BATTERY: "Draft text is paused while on battery. The recording carries on.",
@@ -783,6 +787,11 @@ class DraftSession:
         self._phrase_count = 0          # phrases kept, not counting skipped notes
         self._last_end = 0.0            # where the newest phrase ends (seconds)
         self.load_s = None
+        # #552: open() until start(), while the main worker and its
+        # companions let go of their models (Workspace._start_drafts); wait_s
+        # is how long that took, for the session's diagnostics record.
+        self.waiting = False
+        self.wait_s = None
         self.description = None
         self._proc = self._conn = None
         self._stopped = False
@@ -872,10 +881,12 @@ class DraftSession:
             if self._stopped:
                 return False
             self._feeding = True
+            self.waiting = True
             return True
 
     def start(self):
         with self._lock:
+            self.waiting = False
             if self._stopped:
                 return False
             self._start_process()
@@ -974,7 +985,7 @@ class DraftSession:
                            skipped_s=round(self.skipped_s, 1),
                            dropped_s=round(self.dropped_s, 1),
                            computer_dropped_s=round(self.computer_dropped_s, 1),
-                           load_s=self.load_s)
+                           load_s=self.load_s, wait_s=self.wait_s)
         self._ended.set()
 
     @staticmethod
@@ -1237,6 +1248,8 @@ class DraftSession:
         load because IT's copy is damaged (#464)."""
         if self.state == UNAVAILABLE and self.machine_damaged:
             return REASONS["machine"]
+        if self.state == STARTING and self.waiting:
+            return WAITING_NOTE
         return NOTES.get(self.state)
 
     def _draft_ready(self):

@@ -845,6 +845,79 @@ class WorkspaceDraftTests(DraftWorkspaceCase):
 
     # -- on -------------------------------------------------------------------------
 
+    def start_during(self, model, speaker, kind, gpu_speakers=False):
+        """#552: import a synthetic meeting, wait until processing is inside
+        kind's step, start a recording with drafts on; how long the start took
+        and how long until drafts ran."""
+        import wave
+        self.ws.settings.update(model=FAKE + model, speakers=True, live_drafts=True)
+        self.ws.speaker_model = FAKE + speaker
+        if gpu_speakers:      # speaker identification on the graphics card's worker
+            site = str(self.root / "gpu-site")
+            p = mock.patch.object(type(self.ws), "_speaker_device", lambda ws: ("cuda", site))
+            p.start()
+            self.addCleanup(p.stop)
+        wav = self.root / "meeting.wav"
+        with wave.open(str(wav), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16000)
+            w.writeframes((np.random.default_rng(1).standard_normal(60 * 16000) * 300)
+                          .astype("<i2").tobytes())
+        self.ws.start()
+        self.assertEqual(self.ws.import_paths([str(wav)])["accepted"], 1)
+        self.assertTrue(wait_for(lambda: self.ws._busy and self.ws._busy[1] == kind, 120))
+        time.sleep(1.0)                                  # well inside the step
+        began = time.monotonic()
+        self.ws.start_recording(3, consent=consent.recording_record(
+            sources=self.ws.recording_sources(), clock=lambda: 1000.0))
+        started = time.monotonic() - began
+        self.assertTrue(wait_for(self.running, 60))
+        return started, time.monotonic() - began
+
+    def test_a_recording_started_during_transcription_starts_at_once(self):
+        # The step in progress is stopped and redone after the recording (DEC-096).
+        started, drafting = self.start_during("sleepy", "fake_diarizer", "transcribe")
+        self.assertLess(started, 2.0)
+        self.assertLess(drafting, 15.0)
+        self.assertIsNone(self.ws._busy)
+        self.assertIsNone(self.ws._next_work())          # and waits for the recording
+        self.ws.stop_recording()
+
+    def test_a_recording_started_during_speakers_on_the_card_starts_at_once(self):
+        started, drafting = self.start_during("sentences", "diarizer_sleepy", "speakers",
+                                              gpu_speakers=True)
+        self.assertLess(started, 2.0)
+        self.assertLess(drafting, 15.0)
+        self.assertIsNone(self.ws._busy)
+        self.ws.stop_recording()
+
+    def test_while_processing_lets_go_the_draft_area_says_so_and_the_wait_is_logged(self):
+        # #552: a recording takes precedence (the user's decision DEC-096); while
+        # the workers let go of their models, the draft area names the wait
+        # instead of looking stuck, and the session's record says how long it took.
+        seen = []
+        real_shutdown = self.ws.handle.shutdown
+
+        def slow_shutdown():
+            time.sleep(0.5)
+            seen.append(self.ws.recording_draft())
+            real_shutdown()
+        with mock.patch.object(self.ws.handle, "shutdown", side_effect=slow_shutdown):
+            self.record()
+            self.assertTrue(wait_for(self.running))
+        [during] = seen
+        self.assertEqual((during["state"], during["note"]), (drafts.STARTING, drafts.WAITING_NOTE))
+        self.assertNotEqual(self.ws.recording_draft()["note"], drafts.WAITING_NOTE)   # running now
+        session = self.ws._drafts
+        self.assertGreaterEqual(session.wait_s, 0.5)
+        self.ws.stop_recording()
+        self.assertTrue(self.ws.wait_idle(120))
+        from workspace import diag
+        [record] = [r for r in diag.shareable_records(self.ws.root / "logs")
+                    if r.get("kind") == "drafts"]
+        self.assertGreaterEqual(record["wait_s"], 0.5)      # kept by Copy diagnostics
+
     def test_drafts_follow_the_recording_and_go_at_stop_before_processing(self):
         order = []
         real_shutdown, real_start = self.ws.handle.shutdown, drafts.DraftSession.start
