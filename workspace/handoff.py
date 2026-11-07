@@ -522,14 +522,34 @@ def _one_line(text):
 
 def _redactor(phrases):
     """Whole words only ("Ann" does not touch "Annual"), any spacing between
-    words, case-insensitive; longest phrase first."""
+    words, case-insensitive. Every match of every phrase is redacted, even
+    where two overlap ("call John" and "John Smith" in "call John Smith"),
+    or where one phrase's matches overlap ("na na" in "na na na"): their
+    spans are merged and each merged span becomes one marker, so no part of
+    a phrase is left showing (#561 review: a joined line can bring such
+    phrases together). Returns the text and the number of markers."""
     phrases = [p for p in (_one_line(p) for p in phrases) if p]   # also ones saved before
     if not phrases:
         return lambda text: (text, 0)
-    parts = [r"\s+".join(re.escape(w) for w in p.split())
-             for p in sorted(phrases, key=len, reverse=True)]
-    pattern = re.compile(r"(?<!\w)(?:" + "|".join(parts) + r")(?!\w)", re.IGNORECASE)
-    return lambda text: pattern.subn(REDACTED, text)
+    # A lookahead finds a match at every start position, overlapping ones too.
+    patterns = [re.compile(r"(?<!\w)(?=(" + r"\s+".join(re.escape(w) for w in p.split())
+                           + r")(?!\w))", re.IGNORECASE) for p in phrases]
+
+    def redact(text):
+        spans = sorted((m.start(1), m.end(1)) for pat in patterns
+                       for m in pat.finditer(text) if m.end(1) > m.start(1))
+        merged = []
+        for start, end in spans:
+            if merged and start <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end])
+        out, at = [], 0
+        for start, end in merged:
+            out += [text[at:start], REDACTED]
+            at = end
+        return "".join(out) + text[at:], len(merged)
+    return redact
 
 
 def _stamp(t):

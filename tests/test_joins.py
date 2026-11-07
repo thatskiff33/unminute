@@ -264,6 +264,17 @@ class HandoffJoinTests(unittest.TestCase):
         self.assertEqual("[0:00] **Speaker 1:** We agreed the budget of 40,000 dollars with "
                          "Speaker 1 present.", lines[0])
 
+    def test_overlapping_phrases_across_a_join_leave_nothing_showing(self):
+        # #561 review: "dollars with Aroha" (ending one passage) and "Aroha
+        # Smith" (across the join) overlap; the joined line must not show
+        # "Smith", as redacting each passage on its own would not have.
+        self.handoff.set_options(self.store, self.mid, [], ["dollars with Aroha", "Aroha Smith"])
+        out, lines = self.body()
+        R = self.handoff.REDACTED
+        self.assertEqual(f"[0:00] **{R}:** We agreed the budget of 40,000 {R} present.", lines[0])
+        self.assertNotIn("Smith", out["combined"])
+        self.assertNotIn("Aroha", out["combined"])
+
     def test_leaving_out_one_passage_of_a_line_leaves_out_the_whole_line(self):
         self.handoff.set_options(self.store, self.mid, [self.ids[1]], [])
         out, lines = self.body()
