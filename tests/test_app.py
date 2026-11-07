@@ -1722,7 +1722,8 @@ class NativeConfirmationTests(unittest.TestCase):
 class ConfirmDialogRuleTests(unittest.TestCase):
     """The rules of the window the app draws for a question with choices
     (#554), from the pure functions workspace/shell.py's _ask follows. The
-    WinForms window itself opens only in tools/workspace_ui_check.py."""
+    WinForms window itself opens only in tools/workspace_ui_check.py
+    (meeting_kind_checks)."""
 
     def setUp(self):
         from workspace import consent, shell

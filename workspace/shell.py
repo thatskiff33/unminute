@@ -1666,15 +1666,17 @@ def _ask(window, question, theme):
                 check.GotFocus += EventHandler(lambda s, e: check.Invalidate())
                 check.LostFocus += EventHandler(lambda s, e: check.Invalidate())
 
-            def chose(sender, args):
+            def chose(sender, index):
                 # A kind chosen or changed: the body and statement follow it,
                 # the statement must be ticked again (it may name other
-                # people), and the wait starts again, as for a tick.
+                # people), and the wait starts again, as for a tick. The index
+                # is bound per radio button, not looked up from the sender:
+                # two .NET wrappers of one control need not compare equal.
                 for r in radios:
                     r.Invalidate()
                 if not sender.Checked:
                     return
-                picked["index"] = radios.index(sender)
+                picked["index"] = index
                 shown = _confirm_view(question, picked["index"])
                 body.Text = shown["body"]
                 dialog.AccessibleDescription = shown["body"]
@@ -1684,8 +1686,8 @@ def _ask(window, question, theme):
                     check.Enabled = shown["check_enabled"]
                     check.Invalidate()
                 restart()
-            for radio in radios:
-                radio.CheckedChanged += EventHandler(chose)
+            for i, radio in enumerate(radios):
+                radio.CheckedChanged += EventHandler(lambda s, e, i=i: chose(s, i))
             dialog.KeyDown += KeyEventHandler(lambda s, e: restart() if not act.Enabled else None)
             watched = ([dialog, content, cancel, body, title, icon] + ([check] if check else [])
                        + ([kinds, *radios] if kinds else []))

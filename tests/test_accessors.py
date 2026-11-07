@@ -626,8 +626,17 @@ class UiCheckNativeVerdictTests(unittest.TestCase):
                   "open_after_keys": [True], "clicks_restart_wait": True,
                   "open_after_clicks": [True], "enter_on_statement": False,
                   "esc_on_statement": False, "open_after_esc": [False],
-                  "invoke_after_enabled_wait": True, "open_after_quick_invoke": [True]}
+                  "invoke_after_enabled_wait": True, "open_after_quick_invoke": [True],
+                  # The kinds of meeting (#554).
+                  "kind_in_person": ["microphone"], "kind_online": ["microphone", "computer"],
+                  "kind_needed": ["microphone"], "open_without_kind": [True],
+                  "kind_change_unticks": ["microphone", "computer"],
+                  "open_after_change": [True], "kind_change_restarts": ["microphone"],
+                  "open_after_quick_change": [True],
+                  "kind_only_online": ["microphone", "computer"], "policy_off": True,
+                  "policy_off_question": True, "kind_by_space": ["microphone"]}
         report.update({f"pressed_{n}": True for n in range(1, 11)})
+        report.update({f"pressed_k{n}": True for n in range(1, 9)})
         return report
 
     def test_every_rule_holding_passes(self):
@@ -635,7 +644,7 @@ class UiCheckNativeVerdictTests(unittest.TestCase):
 
     def test_an_empty_report_fails_on_every_rule(self):
         # The window check stopped early (an error): nothing passes by default.
-        self.assertEqual(10, len(self.ui.native_problems({})))
+        self.assertEqual(18, len(self.ui.native_problems({})))
 
     def test_each_problem_is_named(self):
         cases = [
@@ -658,6 +667,31 @@ class UiCheckNativeVerdictTests(unittest.TestCase):
             ("invoke_after_enabled_wait", False, "Invoke without the focus"),
             ("pressed_9", False, "Esc on the statement"),
             ("pressed_10", False, "Invoke without the focus"),
+            # The kinds of meeting (#554): a wrong kind, a plain yes, an
+            # answer before a kind or after a change, or a script not pressed.
+            ("kind_in_person", ["microphone", "computer"], "In person meeting"),
+            ("kind_in_person", True, "In person meeting"),
+            ("pressed_k1", False, "In person meeting"),
+            ("kind_online", ["microphone"], "Online meeting"),
+            ("pressed_k2", False, "Online meeting"),
+            ("open_without_kind", [False], "before a kind was chosen"),
+            ("kind_needed", False, "before a kind was chosen"),
+            ("pressed_k3", False, "before a kind was chosen"),
+            ("open_after_change", [False], "did not untick"),
+            ("kind_change_unticks", ["microphone"], "did not untick"),
+            ("pressed_k4", False, "did not untick"),
+            ("open_after_quick_change", [False], "start the wait again"),
+            ("kind_change_restarts", ["microphone", "computer"], "start the wait again"),
+            ("pressed_k5", False, "start the wait again"),
+            ("kind_only_online", ["microphone"], "kind-only question"),
+            ("pressed_k6", False, "kind-only question"),
+            ("policy_off", ["microphone", "computer"], "without computer audio"),
+            ("policy_off", False, "without computer audio"),
+            ("policy_off_question", False, "without computer audio"),
+            ("pressed_k7", False, "without computer audio"),
+            ("kind_by_space", ["microphone", "computer"], "Space on a kind"),
+            ("kind_by_space", False, "Space on a kind"),
+            ("pressed_k8", False, "Space on a kind"),
         ]
         for key, value, problem in cases:
             with self.subTest(key=key, value=value):

@@ -925,9 +925,9 @@ class ConsentOutcomeTests(unittest.TestCase):
         self.consent = consent
         self.title = consent.RECORDING_TITLE
 
-    def outcome(self, required, record, asked):
+    def outcome(self, required, record, asked, kind_offered=True):
         return perf_check.consent_outcome(required, record, asked, self.title,
-                                          self.consent.valid_recording_record)
+                                          self.consent.valid_recording_record, kind_offered)
 
     def test_required_needs_a_valid_record_and_only_the_recording_question(self):
         record = self.consent.recording_record()
@@ -939,11 +939,16 @@ class ConsentOutcomeTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.outcome(True, record, [self.title, self.consent.DISCARD_TITLE])
 
-    def test_off_by_policy_accepts_no_record_and_no_question_or_only_the_kind(self):
-        self.assertEqual("off by policy", self.outcome(False, None, []))
+    def test_off_by_policy_asks_the_kind_once_only_where_online_is_offered(self):
         # #554 (DEC-099 decision 2): where computer audio is allowed, the
-        # recording question still asks the kind of meeting, with no record.
+        # recording question still asks the kind of meeting, with no record;
+        # where it is not, nothing is asked at all.
         self.assertEqual("off by policy", self.outcome(False, None, [self.title]))
+        self.assertEqual("off by policy", self.outcome(False, None, [], kind_offered=False))
+        with self.assertRaises(RuntimeError):
+            self.outcome(False, None, [])                         # the kind was not asked
+        with self.assertRaises(RuntimeError):
+            self.outcome(False, None, [self.title], kind_offered=False)
         with self.assertRaises(RuntimeError):
             self.outcome(False, None, [self.title, self.title])
         with self.assertRaises(RuntimeError):

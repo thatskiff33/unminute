@@ -704,20 +704,22 @@ def consent_answerer(recording_title):
     return confirm, asked
 
 
-def consent_outcome(required, record, asked, recording_title, valid):
+def consent_outcome(required, record, asked, recording_title, valid, kind_offered):
     """How the recording was confirmed, checked against managed policy:
     "asked and recorded" when the confirmation is required (only the
     recording question was asked and the record is valid), "off by policy"
-    when policy turns it off (no record; nothing asked, or only the recording
-    question, which then asks just the kind of meeting where policy allows
-    computer audio: #554, DEC-099 decision 2). Raises otherwise."""
+    when policy turns it off (no record). With it off, the recording question
+    still asks just the kind of meeting where "Online meeting" is offered
+    (kind_offered: the app's computer_audio_offered(); #554, DEC-099 decision
+    2), so it must have been asked exactly once then, and never otherwise.
+    Raises otherwise."""
     if required:
         if not valid(record):
             raise RuntimeError("the recording has no valid consent record")
         if asked != [recording_title]:
             raise RuntimeError(f"unexpected questions: {asked}")
         return "asked and recorded"
-    if record is not None or asked not in ([], [recording_title]):
+    if record is not None or asked != ([recording_title] if kind_offered else []):
         raise RuntimeError(f"the confirmation is off by policy, yet asked: {asked}")
     return "off by policy"
 
@@ -2580,6 +2582,7 @@ def child(args):
                              " return !!b && !b.hidden && !b.disabled; })()", bool,
                      "the Record button was not ready", waits["button"])
             required = ws.consent_required()      # as the bridge reads it on the click
+            offered = ws.computer_audio_offered()
             window.evaluate_js("document.getElementById('rec-start').click()")
             wait_for(window, "!document.getElementById('rec-card').hidden", bool,
                      "the recording did not start", waits["started"])
@@ -2587,7 +2590,8 @@ def child(args):
             if rec is None:
                 raise RuntimeError("the recording did not open")
             outcome = consent_outcome(required, rec.journal.get("consent"), list(asked),
-                                      consent.RECORDING_TITLE, consent.valid_recording_record)
+                                      consent.RECORDING_TITLE, consent.valid_recording_record,
+                                      offered)
             asked.clear()
             end = time.monotonic() + waits["audio"]
             while (recording_now() or {}).get("seconds", 0) < 1:
