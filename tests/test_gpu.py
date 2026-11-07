@@ -1127,7 +1127,9 @@ class WorkspaceWhisperGpuTests(unittest.TestCase):
         import time
 
         from workspace import consent, recorder
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        here = str(Path(__file__).resolve().parent)
+        sys.path.insert(0, here)
+        self.addCleanup(sys.path.remove, here)
         from test_recorder import WorkspaceRecordingTests, opener
         holder = {}
         devices = mock.patch.object(recorder, "list_devices",

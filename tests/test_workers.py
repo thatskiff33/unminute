@@ -615,6 +615,39 @@ class WorkerEndTests(unittest.TestCase):
         self.assertGreaterEqual(took, 0.95)
         self.assertLess(took, 2.0, "the workers ended one after another")   # 3 s in turn
 
+    def test_shutdown_raises_a_workers_error_only_once_all_have_ended(self):
+        # Review of #555: an error from a companion still reaches the caller (who
+        # then marks drafts failed), and none is left ending when it does.
+        import time as real_time
+        gpu = self.h.gpu_worker(self.tmp.name)
+        whisper = self.h.whisper_gpu_worker(self.tmp.name, "whisper")
+        ended = []
+
+        def fails():
+            raise OSError("could not end")
+
+        def slow():
+            real_time.sleep(0.5)
+            ended.append("whisper")
+        for h, fn in ((gpu, fails), (whisper, slow), (self.h, lambda: ended.append("main"))):
+            p = mock.patch.object(h, "_shutdown_own", fn)
+            p.start()
+            self.addCleanup(p.stop)
+        with self.assertRaisesRegex(OSError, "could not end"):
+            self.h.shutdown()
+        self.assertCountEqual(ended, ["main", "whisper"])     # both had ended first
+        # The worker's own error too: raised only after its companions have ended.
+        ended.clear()
+        p = mock.patch.object(self.h, "_shutdown_own", fails)
+        p.start()
+        self.addCleanup(p.stop)
+        q = mock.patch.object(gpu, "_shutdown_own", lambda: ended.append("gpu"))
+        q.start()
+        self.addCleanup(q.stop)
+        with self.assertRaisesRegex(OSError, "could not end"):
+            self.h.shutdown()
+        self.assertCountEqual(ended, ["gpu", "whisper"])
+
     def test_stop_now_waits_briefly_for_all_its_workers_together(self):
         # It runs while the app holds its own lock (pause, discard).
         from workspace import worker
