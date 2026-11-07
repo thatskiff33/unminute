@@ -255,7 +255,9 @@ def find_dialog(title, timeout=15):
 
 
 def dialog_button(hwnd, text):
-    """A button inside the dialog, by its text (they sit in layout panels)."""
+    """A button inside the dialog, by its text (they sit in layout panels).
+    The buffer holds the recording question's statements whole (over 64
+    characters), so a long text matches only itself (#554)."""
     import ctypes
     from ctypes import wintypes
     user32 = ctypes.WinDLL("user32")
@@ -263,8 +265,8 @@ def dialog_button(hwnd, text):
 
     @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     def each(child, _):
-        buf = ctypes.create_unicode_buffer(64)
-        user32.GetWindowTextW(child, buf, 64)
+        buf = ctypes.create_unicode_buffer(512)
+        user32.GetWindowTextW(child, buf, 512)
         if buf.value == text:
             found.append(child)
             return False
@@ -302,6 +304,8 @@ def press(script, title, seen=None):
     - "toggle-on" posts BM_CLICK, which WinForms turns into the check box's
       Click with no key or mouse input. Only the tick itself (CheckedChanged)
       can then restart the wait, so the "tick first" script shows that it does.
+      On a kind of meeting's radio button (#554) it chooses that kind the same
+      way (a RadioButton's Click checks it), covered or not.
     The action button is not affected: the app answers its mouse-up from the
     button's own client rectangle (workspace/shell.py, mouse_up_on_action).
     tests/test_evidence.py shows all of this on a stand-in form: a posted
@@ -424,7 +428,9 @@ def native_checks(window, ws, mid):
     has been enabled for the wait; a key or click before the action is
     available, and a tick, start the wait again; the bridge reports a Cancel without
     acting; and a click on the action works after the wait. The recording
-    indicator changes the title and the taskbar overlay and restores them."""
+    question's kinds of meeting (#554) are checked by meeting_kind_checks. The
+    recording indicator changes the title and the taskbar overlay and restores
+    them."""
     import ctypes
     import threading
 
@@ -547,6 +553,7 @@ def native_checks(window, ws, mid):
          "invoke-on:Confirm"], invoked["title"],
         lambda: shell.native_confirm(window, invoked), seen_invoke)
     out["open_after_quick_invoke"] = seen_invoke
+    out.update(meeting_kind_checks(run_with, window))
     form = window.native
     hwnd = form.Invoke(Func[IntPtr](lambda: form.Handle)).ToInt64()
 
@@ -561,6 +568,97 @@ def native_checks(window, ws, mid):
     out["overlay_off"] = shell.show_recording(window, False)
     time.sleep(0.5)
     out["title_restored"] = caption() == before
+    return out
+
+
+def meeting_kind_checks(run_with, window):
+    """The recording question's kinds of meeting (#554, DEC-099), through the
+    real questions (consent.recording_question) with a title of their own, so
+    only this check's window is pressed. A kind is chosen with "toggle-on"
+    (BM_CLICK: WinForms turns it into the radio button's Click, which chooses
+    it, with no key or mouse input), so only the choice itself can restart the
+    wait. native_confirm's answer is kept as a list (the sources tuple), True
+    or False."""
+    from workspace import consent
+    out = {}
+
+    def answer(result):
+        return list(result) if isinstance(result, tuple) else result
+
+    def question(title, **kw):
+        return dict(consent.recording_question(**kw), title="Workspace UI check: " + title)
+    mic_check = consent.recording_wording(consent.MICROPHONE_ONLY)["check"]
+    both_check = consent.recording_wording(consent.WITH_COMPUTER)["check"]
+    in_person, online = consent.IN_PERSON["label"], consent.ONLINE["label"]
+    start = "click:Start recording"
+    ready = "until-enabled:Start recording"
+    # (a) In person: choose it, tick, start: the microphone alone.
+    q = question("in person")
+    result, out["pressed_k1"] = run_with(
+        ["toggle-on:" + in_person, "toggle-on:" + mic_check, ready, start], q["title"],
+        lambda: shell.native_confirm(window, q))
+    out["kind_in_person"] = answer(result)
+    # (b) Online: the same, the microphone and computer audio.
+    q = question("online")
+    result, out["pressed_k2"] = run_with(
+        ["toggle-on:" + online, "toggle-on:" + both_check, ready, start], q["title"],
+        lambda: shell.native_confirm(window, q))
+    out["kind_online"] = answer(result)
+    # (c) Start long after the window opened, with no kind chosen: still open.
+    # Then choose, tick and start.
+    q = question("no kind yet")
+    seen = []
+    result, out["pressed_k3"] = run_with(
+        ["wait:1.3", start, "open?", "toggle-on:" + in_person, "toggle-on:" + mic_check, ready,
+         start], q["title"], lambda: shell.native_confirm(window, q), seen)
+    out["kind_needed"], out["open_without_kind"] = answer(result), seen
+    # (d) A change of kind after the tick unticks the statement: Start, long
+    # after the change, is ignored until the new statement is ticked.
+    q = question("change unticks")
+    seen = []
+    result, out["pressed_k4"] = run_with(
+        ["toggle-on:" + in_person, "toggle-on:" + mic_check, ready, "toggle-on:" + online,
+         "wait:1.3", start, "open?", "toggle-on:" + both_check, ready, start], q["title"],
+        lambda: shell.native_confirm(window, q), seen)
+    out["kind_change_unticks"], out["open_after_change"] = answer(result), seen
+    # (d) and (e): the question without the consent wording (policy turns the
+    # confirmation off, DEC-099 decision 2) has no statement, so only the
+    # change itself can hold Start back: once Start is enabled, a change of
+    # kind and a Start at once is ignored; after the wait it answers with the
+    # kind now chosen.
+    q = question("change restarts the wait", confirm=False)
+    seen = []
+    result, out["pressed_k5"] = run_with(
+        ["toggle-on:" + online, ready, "toggle-on:" + in_person, start, "open?", ready, start],
+        q["title"], lambda: shell.native_confirm(window, q), seen)
+    out["kind_change_restarts"], out["open_after_quick_change"] = answer(result), seen
+    # (e) The kind alone, Online: answers with the microphone and computer audio.
+    q = question("kind only", confirm=False)
+    result, out["pressed_k6"] = run_with(
+        ["toggle-on:" + online, ready, start], q["title"],
+        lambda: shell.native_confirm(window, q))
+    out["kind_only_online"] = answer(result)
+    # (e) Policy refuses computer audio: no kinds, the microphone wording and
+    # the organisation's line; the action answers True, which the bridge
+    # takes as the microphone alone (consent.question_answer).
+    q = question("computer audio off", computer=False)
+    result, out["pressed_k7"] = run_with(
+        ["toggle-on:" + mic_check, ready, start], q["title"],
+        lambda: shell.native_confirm(window, q))
+    out["policy_off"] = answer(result)
+    out["policy_off_question"] = ("choices" not in q and q.get("detail")
+                                  == consent.COMPUTER_OFF_LINE)
+    # (f) Space on a kind chooses it, as a keyboard user's Space would (posted
+    # to the radio button itself, as "space-on" does for the statement). Tab
+    # and the arrow keys are not scripted: WinForms decides whether a radio
+    # button that takes the focus chooses itself from the keyboard's real
+    # state (GetKeyState), which posted keys do not set, so a script could
+    # neither show nor disprove it (docs/WORKSPACE_DESIGN.md, a manual check).
+    q = question("space chooses")
+    result, out["pressed_k8"] = run_with(
+        ["space-on:" + in_person, "toggle-on:" + mic_check, ready, start], q["title"],
+        lambda: shell.native_confirm(window, q))
+    out["kind_by_space"] = answer(result)
     return out
 
 
@@ -610,6 +708,27 @@ def native_problems(nv):
         ("an Invoke without the focus answered early, or not after the wait",
          nv.get("invoke_after_enabled_wait") is True
          and nv.get("open_after_quick_invoke") == [True] and nv.get("pressed_10")),
+        # The kinds of meeting (#554): each answer is the sources chosen.
+        ("In person meeting did not answer with the microphone alone",
+         nv.get("kind_in_person") == ["microphone"] and nv.get("pressed_k1")),
+        ("Online meeting did not answer with the microphone and computer audio",
+         nv.get("kind_online") == ["microphone", "computer"] and nv.get("pressed_k2")),
+        ("Start answered before a kind was chosen",
+         nv.get("kind_needed") == ["microphone"] and nv.get("open_without_kind") == [True]
+         and nv.get("pressed_k3")),
+        ("a change of kind did not untick the statement",
+         nv.get("kind_change_unticks") == ["microphone", "computer"]
+         and nv.get("open_after_change") == [True] and nv.get("pressed_k4")),
+        ("a change of kind did not start the wait again",
+         nv.get("kind_change_restarts") == ["microphone"]
+         and nv.get("open_after_quick_change") == [True] and nv.get("pressed_k5")),
+        ("the kind-only question did not answer with the kind chosen",
+         nv.get("kind_only_online") == ["microphone", "computer"] and nv.get("pressed_k6")),
+        ("the question without computer audio did not answer with the microphone alone",
+         nv.get("policy_off") is True and nv.get("policy_off_question") is True
+         and nv.get("pressed_k7")),
+        ("Space on a kind of meeting did not choose it",
+         nv.get("kind_by_space") == ["microphone"] and nv.get("pressed_k8")),
     )
     bad.extend("native confirmation: " + rule for rule, ok in rules if not ok)
     return bad

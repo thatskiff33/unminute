@@ -78,9 +78,7 @@ CASES = [
     # of microphone (no board yet: compared with the nearest one, for the
     # owner's look).
     {"name": "recording-switched", "board": "Recording.dc.html", "app": "recording-switched"},
-    # Computer audio (#108): the line under Record, the card's second bar.
-    {"name": "home-computer", "board": "Home.dc.html", "app": "home-computer",
-     "props": {"computer": "true"}},
+    # Computer audio (#108): the recording card's second bar.
     {"name": "recording-computer", "board": "Recording-Computer.dc.html",
      "app": "recording-computer"},
     {"name": "recording-computer-dark", "board": "Recording-Computer-Dark.dc.html",
@@ -118,8 +116,6 @@ CASES = [
     # #104 with #108: the choice of what draft text follows, with computer audio on.
     {"name": "settings-drafts-mix", "board": "Settings.dc.html", "app": "settings-drafts-mix",
      "h": 1320, "props": {"drafts": "mix"}},
-    {"name": "settings-computer", "board": "Settings.dc.html", "app": "settings-computer",
-     "h": 1320, "props": {"computer": "true"}},
     {"name": "downloads", "app": "downloads", "board": "Models.dc.html"},
     # Queued downloads (#366): one running, two waiting; dark; carried on.
     {"name": "downloads-queued", "app": "downloads-queued", "board": "Models-Queued.dc.html",

@@ -530,6 +530,12 @@ class ConsentAnswerTests(unittest.TestCase):
     def test_only_the_recording_question_is_answered_yes(self):
         from workspace import cleanup, consent
         confirm, asked = perf_check.consent_answerer(consent.RECORDING_TITLE)
+        # #554: the kind of meeting is In person (the microphone), the runs' sound.
+        self.assertEqual(confirm(consent.recording_question()), consent.MICROPHONE_ONLY)
+        self.assertEqual(confirm(consent.recording_question(confirm=False)),
+                         consent.MICROPHONE_ONLY)
+        self.assertIs(confirm(consent.recording_question(computer=False)), True)
+        asked.clear()
         self.assertTrue(confirm(consent.recording_question()))
         self.assertFalse(confirm(consent.delete_originals_question("C:/synthetic")))
         self.assertFalse(confirm(consent.discard_question("Synthetic", 0, cleanup.LIMITS)))
@@ -546,8 +552,9 @@ class ConsentAnswerTests(unittest.TestCase):
         # ws.locked is None, and a bare Mock's attribute is not None.
         ws = mock.Mock(locked=None)
         ws.consent_required.return_value = True
-        ws.recording_sources.return_value = consent.MICROPHONE_ONLY    # the perf run's (#108)
-        ws.start_recording.side_effect = lambda index, name, consent=None: {"started": True}
+        ws.computer_audio_offered.return_value = True       # both kinds offered (#554)
+        ws.start_recording.side_effect = (lambda index, name, consent=None, sources=None:
+                                          {"started": True})
         confirm, asked = perf_check.consent_answerer(consent.RECORDING_TITLE)
         before = diag._current
         try:
@@ -560,6 +567,8 @@ class ConsentAnswerTests(unittest.TestCase):
         record = ws.start_recording.call_args.kwargs["consent"]
         self.assertTrue(consent.valid_recording_record(record))
         self.assertEqual("app-window", record["method"])
+        self.assertEqual(consent.MICROPHONE_ONLY,                # In person, as the run records
+                         ws.start_recording.call_args.kwargs["sources"])
 
 
 class StateSequenceTests(unittest.TestCase):
@@ -916,9 +925,9 @@ class ConsentOutcomeTests(unittest.TestCase):
         self.consent = consent
         self.title = consent.RECORDING_TITLE
 
-    def outcome(self, required, record, asked):
+    def outcome(self, required, record, asked, kind_offered=True):
         return perf_check.consent_outcome(required, record, asked, self.title,
-                                          self.consent.valid_recording_record)
+                                          self.consent.valid_recording_record, kind_offered)
 
     def test_required_needs_a_valid_record_and_only_the_recording_question(self):
         record = self.consent.recording_record()
@@ -930,12 +939,24 @@ class ConsentOutcomeTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.outcome(True, record, [self.title, self.consent.DISCARD_TITLE])
 
-    def test_off_by_policy_accepts_no_record_and_no_question(self):
-        self.assertEqual("off by policy", self.outcome(False, None, []))
+    def test_off_by_policy_asks_the_kind_once_only_where_online_is_offered(self):
+        # #554 (DEC-099 decision 2): where computer audio is allowed, the
+        # recording question still asks the kind of meeting, with no record;
+        # where it is not, nothing is asked at all.
+        self.assertEqual("off by policy", self.outcome(False, None, [self.title]))
+        self.assertEqual("off by policy", self.outcome(False, None, [], kind_offered=False))
         with self.assertRaises(RuntimeError):
-            self.outcome(False, None, [self.title])
+            self.outcome(False, None, [])                         # the kind was not asked
+        with self.assertRaises(RuntimeError):
+            self.outcome(False, None, [self.title], kind_offered=False)
+        with self.assertRaises(RuntimeError):
+            self.outcome(False, None, [self.title, self.title])
+        with self.assertRaises(RuntimeError):
+            self.outcome(False, None, [self.consent.DISCARD_TITLE])
         with self.assertRaises(RuntimeError):
             self.outcome(False, self.consent.recording_record(), [])
+        with self.assertRaises(RuntimeError):
+            self.outcome(False, self.consent.recording_record(), [self.title])
 
 
 def drawn_pages(fps=120.0, draws=None, undrawn_ms=None, step_ms=60000.0,

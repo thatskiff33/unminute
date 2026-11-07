@@ -1508,13 +1508,77 @@ class NativeConfirmationTests(unittest.TestCase):
                 mock.patch.object(self.ws, "start_recording", return_value={"ok": 1}) as start:
             self.assertEqual(b.start_recording(3, "Mic")["value"], api.CANCELLED)
             start.assert_not_called()                       # No: nothing starts
-            self.answer = True
+            self.answer = True                              # not a kind of meeting (#554)
+            self.assertEqual(b.start_recording(3, "Mic")["value"], api.CANCELLED)
+            start.assert_not_called()
+            self.answer = consent.MICROPHONE_ONLY           # In person meeting
             self.assertEqual(b.start_recording(3, "Mic")["value"], {"ok": 1})
         self.assertEqual(self.asked[0], consent.recording_question())
         self.assertTrue(self.asked[0]["check"])            # a statement to tick first
         record = start.call_args.kwargs["consent"]
-        self.assertEqual((record["confirmed"], record["wording"]),
-                         (True, consent.RECORDING_WORDING_VERSION))
+        self.assertEqual((record["confirmed"], record["wording"], record["sources"]),
+                         (True, consent.RECORDING_WORDING_VERSION, ["microphone"]))
+        self.assertEqual(start.call_args.kwargs["sources"], consent.MICROPHONE_ONLY)
+
+    # The four ways the bridge asks before a recording (#554, DEC-099), by
+    # policy: the confirmation required or not, computer audio allowed or not.
+
+    def start_with(self, values, answer, invalid=()):
+        """Start a recording through the bridge under these policy values,
+        answering answer; returns start_recording's keyword arguments, or
+        None if it was not called."""
+        from unittest import mock
+        self.ws.policy = policy.PolicySource(reader=lambda: (dict(values), invalid))
+        self.answer = answer
+        with mock.patch.object(self.ws, "check_can_record"), \
+                mock.patch.object(self.ws, "start_recording", return_value={}) as start:
+            self.bridge().start_recording(3, "Mic")
+        return start.call_args.kwargs if start.called else None
+
+    def test_confirmation_with_computer_audio_offers_both_kinds(self):
+        from workspace import consent
+        started = self.start_with({}, consent.WITH_COMPUTER)          # Online meeting
+        [question] = self.asked
+        self.assertEqual([c["label"] for c in question["choices"]],
+                         ["In person meeting", "Online meeting"])
+        self.assertTrue(question["check"])
+        self.assertEqual(started["sources"], consent.WITH_COMPUTER)
+        self.assertEqual(started["consent"]["sources"], ["microphone", "computer"])
+        self.assertTrue(consent.valid_recording_record(started["consent"],
+                                                       consent.WITH_COMPUTER))
+
+    def test_confirmation_without_computer_audio_names_the_microphone_and_the_policy(self):
+        from workspace import consent
+        cases = (({"AllowComputerAudioRecording": False}, ()),
+                 ({}, ("AllowComputerAudioRecording",)),      # an invalid value
+                 ({}, policy.UNREADABLE))                     # K3: grants nothing
+        for values, invalid in cases:
+            with self.subTest(values=values, invalid=invalid):
+                self.asked.clear()
+                started = self.start_with(values, True, invalid)
+                [question] = self.asked
+                self.assertNotIn("choices", question)
+                self.assertIn("organisation has turned off computer audio", question["detail"])
+                self.assertEqual(question["check"],
+                                 consent.recording_wording(consent.MICROPHONE_ONLY)["check"])
+                self.assertEqual(started["sources"], consent.MICROPHONE_ONLY)
+                self.assertEqual(started["consent"]["sources"], ["microphone"])
+
+    def test_policy_without_confirmation_still_asks_the_kind_of_meeting(self):
+        # DEC-099 decision 2: a small question, no consent wording or tick.
+        from workspace import consent
+        started = self.start_with({"RequireRecordingConsent": False}, consent.MICROPHONE_ONLY)
+        [question] = self.asked
+        self.assertEqual(question, consent.recording_question(confirm=False))
+        self.assertNotIn("check", question)
+        self.assertIsNone(started["consent"])
+        self.assertEqual(started["sources"], consent.MICROPHONE_ONLY)
+        self.asked.clear()
+        started = self.start_with({"RequireRecordingConsent": False}, consent.WITH_COMPUTER)
+        self.assertEqual(started["sources"], consent.WITH_COMPUTER)
+        self.assertIsNone(started["consent"])
+        self.asked.clear()
+        self.assertIsNone(self.start_with({"RequireRecordingConsent": False}, False))
 
     def test_a_refused_recording_never_asks(self):
         b = self.bridge()
@@ -1524,16 +1588,13 @@ class NativeConfirmationTests(unittest.TestCase):
         self.assertFalse(r["ok"])
         self.assertEqual(self.asked, [])
 
-    def test_policy_without_confirmation_does_not_ask(self):
-        from unittest import mock
-        self.ws.policy = policy.PolicySource(reader=lambda: ({"RequireRecordingConsent": False},
-                                                             ()))
-        b = self.bridge()
-        with mock.patch.object(self.ws, "check_can_record"), \
-                mock.patch.object(self.ws, "start_recording", return_value={}) as start:
-            b.start_recording(3, "Mic")
+    def test_policy_without_confirmation_or_computer_audio_does_not_ask(self):
+        from workspace import consent
+        started = self.start_with({"RequireRecordingConsent": False,
+                                   "AllowComputerAudioRecording": False}, False)
         self.assertEqual(self.asked, [])
-        self.assertIsNone(start.call_args.kwargs["consent"])
+        self.assertIsNone(started["consent"])
+        self.assertEqual(started["sources"], consent.MICROPHONE_ONLY)
 
     def test_discarding_asks_with_the_title(self):
         b = self.bridge()
@@ -1633,7 +1694,7 @@ class NativeConfirmationTests(unittest.TestCase):
         from workspace import consent
         good = consent.recording_record()
         for bad in ({}, {"confirmed": "yes", "wording": 1, "at": 1.0},
-                    {**good, "wording": 999}, "yes"):
+                    {**good, "wording": 2}, {**good, "wording": 999}, "yes"):
             with mock.patch.object(self.ws, "_need_microphone"), \
                     self.assertRaisesRegex(WorkspaceError, "not valid"):
                 self.ws.start_recording(3, consent=bad)
@@ -1656,6 +1717,70 @@ class NativeConfirmationTests(unittest.TestCase):
             self.ws._recording = None
             self.ws._indicate()
         self.assertEqual(shown, [(window, True), (window, False)])
+
+
+class ConfirmDialogRuleTests(unittest.TestCase):
+    """The rules of the window the app draws for a question with choices
+    (#554), from the pure functions workspace/shell.py's _ask follows. The
+    WinForms window itself opens only in tools/workspace_ui_check.py
+    (meeting_kind_checks)."""
+
+    def setUp(self):
+        from workspace import consent, shell
+        self.consent, self.shell = consent, shell
+        self.question = consent.recording_question()
+
+    def test_neither_kind_is_chosen_and_the_statement_waits_for_one(self):
+        view = self.shell._confirm_view(self.question)
+        self.assertEqual(view["body"], self.consent.CHOOSE_BODY)
+        self.assertTrue(view["check"])
+        self.assertFalse(view["check_enabled"])
+        # Neither ticked nor waited for makes up for no choice.
+        self.assertFalse(self.shell._may_act(self.question, None, True, True))
+
+    def test_the_body_and_statement_follow_the_choice(self):
+        for index, sources in ((0, self.consent.MICROPHONE_ONLY),
+                               (1, self.consent.WITH_COMPUTER)):
+            with self.subTest(index=index):
+                view = self.shell._confirm_view(self.question, index)
+                self.assertEqual({k: view[k] for k in ("body", "check")},
+                                 self.consent.recording_wording(sources))
+                self.assertTrue(view["check_enabled"])
+
+    def test_the_action_needs_a_choice_the_tick_and_the_wait(self):
+        may = self.shell._may_act
+        self.assertTrue(may(self.question, 1, True, True))
+        self.assertFalse(may(self.question, 1, False, True))    # not ticked
+        self.assertFalse(may(self.question, 1, True, False))    # the wait not over
+        # Without the consent wording, a choice and the wait are enough.
+        kind_only = self.consent.recording_question(confirm=False)
+        self.assertIsNone(self.shell._confirm_view(kind_only, 0)["check"])
+        self.assertFalse(may(kind_only, None, False, True))
+        self.assertTrue(may(kind_only, 0, False, True))
+        self.assertFalse(may(kind_only, 0, False, False))
+
+    def test_questions_without_choices_keep_their_rules(self):
+        may = self.shell._may_act
+        for question in (self.consent.discard_question("Synthetic", 0, "limits"),
+                         self.consent.recording_question(computer=False)):
+            with self.subTest(title=question["title"]):
+                view = self.shell._confirm_view(question)
+                self.assertEqual((view["body"], view["check"], view["check_enabled"]),
+                                 (question["body"], question["check"], True))
+                self.assertFalse(may(question, None, False, True))
+                self.assertTrue(may(question, None, True, True))
+                self.assertIs(self.shell._answer(question, None), True)
+        plain = {"title": "Synthetic", "body": "Nothing changes.", "action": "Confirm"}
+        self.assertTrue(may(plain, None, False, True))
+        self.assertFalse(may(plain, None, False, False))
+
+    def test_the_answer_is_the_chosen_kinds_sources(self):
+        answer = self.shell._answer
+        self.assertEqual(answer(self.question, 0), self.consent.MICROPHONE_ONLY)
+        self.assertEqual(answer(self.question, 1), self.consent.WITH_COMPUTER)
+        self.assertIs(answer(self.question, None), False)
+        kind_only = self.consent.recording_question(confirm=False)
+        self.assertEqual(answer(kind_only, 1), self.consent.WITH_COMPUTER)
 
 
 def js_function(source, name):

@@ -1145,15 +1145,55 @@ def native_confirm(window, question, theme=None):
     - It answers a mouse button released over it; or, for keyboard, Narrator
       and voice control, Enter, Space or Invoke once it has kept the focus
       for CONFIRM_DELAY_MS (moved there on purpose, then held).
+    - A question with choices (#554, the recording question) opens with
+      none chosen; the action needs one, and choosing or changing it unticks
+      the statement, which follows the choice, and starts the wait again.
+      The choices are radio buttons in their own group: Tab reaches them
+      without choosing, and the arrow keys, Space or a click choose.
     - Windows high contrast uses the system colours; a minimised app is
       restored first, so the question opens centred over it.
-    True only for the action."""
+    True only for the action, or for a question with choices the chosen
+    kind's sources (a tuple); False for Cancel."""
     if not _asking.acquire(blocking=False):
         return False
     try:
         return _ask(window, question, theme or _system_theme())
     finally:
         _asking.release()
+
+
+def _confirm_view(question, chosen=None):
+    """What the confirmation shows with this choice (an index into
+    question["choices"], or None before one is chosen): the body, the
+    statement to tick (None without one) and whether it can be ticked yet.
+    Before a choice, the statement shows but cannot be ticked. Pure, so the
+    tests cover the dialog's rules without a window (#554)."""
+    choices = question.get("choices") or []
+    pick = choices[chosen] if chosen is not None else {}
+    check = pick.get("check", question.get("check"))
+    return {"body": pick.get("body", question["body"]), "check": check or None,
+            "check_enabled": bool(check) and (not choices or chosen is not None)}
+
+
+def _may_act(question, chosen, ticked, waited):
+    """The action button is enabled: the wait after the last interaction
+    has passed, a kind is chosen if the question offers choices, and the
+    statement, if there is one, is ticked."""
+    if question.get("choices") and chosen is None:
+        return False
+    return bool(waited and (ticked or not _confirm_view(question, chosen)["check"]))
+
+
+def _answer(question, chosen):
+    """native_confirm's answer once the action is taken: True, or for a
+    question with choices the chosen kind's sources (False if, against the
+    rules above, none is chosen)."""
+    choices = question.get("choices")
+    if not choices:
+        return True
+    if chosen is None:
+        return False
+    return tuple(choices[chosen]["sources"])
 
 
 def _system_theme():
@@ -1211,9 +1251,10 @@ def _ask(window, question, theme):
     from System.Drawing import (Font, FontStyle, GraphicsUnit, Pen, Point, Rectangle, Size,
                                 SolidBrush)
     from System.Drawing.Drawing2D import LineCap, SmoothingMode
-    from System.Windows.Forms import (Button, CheckBox, DialogResult, Form, FormBorderStyle,
-                                      FormStartPosition, FormWindowState, KeyEventHandler,
-                                      Label, MouseEventHandler, PaintEventHandler, Panel, Screen,
+    from System.Windows.Forms import (AccessibleRole, Button, CheckBox, DialogResult, Form,
+                                      FormBorderStyle, FormStartPosition, FormWindowState,
+                                      KeyEventHandler, Label, MouseEventHandler,
+                                      PaintEventHandler, Panel, RadioButton, Screen,
                                       TextFormatFlags, TextRenderer, Timer)
     owner = window.native
     t = _contrast_theme() if theme == "contrast" else _THEMES[theme]
@@ -1253,8 +1294,11 @@ def _ask(window, question, theme):
                 scrim.Opacity = t["scrim_opacity"]
                 scrim.Bounds = owner.RectangleToScreen(owner.ClientRectangle)
                 scrim.Show(owner)
+            choices = question.get("choices") or []
+            picked = {"index": None}                     # the kind chosen (#554): none yet
+            view = _confirm_view(question)
             dialog.Text = question["title"]               # Narrator reads the title...
-            dialog.AccessibleDescription = question["body"]   # ...and the question
+            dialog.AccessibleDescription = view["body"]   # ...and the question
             dialog.FormBorderStyle = getattr(FormBorderStyle, "None")
             dialog.StartPosition = FormStartPosition.CenterParent
             dialog.ShowInTaskbar = False
@@ -1319,10 +1363,89 @@ def _ask(window, question, theme):
             title.Location = Point(pad + px(58),
                                    y + max(0, (px(44) - title.PreferredSize.Height) // 2))
             y += max(px(44), title.PreferredSize.Height) + px(16)
-            body = label(question["body"], fonts["body"], text_c, inner)
+            body = label(view["body"], fonts["body"], text_c, inner)
+            if choices:
+                # The body follows the choice: room for the longest, so
+                # nothing below it moves when the choice changes.
+                tallest = 0
+                for text in [view["body"]] + [c["body"] for c in choices if c.get("body")]:
+                    body.Text = text
+                    tallest = max(tallest, body.PreferredSize.Height)
+                body.Text = view["body"]
+                body.AutoSize = False
+                body.Size = Size(inner, tallest)
             body.Location = Point(pad, y)
             content.Controls.Add(body)
-            y += body.PreferredSize.Height + px(16)
+            y += (body.Height if choices else body.PreferredSize.Height) + px(16)
+            kinds, radios = None, []
+            if choices:
+                # The kinds of meeting (#554): radio buttons in a group of
+                # their own, so the arrow keys move only between them. None is
+                # chosen when the window opens; Tab reaches them without
+                # choosing (WinForms chooses on an arrow key, Space or a click).
+                kinds = Panel()
+                kinds.BackColor = card
+                kinds.AccessibleName = "Kind of meeting"
+                kinds.AccessibleRole = AccessibleRole.Grouping
+                kinds.Location = Point(pad, y)
+                kind_w = inner - px(14 + 20 + 12 + 14)
+                top = 0
+                for kind in choices:
+                    radio = RadioButton()
+                    radio.Text = kind["label"]
+                    radio.UseMnemonic = False
+                    radio.AccessibleName = kind["label"]          # Narrator: the kind...
+                    radio.AccessibleDescription = kind["note"]    # ...and what it records
+                    radio.Font = fonts["check"]
+                    radio.ForeColor, radio.BackColor = text_c, card
+                    label_h = TextRenderer.MeasureText(kind["label"], fonts["check"],
+                                                       Size(kind_w, 0),
+                                                       TextFormatFlags.WordBreak).Height
+                    note_h = TextRenderer.MeasureText(kind["note"], fonts["small"],
+                                                      Size(kind_w, 0),
+                                                      TextFormatFlags.WordBreak).Height
+                    radio.Size = Size(inner, label_h + px(4) + note_h + px(24))
+                    radio.Location = Point(0, top)
+                    top += radio.Height + px(8)
+
+                    def paint_kind(sender, e, r=radio, kind=kind, label_h=label_h,
+                                   note_h=note_h):
+                        g = e.Graphics
+                        g.SmoothingMode = SmoothingMode.AntiAlias
+                        g.Clear(card)
+                        mark = _colour(t["primary"][0])
+                        edge = Pen(focus if r.Focused else mark if r.Checked else line,
+                                   2 * scale if r.Focused or r.Checked else scale)
+                        path = _rounded(1, 1, r.Width - 3, r.Height - 3, px(12))
+                        g.DrawPath(edge, path)
+                        path.Dispose()
+                        edge.Dispose()
+                        ring_top = px(12) + max(0, (label_h - px(20)) // 2)
+                        ring = Pen(mark if r.Checked else line,
+                                   2 * scale if r.Checked else 1.5 * scale)
+                        g.DrawEllipse(ring, px(14), ring_top, px(20), px(20))
+                        ring.Dispose()
+                        if r.Checked:
+                            dot = SolidBrush(mark)
+                            g.FillEllipse(dot, px(19), ring_top + px(5), px(10), px(10))
+                            dot.Dispose()
+                        TextRenderer.DrawText(g, kind["label"], fonts["check"],
+                                              Rectangle(px(14 + 20 + 12), px(12), kind_w,
+                                                        label_h),
+                                              text_c, TextFormatFlags.WordBreak)
+                        TextRenderer.DrawText(g, kind["note"], fonts["small"],
+                                              Rectangle(px(14 + 20 + 12),
+                                                        px(12) + label_h + px(4), kind_w,
+                                                        note_h),
+                                              muted, TextFormatFlags.WordBreak)
+                    radio.Paint += PaintEventHandler(paint_kind)
+                    radio.GotFocus += EventHandler(lambda s, e, r=radio: r.Invalidate())
+                    radio.LostFocus += EventHandler(lambda s, e, r=radio: r.Invalidate())
+                    kinds.Controls.Add(radio)
+                    radios.append(radio)
+                kinds.Size = Size(inner, top - px(8))
+                content.Controls.Add(kinds)
+                y += kinds.Height + px(16)
             if question.get("detail"):
                 detail = label(question["detail"], fonts["detail"], text_c, inner)
                 detail.Location = Point(pad, y)
@@ -1348,15 +1471,19 @@ def _ask(window, question, theme):
                 content.Controls.Add(limits)
                 y += limits.Height + px(16)
             check = None
-            if question.get("check"):
+            if view["check"]:
                 check = CheckBox()
-                check.Text = question["check"]
+                check.Text = view["check"]
                 check.UseMnemonic = False
                 check.Font = fonts["check"]
                 check.ForeColor, check.BackColor = text_c, card
+                check.Enabled = view["check_enabled"]    # not before a kind is chosen
                 text_w = inner - px(14 + 20 + 12 + 14)
-                text_h = TextRenderer.MeasureText(check.Text, fonts["check"], Size(text_w, 0),
-                                                  TextFormatFlags.WordBreak).Height
+                # Room for the longest statement, when it follows the choice.
+                text_h = max(TextRenderer.MeasureText(text, fonts["check"], Size(text_w, 0),
+                                                      TextFormatFlags.WordBreak).Height
+                             for text in [view["check"]] + [c["check"] for c in choices
+                                                            if c.get("check")])
                 check.Size = Size(inner, text_h + px(24))
                 check.Location = Point(pad, y)
 
@@ -1364,6 +1491,7 @@ def _ask(window, question, theme):
                     g = e.Graphics
                     g.SmoothingMode = SmoothingMode.AntiAlias
                     g.Clear(card)
+                    ink = text_c if c.Enabled else _fade(text_c, card, 0.45)
                     edge = Pen(focus if c.Focused else line, 2 * scale if c.Focused else scale)
                     path = _rounded(1, 1, c.Width - 3, c.Height - 3, px(12))
                     g.DrawPath(edge, path)
@@ -1381,14 +1509,15 @@ def _ask(window, question, theme):
                                            Point(px(30), top + px(6))])
                         mark.Dispose()
                     else:
-                        border = Pen(line, 1.5 * scale)
+                        border = Pen(line if c.Enabled else _fade(line, card, 0.45),
+                                     1.5 * scale)
                         g.DrawPath(border, tick_box)
                         border.Dispose()
                     tick_box.Dispose()
                     TextRenderer.DrawText(g, c.Text, fonts["check"],
                                           Rectangle(px(14 + 20 + 12), px(12), text_w,
                                                     c.Height - px(24)),
-                                          text_c, TextFormatFlags.WordBreak
+                                          ink, TextFormatFlags.WordBreak
                                           | TextFormatFlags.VerticalCenter)
                 check.Paint += PaintEventHandler(paint_check)
                 content.Controls.Add(check)
@@ -1458,6 +1587,9 @@ def _ask(window, question, theme):
             dialog.ClientSize = Size(inner + 2 * pad, height)
             dialog.AcceptButton = cancel                 # Enter means Cancel
             dialog.CancelButton = cancel                 # Esc means Cancel
+            # The focus starts on Cancel: a radio button that took it first
+            # would choose itself, as it does for an arrow key.
+            dialog.ActiveControl = cancel
             timer.Interval = CONFIRM_DELAY_MS
             ready = {"waited": False}
 
@@ -1465,7 +1597,8 @@ def _ask(window, question, theme):
             enabled = {"since": None}                  # when the action was enabled
 
             def update():
-                on = ready["waited"] and (check is None or check.Checked)
+                on = _may_act(question, picked["index"], check is not None and check.Checked,
+                              ready["waited"])
                 if on and not act.Enabled:
                     enabled["since"] = time.monotonic()
                 if not on:
@@ -1532,12 +1665,37 @@ def _ask(window, question, theme):
                 check.CheckedChanged += EventHandler(lambda s, e: (restart(), check.Invalidate()))
                 check.GotFocus += EventHandler(lambda s, e: check.Invalidate())
                 check.LostFocus += EventHandler(lambda s, e: check.Invalidate())
+
+            def chose(sender, index):
+                # A kind chosen or changed: the body and statement follow it,
+                # the statement must be ticked again (it may name other
+                # people), and the wait starts again, as for a tick. The index
+                # is bound per radio button, not looked up from the sender:
+                # two .NET wrappers of one control need not compare equal.
+                for r in radios:
+                    r.Invalidate()
+                if not sender.Checked:
+                    return
+                picked["index"] = index
+                shown = _confirm_view(question, picked["index"])
+                body.Text = shown["body"]
+                dialog.AccessibleDescription = shown["body"]
+                if check is not None:
+                    check.Checked = False
+                    check.Text = shown["check"] or ""
+                    check.Enabled = shown["check_enabled"]
+                    check.Invalidate()
+                restart()
+            for i, radio in enumerate(radios):
+                radio.CheckedChanged += EventHandler(lambda s, e, i=i: chose(s, i))
             dialog.KeyDown += KeyEventHandler(lambda s, e: restart() if not act.Enabled else None)
-            watched = [dialog, content, cancel, body, title, icon] + ([check] if check else [])
+            watched = ([dialog, content, cancel, body, title, icon] + ([check] if check else [])
+                       + ([kinds, *radios] if kinds else []))
             for control in watched:
                 control.MouseDown += MouseEventHandler(
                     lambda s, e: restart() if not act.Enabled else None)
             box["answer"] = dialog.ShowDialog(scrim or owner)
+            box["chosen"] = picked["index"]
         finally:
             timer.Dispose()
             dialog.Dispose()
@@ -1548,7 +1706,9 @@ def _ask(window, question, theme):
                 item.Dispose()
 
     owner.Invoke(Action(ask))                     # a window belongs to the UI thread
-    return box.get("answer") == DialogResult.Yes
+    if box.get("answer") != DialogResult.Yes:
+        return False
+    return _answer(question, box.get("chosen"))
 
 
 RECORDING_MARK = "● Recording - "

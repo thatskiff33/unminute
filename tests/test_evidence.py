@@ -1512,6 +1512,44 @@ class ToolTests(TempDir):
             with self.subTest(rule=rule):
                 self.assertIn(rule, verdict)
 
+    def test_the_ui_check_covers_both_kinds_of_meeting(self):
+        # #554's done-when: a real-window check covers both choices. Each
+        # script below can pass only by the rule it is for, and the native
+        # checks run them.
+        source = self.source("workspace_ui_check.py")
+        native = source.split("\ndef native_checks(", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn("out.update(meeting_kind_checks(run_with, window))", native)
+        kinds = source.split("\ndef meeting_kind_checks(", 1)[1].split("\ndef ", 1)[0]
+        # The real questions, with a title of their own.
+        self.assertIn("consent.recording_question(**kw)", kinds)
+        for script in (
+                # In person and Online: choose, tick, start.
+                '["toggle-on:" + in_person, "toggle-on:" + mic_check, ready, start]',
+                '["toggle-on:" + online, "toggle-on:" + both_check, ready, start]',
+                # Start long after opening, with no kind chosen, is ignored.
+                '["wait:1.3", start, "open?", "toggle-on:" + in_person',
+                # After a change of kind, Start long after it is ignored until
+                # the new statement is ticked (the change unticked it).
+                '"toggle-on:" + online,\n         "wait:1.3", start, "open?", '
+                '"toggle-on:" + both_check',
+                # With no statement, only the change can hold Start back.
+                '["toggle-on:" + online, ready, "toggle-on:" + in_person, start, "open?"',
+                # Policy refuses computer audio: no kinds to choose.
+                '["toggle-on:" + mic_check, ready, start]',
+                # Space on a kind chooses it.
+                '["space-on:" + in_person, "toggle-on:" + mic_check, ready, start]'):
+            with self.subTest(script=script):
+                self.assertIn(script, kinds)
+        self.assertIn('question("change restarts the wait", confirm=False)', kinds)
+        self.assertIn('question("computer audio off", computer=False)', kinds)
+        verdict = source.split("\ndef native_problems(", 1)[1].split("\ndef ", 1)[0]
+        for rule in ('nv.get("open_without_kind") == [True]',
+                     'nv.get("open_after_change") == [True]',
+                     'nv.get("open_after_quick_change") == [True]',
+                     'nv.get("policy_off") is True'):
+            with self.subTest(rule=rule):
+                self.assertIn(rule, verdict)
+
     def test_a_confirmation_left_open_fails_the_ui_check_instead_of_hanging(self):
         source = self.source("workspace_ui_check.py")
         run_with = source.split("    def run_with(", 1)[1].split("\n    title = ", 1)[0]

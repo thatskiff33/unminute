@@ -158,7 +158,6 @@ async function renderRecorder(tick = false) {
   $("mic-line").hidden = !r.enabled;
   if (!r.enabled) $("mic-chooser").hidden = true;
   $("mic-name").textContent = $("rec-start-device").textContent = deviceLabel() || "No microphone";
-  $("mic-computer").hidden = !r.computer_audio;
   $("rec-start").disabled = $("rec-start-chosen").disabled = !sel.options.length;
   state.lastRec = active ? rec : null;
   if (active) renderRecCard(rec, r.display, r.lid_override, r.lid_refused);

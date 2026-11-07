@@ -42,7 +42,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def both_consent():
     """A confirmation whose wording named computer audio and people on the
-    call (version 2, the page part of #108)."""
+    call: "Online meeting" chosen (version 3, #554; the wording is version
+    2's, the page part of #108)."""
     return consent.recording_record(sources=BOTH, clock=lambda: 1000.0)
 KEY = bytes(range(32))           # a recording's key in these tests (#111 C3b)
 
@@ -1738,33 +1739,87 @@ class TwoTrackRecordingTests(unittest.TestCase):
         self.assertFalse(folder.exists())
 
 
-# -- the confirmation: wording version 2 and its sources (stdlib only) ----------------
+# -- the confirmation: wording version 3, the kind of meeting (stdlib only) ---------
 
 class RecordingWordingTests(unittest.TestCase):
-    def test_the_wording_is_version_2_with_a_variant_for_computer_audio(self):
-        self.assertEqual(consent.RECORDING_WORDING_VERSION, 2)
-        mic, both = consent.recording_question(), consent.recording_question(BOTH)
-        self.assertEqual(mic, consent.recording_question(("microphone",)))
-        self.assertEqual((mic["title"], both["title"]), (consent.RECORDING_TITLE,) * 2)
-        # The microphone-only text is the version 1 text, unchanged.
-        self.assertIn("tell everyone present", mic["body"])
-        for text in (both["body"], both["check"]):
+    def test_the_wording_is_version_3_and_asks_which_kind_of_meeting(self):
+        # #554 (DEC-099): two kinds, each saying what it records, neither
+        # chosen; the text confirmed follows the choice (version 2's texts).
+        self.assertEqual(consent.RECORDING_WORDING_VERSION, 3)
+        q = consent.recording_question()
+        self.assertEqual((q["title"], q["action"]), (consent.RECORDING_TITLE, "Start recording"))
+        self.assertEqual([c["label"] for c in q["choices"]],
+                         ["In person meeting", "Online meeting"])
+        self.assertEqual([tuple(c["sources"]) for c in q["choices"]],
+                         [("microphone",), BOTH])
+        in_person, online = q["choices"]
+        self.assertEqual(in_person["note"], "Records your microphone.")
+        for words in ("microphone", "sound from this computer", "other people on the call"):
+            self.assertIn(words, online["note"])
+        # Before a choice: neutral text, and the statement shown is the
+        # microphone one (the dialog does not let it be ticked yet).
+        self.assertEqual(q["body"], consent.CHOOSE_BODY)
+        self.assertIn("Choose the kind of meeting", q["body"])
+        self.assertEqual(q["check"], in_person["check"])
+        # Each choice brings version 2's text for its sources: the
+        # microphone-only text is version 1's, unchanged.
+        self.assertIn("tell everyone present", in_person["body"])
+        for text in (online["body"], online["check"]):
             self.assertIn("on the call", text)
-        self.assertIn("notifications", both["body"])
+        self.assertIn("notifications", online["body"])
+        self.assertEqual({k: in_person[k] for k in ("body", "check")},
+                         consent.recording_wording(("microphone",)))
+        self.assertEqual({k: online[k] for k in ("body", "check")},
+                         consent.recording_wording(BOTH))
+        self.assertNotIn("detail", q)
         for bad in ((), ("computer",), ("microphone", "speakers"), "microphone"):
             with self.subTest(sources=bad), self.assertRaises(ValueError):
-                consent.recording_question(bad)
+                consent.recording_wording(bad)
+
+    def test_where_policy_refuses_computer_audio_only_the_microphone_is_offered(self):
+        q = consent.recording_question(computer=False)
+        self.assertNotIn("choices", q)
+        self.assertEqual({k: q[k] for k in ("body", "check")},
+                         consent.recording_wording(("microphone",)))
+        self.assertEqual(q["detail"], consent.COMPUTER_OFF_LINE)
+        self.assertIn("organisation has turned off computer audio", q["detail"])
+
+    def test_without_the_confirmation_only_the_kind_is_asked_or_nothing(self):
+        # DEC-099 decision 2: no consent wording and no statement to tick.
+        q = consent.recording_question(computer=True, confirm=False)
+        self.assertEqual(q["body"], consent.CHOOSE_ONLY_BODY)
+        self.assertNotIn("check", q)
+        self.assertEqual([c["label"] for c in q["choices"]],
+                         ["In person meeting", "Online meeting"])
+        for choice in q["choices"]:
+            self.assertEqual(set(choice), {"label", "note", "sources"})
+        self.assertIsNone(consent.recording_question(computer=False, confirm=False))
+
+    def test_only_an_offered_kind_answers_a_question_with_choices(self):
+        q = consent.recording_question()
+        self.assertEqual(consent.question_answer(q, BOTH), BOTH)
+        self.assertEqual(consent.question_answer(q, ["microphone"]), ("microphone",))
+        for bad in (True, 1, None, False, (), ("computer",), "microphone",
+                    ("microphone", "speakers")):
+            with self.subTest(answer=bad):
+                self.assertIs(consent.question_answer(q, bad), False)
+        # A question offering the microphone alone has no choices: yes or no.
+        mic_only = consent.recording_question(computer=False)
+        self.assertIs(consent.question_answer(mic_only, True), True)
+        self.assertIs(consent.question_answer(mic_only, None), False)
 
     def test_the_record_keeps_the_sources_it_was_confirmed_for(self):
         record = consent.recording_record(sources=BOTH, clock=lambda: 5.0)
-        self.assertEqual(record, {"confirmed": True, "wording": 2, "at": 5.0,
+        self.assertEqual(record, {"confirmed": True, "wording": 3, "at": 5.0,
                                   "method": "app-window", "sources": list(BOTH)})
         self.assertEqual(consent.recording_record(clock=lambda: 5.0)["sources"],
                          ["microphone"])
         self.assertTrue(consent.valid_recording_record(record, BOTH))
         self.assertFalse(consent.valid_recording_record(record))         # microphone only
         self.assertTrue(consent.valid_recording_record(consent.recording_record()))
-        for bad in ({**record, "wording": 1}, {**record, "sources": "microphone"},
+        # Version 2 (no choice of meeting) and version 1 are history only.
+        for bad in ({**record, "wording": 1}, {**record, "wording": 2},
+                    {**record, "sources": "microphone"},
                     {**record, "sources": ["computer", "microphone"]},
                     {k: v for k, v in record.items() if k != "sources"}):
             with self.subTest(record=bad):
@@ -1773,7 +1828,7 @@ class RecordingWordingTests(unittest.TestCase):
         self.assertTrue(consent.sources_match(record, BOTH))
 
 
-# -- the app: policy, the switch, the import ------------------------------------------
+# -- the app: policy, the kind of meeting, the import ---------------------------------------
 
 @unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
 class WorkspaceTwoTrackTests(unittest.TestCase):
@@ -1821,31 +1876,58 @@ class WorkspaceTwoTrackTests(unittest.TestCase):
         return str(ctx.exception)
 
     @mock.patch("workspace.app.COMPUTER_AUDIO_STARTS", False)
-    def test_the_switch_cannot_be_saved_before_the_app_offers_it(self):
-        # The gate still fails closed if it is turned off again: set_settings
-        # refuses computer audio, nothing in the same change is saved, and a
-        # value already in the settings file reads as off.
+    def test_no_computer_track_opens_until_the_app_offers_it(self):
+        # The gate still fails closed if it is turned off again: Online
+        # meeting is not offered, start_recording refuses computer audio and
+        # opens nothing, and the microphone alone still records.
         ws = self.make()
-        self.assertIn("not available", self.refused(
-            ws.set_settings, {"microphone": True, "computer_audio": True}))
-        self.assertIs(ws.settings["computer_audio"], False)
-        self.assertIs(ws.settings["microphone"], False)
-        ws.set_settings({"microphone": True})
-        ws.settings.update(computer_audio=True)          # saved by some other means
-        self.assertIs(ws.get_settings()["computer_audio"], False)
-        self.assertEqual(ws.recording_sources(), ("microphone",))
+        ws.settings.update(microphone=True)
+        ws.start()
+        self.assertIs(ws.computer_audio_offered(), False)
+        self.assertIn("not available", self.refused(ws.start_recording, 3, None,
+                                                    both_consent(), BOTH))
+        self.assertEqual(self.holder, {})
+        ws.start_recording(3, consent=CONSENT)
+        self.assertNotIn("comp", self.holder)
+        self.assertNotIn("format", recorder.read_journal(ws._recording.folder))
+        ws.stop_recording()
 
-    def test_not_set_by_it_the_switch_is_allowed_but_off_by_default(self):
+    def test_not_set_by_it_online_meetings_are_offered_and_there_is_no_setting(self):
+        # #554 (DEC-099 decision 3): no computer audio setting; the choice is
+        # made for each recording.
         ws = self.make()
         self.assertTrue(ws.managed()["allow"]["AllowComputerAudioRecording"])
-        self.assertIs(ws.get_settings()["computer_audio"], False)
-        with mock.patch("workspace.app.COMPUTER_AUDIO_STARTS", True):  # the page slice
-            self.assertIn("microphone", self.refused(ws.set_settings,
-                                                     {"computer_audio": True}))
-            ws.set_settings({"microphone": True, "computer_audio": True})
-            self.assertIs(ws.get_settings()["computer_audio"], True)
-            ws.set_settings({"microphone": False})          # never without the microphone
-            self.assertIs(ws.settings["computer_audio"], False)
+        self.assertIs(ws.computer_audio_offered(), True)
+        self.assertNotIn("computer_audio", ws.get_settings())
+        self.assertIn("Unknown setting", self.refused(ws.set_settings,
+                                                      {"computer_audio": True}))
+        self.assertNotIn("computer_audio", ws.recording_status())
+
+    def test_an_old_computer_audio_setting_is_ignored(self):
+        # A settings file an earlier version wrote, with the switch on: it
+        # loads without error or repair, nothing reads it, and it is written
+        # back unchanged with the other settings (R11).
+        folder = self.root / "ws"
+        folder.mkdir(parents=True)
+        (folder / "settings.json").write_text(json.dumps(
+            {"settings_version": 1, "microphone": True, "computer_audio": True}))
+        ws = self.make()
+        self.assertFalse(ws.settings.unreadable)
+        self.assertEqual(ws.settings.repaired, [])
+        self.assertIs(ws.settings["microphone"], True)
+        self.assertNotIn("computer_audio", ws.settings.values)
+        self.assertNotIn("computer_audio", ws.get_settings())
+        self.assertNotIn("computer_audio", ws.get_settings()["repaired"]["keys"])
+        # A recording still records what its confirmation's choice says.
+        ws.start()
+        r = self.bridge(ws, lambda q: consent.MICROPHONE_ONLY).start_recording(
+            3, "Test microphone")
+        self.assertTrue(r["ok"], r)
+        self.assertNotIn("comp", self.holder)
+        ws.stop_recording()
+        ws.set_settings({"speakers": True})
+        saved = json.loads((folder / "settings.json").read_text())
+        self.assertIs(saved["computer_audio"], True)          # kept aside, unused
 
     def test_turned_off_unreadable_or_invalid_policy_refuses_it(self):
         from workspace import policy
@@ -1854,123 +1936,183 @@ class WorkspaceTwoTrackTests(unittest.TestCase):
                  ({}, policy.UNREADABLE),
                  ({"AllowMicrophoneRecording": False}, ()))
         for values, invalid in cases:
-            ws = self.make(values, invalid)
-            ws.settings.update(microphone=True, computer_audio=True)   # saved before the policy
-            with mock.patch("workspace.app.COMPUTER_AUDIO_STARTS", True):  # the page slice
-                self.assertIn("organisation", self.refused(ws.set_settings,
-                                                           {"computer_audio": True}))
-                self.assertIs(ws.get_settings()["computer_audio"], False)
-                self.assertIsNone(ws._computer_track())
-
-    @mock.patch("workspace.app.COMPUTER_AUDIO_STARTS", False)
-    def test_no_computer_track_opens_until_the_app_allows_it(self):
-        # With the gate off (as before the page part), whatever the switch
-        # says, the start path opens no computer track.
-        ws = self.make()
-        ws.settings.update(microphone=True, computer_audio=True)
-        ws.start()
-        ws.start_recording(3, consent=CONSENT)
-        self.assertNotIn("comp", self.holder)
-        self.assertNotIn("format", recorder.read_journal(ws._recording.folder))
-        ws.stop_recording()
+            with self.subTest(values=values, invalid=invalid):
+                self.holder.clear()
+                ws = self.make(values, invalid)
+                ws.settings.update(microphone=True)
+                with mock.patch("workspace.app.COMPUTER_AUDIO_STARTS", True):  # the page slice
+                    self.assertIs(ws.computer_audio_offered(), False)
+                    self.assertIn("organisation", self.refused(
+                        ws.start_recording, 3, None, both_consent(), BOTH))
+                self.assertEqual(self.holder, {})          # neither device was opened
+                self.assertIsNone(ws._recording)
 
     def start_two(self, values=None):
         ws = self.make(values)
-        ws.settings.update(microphone=True, computer_audio=True)
+        ws.settings.update(microphone=True)
         ws.start()
-        ws.start_recording(3, consent=both_consent())
+        ws.start_recording(3, consent=both_consent(), sources=BOTH)   # an Online meeting
         return ws, self.holder["mic"], self.holder["comp"]
 
-    # -- the page part (#108 slice 4): offered, and confirmed by name --------------
+    # -- the kind of meeting (#554): chosen for each recording, confirmed by name ----
 
-    def test_computer_audio_is_offered_in_this_version(self):
+    def test_each_recording_records_the_sources_chosen_for_it(self):
         ws = self.make()
-        ws.set_settings({"microphone": True, "computer_audio": True})
-        self.assertIs(ws.get_settings()["computer_audio"], True)
-        self.assertEqual(ws.recording_sources(), BOTH)
-        self.assertIs(ws.recording_status()["computer_audio"], True)
-        ws.set_settings({"computer_audio": False})
-        self.assertEqual(ws.recording_sources(), ("microphone",))
-        self.assertIs(ws.recording_status()["computer_audio"], False)
-
-    def test_policy_or_the_microphone_switch_takes_computer_audio_out_of_the_sources(self):
-        cases = (({"AllowComputerAudioRecording": False}, ()),
-                 ({}, ("AllowComputerAudioRecording",)))
-        for values, invalid in cases:
-            with self.subTest(values=values, invalid=invalid):
-                ws = self.make(values, invalid)
-                ws.settings.update(microphone=True, computer_audio=True)
-                self.assertEqual(ws.recording_sources(), ("microphone",))
-                self.assertIs(ws.recording_status()["computer_audio"], False)
+        ws.settings.update(microphone=True)
+        ws.start()
+        ws.start_recording(3, consent=CONSENT)                 # In person: the default
+        self.assertNotIn("comp", self.holder)
+        self.assertIsNone(ws.recording_status()["recording"]["computer"])
+        ws.discard_recording()
+        ws.start_recording(3, consent=both_consent(), sources=BOTH)
+        self.assertIn("comp", self.holder)
+        self.assertTrue(ws.recording_status()["recording"]["computer"]["on"])
+        ws.discard_recording()
+        self.holder.clear()
+        ws.start_recording(3, consent=CONSENT, sources=("microphone",))   # the next: In person
+        self.assertNotIn("comp", self.holder)
+        ws.discard_recording()
+        for bad in (("computer",), "microphone", None, ("microphone", "speakers")):
+            with self.subTest(sources=bad):
+                self.assertIn("Unknown", self.refused(ws.start_recording, 3, None, CONSENT,
+                                                      bad))
 
     def test_no_computer_track_opens_without_a_confirmation_that_names_it(self):
         ws = self.make()
-        ws.settings.update(microphone=True, computer_audio=True)
+        ws.settings.update(microphone=True)
         ws.start()
         no_sources = {k: v for k, v in both_consent().items() if k != "sources"}
-        for record in (CONSENT, {**both_consent(), "wording": 1}, no_sources,
+        for record in (CONSENT, {**both_consent(), "wording": 1},
+                       {**both_consent(), "wording": 2}, no_sources,
                        {**both_consent(), "sources": ["computer"]}):
             with self.subTest(record=record):
-                self.assertIn("confirm", self.refused(ws.start_recording, 3, None, record))
+                self.assertIn("confirm", self.refused(ws.start_recording, 3, None, record,
+                                                      BOTH))
                 self.assertEqual(self.holder, {})          # neither device was opened
                 self.assertIsNone(ws._recording)
-        ws.start_recording(3, consent=both_consent())
+        ws.start_recording(3, consent=both_consent(), sources=BOTH)
         self.assertIn("comp", self.holder)
         journal = recorder.read_journal(ws._recording.folder)
         self.assertEqual(journal["format"], 2)
         self.assertEqual((journal["consent"]["wording"], journal["consent"]["sources"]),
-                         (2, list(BOTH)))
+                         (3, list(BOTH)))
         ws.stop_recording()
 
     def test_a_confirmation_naming_the_computer_never_starts_the_microphone_alone(self):
-        # The switch or policy changed while the question was open: what is
-        # about to start no longer matches what the person confirmed.
-        for values, computer in (({}, False), ({"AllowComputerAudioRecording": False}, True)):
-            with self.subTest(values=values, computer=computer):
-                self.holder.clear()
-                ws = self.make(values)
-                ws.settings.update(microphone=True, computer_audio=computer)
-                ws.start()
-                self.assertIn("again", self.refused(ws.start_recording, 3, None,
-                                                    both_consent()))
-                self.assertEqual(self.holder, {})
-                ws.start_recording(3, consent=CONSENT)      # the microphone-only wording
-                self.assertNotIn("comp", self.holder)
-                ws.stop_recording()
+        ws = self.make()
+        ws.settings.update(microphone=True)
+        ws.start()
+        self.assertIn("again", self.refused(ws.start_recording, 3, None, both_consent()))
+        self.assertEqual(self.holder, {})
+        ws.start_recording(3, consent=CONSENT)      # the microphone-only wording
+        self.assertNotIn("comp", self.holder)
+        ws.stop_recording()
 
     def bridge(self, ws, confirm):
         from workspace import api
         return api.make_api(ws, confirm=confirm, decline_pause_s=0)
 
-    def test_the_bridge_asks_with_the_computer_wording_and_keeps_both_sources(self):
+    def test_online_through_the_bridge_asks_both_kinds_and_keeps_both_sources(self):
         ws = self.make()
-        ws.settings.update(microphone=True, computer_audio=True)
+        ws.settings.update(microphone=True)
+        ws.start()
+        asked = []
+        r = self.bridge(ws, lambda q: asked.append(q) or BOTH).start_recording(
+            3, "Test microphone")
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(asked, [consent.recording_question()])
+        self.assertEqual([c["label"] for c in asked[0]["choices"]],
+                         ["In person meeting", "Online meeting"])
+        self.assertIn("comp", self.holder)
+        journal = recorder.read_journal(ws._recording.folder)
+        self.assertEqual(journal["consent"]["sources"], list(BOTH))
+        self.assertEqual(journal["consent"]["wording"], 3)
+        ws.stop_recording()
+
+    def test_in_person_through_the_bridge_records_the_microphone_alone(self):
+        ws = self.make()
+        ws.settings.update(microphone=True)
+        ws.start()
+        r = self.bridge(ws, lambda q: ("microphone",)).start_recording(3, "Test microphone")
+        self.assertTrue(r["ok"], r)
+        self.assertNotIn("comp", self.holder)
+        journal = recorder.read_journal(ws._recording.folder)
+        self.assertEqual(journal["consent"]["sources"], ["microphone"])
+        self.assertNotIn("format", journal)
+        ws.stop_recording()
+
+    def test_an_answer_that_names_no_offered_kind_starts_nothing(self):
+        # Only the native window's choice counts: a plain yes, or sources the
+        # question did not offer, is a Cancel.
+        ws = self.make()
+        ws.settings.update(microphone=True)
+        ws.start()
+        from workspace import api
+        for answer in (True, ("computer",), ["microphone", "speakers"], "microphone"):
+            with self.subTest(answer=answer):
+                r = self.bridge(ws, lambda q, a=answer: a).start_recording(3, "Test microphone")
+                self.assertEqual(r["value"], api.CANCELLED)
+                self.assertEqual(self.holder, {})
+                self.assertIsNone(ws._recording)
+
+    def test_policy_changed_while_the_question_is_open_starts_nothing(self):
+        from workspace import policy
+        ws = self.make()
+        ws.settings.update(microphone=True)
+        ws.start()
+
+        def confirm(question):
+            ws.policy = policy.PolicySource(
+                reader=lambda: ({"AllowComputerAudioRecording": False}, ()))   # meanwhile
+            return BOTH
+        r = self.bridge(ws, confirm).start_recording(3, "Test microphone")
+        self.assertFalse(r["ok"])
+        self.assertIn("organisation", r["error"])
+        self.assertEqual(self.holder, {})
+        self.assertIsNone(ws._recording)
+
+    def test_policy_refusing_computer_audio_leaves_only_the_microphone_question(self):
+        ws = self.make({"AllowComputerAudioRecording": False})
+        ws.settings.update(microphone=True)
         ws.start()
         asked = []
         r = self.bridge(ws, lambda q: asked.append(q) or True).start_recording(
             3, "Test microphone")
         self.assertTrue(r["ok"], r)
-        self.assertEqual(asked, [consent.recording_question(BOTH)])
-        self.assertNotEqual(asked[0], consent.recording_question())
-        self.assertIn("on the call", asked[0]["check"])
-        self.assertIn("comp", self.holder)
-        journal = recorder.read_journal(ws._recording.folder)
-        self.assertEqual(journal["consent"]["sources"], list(BOTH))
+        self.assertEqual(asked, [consent.recording_question(computer=False)])
+        self.assertNotIn("choices", asked[0])
+        self.assertNotIn("comp", self.holder)
+        self.assertEqual(recorder.read_journal(ws._recording.folder)["consent"]["sources"],
+                         ["microphone"])
         ws.stop_recording()
 
-    def test_a_switch_changed_while_the_question_is_open_starts_nothing(self):
-        ws = self.make()
-        ws.settings.update(microphone=True, computer_audio=True)
+    def test_without_the_confirmation_the_bridge_still_asks_the_kind(self):
+        # DEC-099 decision 2: RequireRecordingConsent at 0 and computer audio
+        # allowed: a choice of kind only, and no consent record.
+        ws = self.make({"RequireRecordingConsent": False})
+        ws.settings.update(microphone=True)
         ws.start()
+        asked = []
+        r = self.bridge(ws, lambda q: asked.append(q) or BOTH).start_recording(
+            3, "Test microphone")
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(asked, [consent.recording_question(confirm=False)])
+        self.assertNotIn("check", asked[0])
+        self.assertIn("comp", self.holder)
+        self.assertNotIn("consent", recorder.read_journal(ws._recording.folder))
+        ws.stop_recording()
 
-        def confirm(question):
-            ws.settings.update(computer_audio=False)        # turned off meanwhile
-            return True
-        r = self.bridge(ws, confirm).start_recording(3, "Test microphone")
-        self.assertFalse(r["ok"])
-        self.assertIn("again", r["error"])
-        self.assertEqual(self.holder, {})
-        self.assertIsNone(ws._recording)
+    def test_without_the_confirmation_or_computer_audio_nothing_is_asked(self):
+        ws = self.make({"RequireRecordingConsent": False, "AllowComputerAudioRecording": False})
+        ws.settings.update(microphone=True)
+        ws.start()
+        asked = []
+        r = self.bridge(ws, lambda q: asked.append(q) or BOTH).start_recording(
+            3, "Test microphone")
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(asked, [])
+        self.assertNotIn("comp", self.holder)
+        ws.stop_recording()
 
     def test_a_two_track_recording_becomes_one_meeting_from_one_mix(self):
         from workspace import media
@@ -2099,9 +2241,10 @@ class WorkspaceTwoTrackTests(unittest.TestCase):
 
     def test_the_app_sizes_the_computer_queue_by_how_often_loopback_delivers(self):
         ws = self.make()
-        ws.settings.update(microphone=True, computer_audio=True)
+        ws.settings.update(microphone=True)
+        self.assertIsNone(ws._computer_track(("microphone",)))      # In person: none
         with mock.patch("workspace.app.COMPUTER_AUDIO_STARTS", True):
-            spec = ws._computer_track()
+            spec = ws._computer_track(BOTH)
         # Every active output, mixed (the owner's decision 1, 25 Oct 2026).
         self.assertEqual((spec["source"], spec["rate"], spec["block_s"]),
                          ({"kind": "all"}, loopback.LOOPBACK_RATE, loopback.POLL_S))
@@ -2144,16 +2287,15 @@ class WorkspaceTwoTrackTests(unittest.TestCase):
         ws.start()
         ws.start_recording(3, consent=CONSENT)
         ws.discard_recording()
-        ws.settings.update(computer_audio=True)
-        ws.start_recording(3, consent=both_consent())
+        ws.start_recording(3, consent=both_consent(), sources=BOTH)
         self.assertIn("comp", self.holder)
         ws.discard_recording()
         # Policy turns the confirmation off: no notice was confirmed, and the
-        # record still says what the recording opened.
+        # record still says what the recording opened (the kind chosen).
         ws = self.make({"RequireRecordingConsent": False})
-        ws.settings.update(microphone=True, computer_audio=True)
+        ws.settings.update(microphone=True)
         ws.start()
-        ws.start_recording(3)
+        ws.start_recording(3, sources=BOTH)
         ws.discard_recording()
         self.assertEqual(ws.audit.stats["refused"], 0)
         ws.close()
@@ -2163,7 +2305,7 @@ class WorkspaceTwoTrackTests(unittest.TestCase):
                    for line in path.read_bytes().splitlines()
                    if b'"kind":"recording_started"' in line]
         self.assertEqual([(r["consent"], r["wording"], r["sources"]) for r in started],
-                         [("confirmed", 2, "mic_only"), ("confirmed", 2, "mic_and_computer"),
+                         [("confirmed", 3, "mic_only"), ("confirmed", 3, "mic_and_computer"),
                           ("not_required", None, "mic_and_computer")])
         everything = b"".join(p.read_bytes() for _, p in audit.segments(folder))
         for needle in (b"Test speakers", b"Test microphone", b"speakers", b"microphone"):

@@ -696,6 +696,10 @@ class TapTests(unittest.TestCase):
 class DraftWorkspaceCase(unittest.TestCase):
     """A workspace with fake engines and a fake microphone (no tests here)."""
     RATE = 48000
+    # What the next recording records: the kind of meeting chosen in its
+    # confirmation (#554). In person (the microphone) unless a test chooses
+    # Online meeting.
+    sources = consent.MICROPHONE_ONLY
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -738,10 +742,10 @@ class DraftWorkspaceCase(unittest.TestCase):
         if drafts_on:
             self.ws.settings.update(live_drafts=True)
         self.ws.start()
-        # A confirmation for what the app will record: with computer audio
-        # on, it must name it (wording version 2, #108; #346).
+        # A confirmation for what the app will record: for an Online meeting
+        # it must name computer audio (#108; #346; the kind chosen, #554).
         self.ws.start_recording(3, consent=consent.recording_record(
-            sources=self.ws.recording_sources(), clock=lambda: 1000.0))
+            sources=self.sources, clock=lambda: 1000.0), sources=self.sources)
         return self.ws._recording
 
     def speech(self, bursts):
@@ -872,8 +876,7 @@ class WorkspaceDraftTests(DraftWorkspaceCase):
         self.assertTrue(wait_for(lambda: self.ws._busy and self.ws._busy[1] == kind, 120))
         time.sleep(1.0)                                  # well inside the step
         began = time.monotonic()
-        self.ws.start_recording(3, consent=consent.recording_record(
-            sources=self.ws.recording_sources(), clock=lambda: 1000.0))
+        self.ws.start_recording(3, consent=consent.recording_record(clock=lambda: 1000.0))
         started = time.monotonic() - began
         self.assertTrue(wait_for(self.running, 60))
         return started, time.monotonic() - began
@@ -1959,7 +1962,8 @@ class PagePartTests(DraftWorkspaceCase):
             self.held["comp"] = _Loopback(source, callback, notify)
             return self.held["comp"]
         self.ws.open_loopback = open_loopback
-        self.ws.settings.update(computer_audio=True, live_drafts_audio=choice)
+        self.sources = consent.WITH_COMPUTER          # an Online meeting (#554)
+        self.ws.settings.update(live_drafts_audio=choice)
 
     def play_both(self, mic_pcm, comp_pcm):
         """Both tracks in real time, 0.1 s at a time, as the devices would."""
@@ -2053,6 +2057,8 @@ class PagePartTests(DraftWorkspaceCase):
         self.assertIsNone(rec.tap_computer)
 
     def test_without_computer_audio_the_mix_choice_changes_nothing(self):
+        # An In person meeting: the mix applies to Online meetings only
+        # (#554, DEC-099 decision 4).
         self.ws.settings.update(live_drafts_audio="mix")
         rec = self.record()
         self.assertTrue(wait_for(self.running))

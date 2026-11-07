@@ -910,7 +910,7 @@ class WorkspaceTests(unittest.TestCase):
     def record(self):
         self.ws.start()
         self.ws.start_recording(3, consent=consent.recording_record(
-            sources=self.ws.recording_sources(), clock=lambda: 1000.0))
+            sources=consent.MICROPHONE_ONLY, clock=lambda: 1000.0))
         return self.ws._recording
 
     def speech(self, seconds):

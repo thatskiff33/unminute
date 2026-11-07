@@ -310,7 +310,6 @@ function wire() {
   $("s-speakers").addEventListener("change", () => setSetting({ speakers: $("s-speakers").checked }, "s-speakers"));
   $("s-gpu").addEventListener("change", () => setSetting({ gpu_speakers: $("s-gpu").checked }, "s-gpu"));
   $("s-microphone").addEventListener("change", () => setSetting({ microphone: $("s-microphone").checked }, "s-microphone"));
-  $("s-computer").addEventListener("change", () => setSetting({ computer_audio: $("s-computer").checked }, "s-computer"));
   $("s-lid").addEventListener("change", () => setSetting({ lid_override: $("s-lid").checked }, "s-lid"));
   $("s-drafts").addEventListener("change", () => setSetting({ live_drafts: $("s-drafts").checked }, "s-drafts"));
   $("s-words").addEventListener("change", () => setSetting({ live_words: $("s-words").checked }, "s-words"));

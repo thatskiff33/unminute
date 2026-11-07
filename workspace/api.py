@@ -145,19 +145,22 @@ def make_api(ws, get_window=lambda: None, confirm=None, decline_pause_s=DECLINE_
     declined = {}                         # question title -> when it was last answered No
 
     def ask(question):
-        """True for the action, False for Cancel (or no window), None if the
+        """True for the action (for a question with choices, the chosen
+        kind's sources, #554), False for Cancel (or no window), None if the
         same question was cancelled a moment ago and is not shown again yet."""
         title = question["title"]
         if time.monotonic() - declined.get(title, float("-inf")) < decline_pause_s:
             return None
         if confirm is not None:
-            answer = bool(confirm(question))
+            answer = confirm(question)
         else:
             window = get_window()
             if window is None:
                 return False              # no window to own the question: not confirmed
             from workspace import shell
             answer = shell.native_confirm(window, question)
+        # Only an answer the question offered counts: anything else is a No.
+        answer = consent.question_answer(question, answer)
         if not answer:
             declined[title] = time.monotonic()
         return answer
@@ -396,17 +399,23 @@ def make_api(ws, get_window=lambda: None, confirm=None, decline_pause_s=DECLINE_
         def run():
             index, label = _int(device, 0, 10_000), _device_name(name)
             ws.check_can_record(index, label)  # a refused request never shows the question
-            record = None
-            if ws.consent_required():
-                # The wording names what will be recorded, from the app's own
-                # settings and policy (#108); the record keeps those sources,
-                # and start_recording refuses it if they changed meanwhile.
-                sources = ws.recording_sources()
-                answer = ask(consent.recording_question(sources))
+            # The kind of meeting is chosen in the app's own window each time
+            # (#554, DEC-099): "Online meeting" is offered only where policy
+            # allows computer audio, and the page never sends the choice. The
+            # sources come from the window's answer alone; start_recording
+            # checks them against policy again, and the record keeps them.
+            required = ws.consent_required()
+            question = consent.recording_question(computer=ws.computer_audio_offered(),
+                                                  confirm=required)
+            sources = consent.MICROPHONE_ONLY
+            if question is not None:
+                answer = ask(question)
                 if not answer:
                     return CANCELLED_WAIT if answer is None else CANCELLED
-                record = consent.recording_record(sources)
-            return ws.start_recording(index, label, consent=record)
+                if question.get("choices"):
+                    sources = answer
+            record = consent.recording_record(sources) if required else None
+            return ws.start_recording(index, label, consent=record, sources=sources)
         return _safe(run)
 
     def test_microphone(self, device, name):

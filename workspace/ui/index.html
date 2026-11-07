@@ -83,7 +83,7 @@
         </button>
       </div>
       <p id="mic-line" class="mic-line" hidden>
-        <span>Microphone: <span id="mic-name"></span><span id="mic-computer" hidden> · Computer audio on</span></span>
+        <span>Microphone: <span id="mic-name"></span></span>
         <button type="button" id="mic-change" class="link-plain" aria-expanded="false" aria-controls="mic-chooser">Change or test</button>
       </p>
       <section id="mic-chooser" class="card chooser" aria-label="Choose the microphone" hidden>
@@ -413,9 +413,7 @@
             <button type="button" id="su-test">Test microphone</button>
           </div>
           <p id="su-test-result" class="su-test" role="status" aria-live="polite" hidden></p>
-          <label class="toggle-row top" for="su-computer" id="su-computer-row"><span class="t-text"><span class="t-label strong">Also record computer audio</span>
-            <span id="su-computer-note" class="t-note"></span></span>
-            <input type="checkbox" id="su-computer" class="switch" role="switch"></label>
+          <p id="su-kind-note" class="t-note"></p>
         </div>
         <p class="su-note">Tell everyone in the meeting when it is being recorded, including people on a call.</p>
         <div class="su-foot">
@@ -476,11 +474,8 @@
       <h2 id="h-rec">Recording and speakers</h2>
       <div class="set-grid three">
         <label class="toggle-row top" for="s-microphone"><span class="t-text"><span class="t-label strong">Record with a microphone</span>
-          <span class="t-note">Adds Record a meeting to the Meetings page. Records the room through your microphone.</span></span>
+          <span id="s-microphone-note" class="t-note">Adds Record a meeting to the Meetings page.</span></span>
           <input type="checkbox" id="s-microphone" class="switch" role="switch"></label>
-        <label class="toggle-row top" for="s-computer"><span class="t-text"><span class="t-label strong">Also record computer audio</span>
-          <span id="s-computer-note" class="t-note"></span></span>
-          <input type="checkbox" id="s-computer" class="switch" role="switch"></label>
         <label class="toggle-row top" for="s-speakers"><span class="t-text"><span class="t-label strong">Name speakers after transcription</span>
           <span class="t-note">Works out who spoke when, after the text is ready.</span></span>
           <input type="checkbox" id="s-speakers" class="switch" role="switch"></label>
@@ -491,7 +486,7 @@
           <span id="s-words-note" class="t-note"></span></span>
           <input type="checkbox" id="s-words" class="switch" role="switch"></label>
         <div id="s-drafts-audio-box" class="set-display" hidden>
-          <span id="s-drafts-audio-label" class="t-label strong">With computer audio on, draft text follows</span>
+          <span id="s-drafts-audio-label" class="t-label strong">In online meetings, draft text follows</span>
           <div class="segmented" role="radiogroup" aria-labelledby="s-drafts-audio-label">
             <label><input type="radio" name="draftsaudio" value="microphone" class="sr"><span>The microphone</span></label>
             <label><input type="radio" name="draftsaudio" value="mix" class="sr"><span>Both, mixed</span></label>

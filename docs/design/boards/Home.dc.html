@@ -236,7 +236,7 @@ class Component extends DCLogic {
     ];
     // Computer audio (#108): on in Settings, recorded as a second track.
     const computer = String(this.props.computer ?? false) === 'true';
-    const micLine = 'Microphone: Laptop microphone' + (computer ? ' · Computer audio on' : '');
+    const micLine = 'Microphone: Laptop microphone';   // #554: the kind is chosen when recording starts
     const recNote = 'Laptop microphone. ' + (computer
       ? 'Microphone and computer audio are recorded. Tell everyone in the meeting, including people on the call.'
       : 'Only the microphone is recorded. Tell everyone present the meeting is being recorded.');

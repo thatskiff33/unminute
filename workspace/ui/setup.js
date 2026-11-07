@@ -5,9 +5,7 @@
 import { $, attempt, call, el, errorHome, say, sayDone, showError, state } from "./core.js";
 import { button, icon, joinParts, linkButton, show } from "./navigation.js";
 import { confirmDialog } from "./confirm.js";
-import {
-  computerLocked, computerNote, downloadOff, itManaged, modelDownloadsOff
-} from "./settings.js";
+import { downloadOff, itManaged, meetingKindNote, modelDownloadsOff } from "./settings.js";
 import { micLists, relistMics, relistOnFocus, showSuMics } from "./recording.js";
 import { putText } from "./drafts.js";
 import { refresh } from "./polling.js";
@@ -19,7 +17,7 @@ import { refresh } from "./polling.js";
 const SU_STEPS = [["Welcome", ""], ["Speech model", ""], ["Speaker names", "Optional"],
                   ["Microphone", "Optional"], ["Ready", ""]];
 // returnTo: opened from Downloads for one step (the speaker token); leaving that step goes back.
-const suState = { step: 1, skipSpeakers: false, mic: null, computer: false, returnTo: null };
+const suState = { step: 1, skipSpeakers: false, mic: null, returnTo: null };
 
 // A card's short name and a download's progress (a number, or
 // null when it cannot be told) come from Python as they are: the page never
@@ -258,7 +256,7 @@ function renderSummary(s) {
     : suState.skipSpeakers ? "Skipped. Turn on in Settings."
     : isRunning(speaker) ? "Downloading…" : isQueued(speaker) ? "Queued"
     : "Not set up. You can add it later in Settings.";
-  const mic = !suState.mic ? "Skipped. Turn on in Settings." : suState.computer ? "On, with computer audio" : "On";
+  const mic = !suState.mic ? "Skipped. Turn on in Settings." : "On";
   $("su-summary").replaceChildren(summaryRow("Speech model", speech, !!ready),
     summaryRow("Speaker names", names, names === "Ready"), summaryRow("Microphone", mic, !!suState.mic));
 }
@@ -268,12 +266,10 @@ async function renderSuMic() {
   if (!s) return;
   state.managed = s.managed;
   suState.mic = !!s.microphone;
-  suState.computer = !!s.computer_audio;
   $("su-mic").checked = suState.mic;
-  $("su-mic-row").hidden = $("su-computer-row").hidden = !suState.mic;
-  $("su-computer").checked = suState.computer;
-  $("su-computer").disabled = computerLocked(s);
-  $("su-computer-note").textContent = computerNote(s);
+  $("su-mic-row").hidden = $("su-kind-note").hidden = !suState.mic;
+  // No computer audio switch (#554): the kind of meeting is chosen each time.
+  $("su-kind-note").textContent = meetingKindNote();
   if (!suState.mic) $("su-test-result").hidden = true;
   if (suState.mic && (micLists["su-device"].stale || !$("su-device").options.length))
     await attempt(() => relistMics("su-device", showSuMics));
@@ -316,14 +312,10 @@ function wireSetup() {
     micLists["su-device"].stale = true;
     renderSuMic();
   }));
-  $("su-computer").addEventListener("change", () => attempt(async () => {
-    await call("set_settings", { computer_audio: $("su-computer").checked });
-    renderSuMic();
-  }));
   $("su-skip-4").addEventListener("click", () => {
     // First run only: skipping undoes a switch turned on here. Later visits leave Settings alone.
     if (suState.mic && !state.setup.onboarded)
-      attempt(() => call("set_settings", { microphone: false }).then(() => { suState.mic = suState.computer = false; renderSummary(state.setup); }));
+      attempt(() => call("set_settings", { microphone: false }).then(() => { suState.mic = false; renderSummary(state.setup); }));
   });
   $("su-test").addEventListener("click", () => attempt(async () => {
     const box = $("su-test-result");
