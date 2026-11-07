@@ -90,6 +90,8 @@ Durability
 - **D4** Heavy models load lazily, one at a time. During a recording only, live drafts may hold
   two: Parakeet v2 in the draft worker and the instant words model in its own worker, loaded one
   after the other, both ended before any processing (the user's decision DEC-092, #105). A
+  recording takes precedence: starting one stops processing in progress, which is redone
+  after the recording, nothing committed lost (the user's decision DEC-096, #552). A
   speaker-identification failure leaves the transcript usable, and an instant words failure
   leaves the drafts and the recording running. A GPU failure falls back to the processor and
   says so; the model, precision and committed text never change silently. Guard:

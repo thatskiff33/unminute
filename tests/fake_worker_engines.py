@@ -297,6 +297,14 @@ def gpu_sentences(threads, device="cpu"):
     return _whisper_like(_sentences("sentence"), device)
 
 
+def gpu_sleepy(threads, device="cpu"):
+    """sleepy, on the graphics card as a Whisper model would be (#552)."""
+    def run(a):
+        time.sleep(30)
+        return []
+    return _whisper_like(run, device)
+
+
 def gpu_oom_after_first(threads, device="cpu"):
     """On the graphics card the first part works, then CUDA runs out of
     memory, as CTranslate2 reports it. On the processor it always works."""

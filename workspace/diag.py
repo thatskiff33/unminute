@@ -94,7 +94,9 @@ STATE_RETRIES_S = (0.02, 0.05, 0.1, 0.2, 0.4)   # _write_state's pauses while a 
 NUMBERS = {"line", "col", "count", "exitcode", "hung", "earlier", "truncated",
            "previous_run_unclean", "imports_s", "workspace_s", "page_loaded_s",
            "winerror", "phrases", "restarts", "skipped_s", "dropped_s", "load_s",
-           "computer_dropped_s", "bytes", "words"}
+           "computer_dropped_s", "bytes", "words",
+           # #552: how long a recording's drafts waited for processing to let go
+           "wait_s"}
 LOG_NAME = re.compile(r"(app|worker|gpu-worker|draft-worker|instant-worker|setup)"
                       r"(\.[0-9])?")  # a log's stem
 # The workspace's own files and folders (the lid's restore record is

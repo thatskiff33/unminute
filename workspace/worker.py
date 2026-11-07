@@ -663,9 +663,32 @@ class WorkerHandle:
         self._shutdown_own()
 
     def shutdown(self):
-        for companion in self._companions():   # read once: release_gpu may clear them
-            companion.shutdown()
-        self._shutdown_own()
+        """End this worker and its companions, each letting go of its model,
+        and return once all have ended (D4). They end side by side, not one
+        after another: a worker on the graphics card can take a while to let
+        go of its model, and a recording's drafts wait for all of them (#552),
+        so the wait is the slowest worker's, not the sum. A worker's error
+        reaches the caller, as before, but only once every one has ended.
+        No caller may hold a companion's lock here: its thread would wait on it."""
+        errors = []
+
+        def end(companion):
+            try:
+                companion.shutdown()
+            except BaseException as exc:          # raised again below, after the joins
+                errors.append(exc)
+        ending = [threading.Thread(target=end, args=(companion,), daemon=True,
+                                   name="worker-shutdown")
+                  for companion in self._companions()]   # read once: release_gpu may clear them
+        for t in ending:
+            t.start()
+        try:
+            self._shutdown_own()
+        finally:
+            for t in ending:
+                t.join()
+        if errors:
+            raise errors[0]
 
     def _shutdown_own(self):
         with self._lock:

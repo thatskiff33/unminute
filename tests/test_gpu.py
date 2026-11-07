@@ -1121,6 +1121,45 @@ class WorkspaceWhisperGpuTests(unittest.TestCase):
         self.assertIsNone(self.ws.handle._gpu)          # the speaker GPU worker never started
         self.assertFalse(self.ws._gpu_whisper_run)      # cleared when the run ended
 
+    def test_a_recording_started_during_a_transcription_on_the_card_starts_at_once(self):
+        # #552 (the user's decision DEC-096): the recording takes precedence; the
+        # transcription on the card is stopped and redone after it.
+        import time
+
+        from workspace import consent, recorder
+        here = str(Path(__file__).resolve().parent)
+        sys.path.insert(0, here)
+        self.addCleanup(sys.path.remove, here)
+        from test_recorder import WorkspaceRecordingTests, opener
+        holder = {}
+        devices = mock.patch.object(recorder, "list_devices",
+                                    lambda: WorkspaceRecordingTests.DEVICES)
+        devices.start()
+        self.addCleanup(devices.stop)
+        install_cublas(self, self.ws.cache_dir, loadable_dll())
+        model = self.offer("test:fake_worker_engines:gpu_sleepy")
+        self.ws.settings.update(model=model, speakers=False, microphone=True)
+        self.ws.set_settings({"gpu_speakers": True, "mode": "faster"})
+        self.ws.open_stream = opener(holder)
+        self.ws.start()
+        self.assertEqual(self.ws.import_paths([str(self.rec)])["accepted"], 1)
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline and not self.ws._gpu_whisper_run:
+            time.sleep(0.05)
+        self.assertTrue(self.ws._gpu_whisper_run)
+        time.sleep(1.0)
+        began = time.monotonic()
+        self.ws.start_recording(3, consent=consent.recording_record(clock=lambda: 1000.0))
+        self.assertLess(time.monotonic() - began, 2.0)
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and self.ws._busy is not None:
+            time.sleep(0.05)
+        self.assertIsNone(self.ws._busy)                 # stopped, not finished
+        [m] = self.ws.meetings()
+        self.assertFalse(m["paused"])                    # redone after the recording
+        holder["stream"].feed(2)
+        self.ws.stop_recording()
+
     def test_out_of_graphics_memory_falls_back_without_losing_committed_parts(self):
         install_cublas(self, self.ws.cache_dir, loadable_dll())
         mid = self.transcribe("gpu_oom_after_first")
