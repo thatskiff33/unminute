@@ -110,22 +110,31 @@ async function renderHandoffOptions() {
   setHandoffButtons();
   $("ho-redactions").value = p.options.redactions.join("\n");
   const omitted = new Set(p.options.omitted);
-  const rows = [];
+  const lines = [];
   let start = 0, total = 0;
   do {
     const page = await attempt(() => call("transcript", mid, start, 2000));
     if (stale()) return;
     if (!page || !page.items.length) break;
     total = page.total;
-    for (const it of page.items)
-      rows.push(el("li", {}, el("label", { title: `${it.who ? it.who + ": " : ""}${it.text}` },
-        el("input", { type: "checkbox", value: it.id, checked: omitted.has(it.id),
-                      "aria-label": `Leave out ${fmtTime(it.t)} ${it.text}${it.who ? ` (${it.who})` : ""}` }),
-        el("span", { class: "t-mark", textContent: fmtTime(it.t) }),
-        el("span", { class: "p-text", textContent: it.text }))));
+    // One choice per line as the transcript shows it (#561, 3a): a joined
+    // passage belongs to the line before it, and leaving the line out leaves
+    // out every passage in it, as the handoff does.
+    for (const it of page.items) {
+      if (it.joined && lines.length) lines[lines.length - 1].push(it); else lines.push([it]);
+    }
     start += page.items.length;
   } while (start < total);
-  handoffState.total = total;
+  const rows = lines.map((group) => {
+    const it = group[0], text = group.map((x) => x.text).join(" ");
+    const box = el("input", { type: "checkbox", value: it.id, checked: group.some((x) => omitted.has(x.id)),
+                              "aria-label": `Leave out ${fmtTime(it.t)} ${text}${it.who ? ` (${it.who})` : ""}` });
+    box.dataset.ids = group.map((x) => x.id).join(",");
+    return el("li", {}, el("label", { title: `${it.who ? it.who + ": " : ""}${text}` }, box,
+      el("span", { class: "t-mark", textContent: fmtTime(it.t) }),
+      el("span", { class: "p-text", textContent: text })));
+  });
+  handoffState.total = lines.length;
   $("ho-passages").replaceChildren(...rows);
   $("ho-apply").disabled = false;
   countLeftOut();
@@ -137,7 +146,8 @@ function countLeftOut() {
 }
 
 async function applyHandoffOptions() {
-  const omitted = [...document.querySelectorAll("#ho-passages input:checked")].map((i) => Number(i.value));
+  const omitted = [...document.querySelectorAll("#ho-passages input:checked")]
+    .flatMap((i) => (i.dataset.ids || i.value).split(",").map(Number));
   const redactions = $("ho-redactions").value.split("\n").map((s) => s.trim()).filter(Boolean);
   await attempt(async () => {
     await call("set_handoff_options", state.mid, omitted, redactions);

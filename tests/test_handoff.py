@@ -239,6 +239,19 @@ class HandoffTests(unittest.TestCase):
         md = self.build()["markdown"]
         self.assertIn("Annual report by [redacted] and [redacted].", md)
 
+    def test_overlapping_phrases_are_redacted_whole(self):
+        # #561 review: one pattern took the earliest match only, so with
+        # "call John" and "John Smith", "Smith" was left showing; and a
+        # phrase's overlapping matches ("na na" in "na na na") left a word.
+        redact = handoff._redactor(["call John", "John Smith", "na na"])
+        R = handoff.REDACTED
+        self.assertEqual((f"We will {R} tomorrow.", 1),
+                         redact("We will call John Smith tomorrow."))
+        self.assertEqual((f"Sing {R} now, {R} later.", 2),
+                         redact("Sing na na na now, call John later."))
+        self.assertEqual((f"{R} and {R}", 2), redact("John Smith and call  john"))
+        self.assertEqual(("Johnson called.", 0), redact("Johnson called."))
+
     def test_omissions_are_limited_to_this_meeting(self):
         self.review()
         handoff.set_options(self.store, self.mid, [self.ids[0], 10**9], [])

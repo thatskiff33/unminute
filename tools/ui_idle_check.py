@@ -11,7 +11,9 @@
 # report once it is (#171). A fourth opens a long meeting while it is being
 # transcribed and counts what the page fetches and draws as passages arrive,
 # with an earlier chunk done again, an edit, speakers and a search on the way;
-# the rows shown must then be each passage once, in order (#127). The next two
+# the passages shown must then be each passage once, in order (#127), counted
+# by their text spans, each in the line the app's joined flag puts it in
+# (#561: a joined line holds several). The next two
 # open the Meetings page with a recording going (#340), visible and hidden, on a
 # simulated 120 Hz display (fixtures.js: headless Edge runs almost no animation
 # frames under virtual time), and count the clock and level polls and the level
@@ -139,15 +141,19 @@ def run_transcribing(base):
 
 def transcribing_problems(result):
     """Reasons the page showed the growing transcript wrongly: a passage
-    missing, repeated or out of order, speaker turns wrong, an edit lost or
-    drawn over, or a whole redraw where appending was not safe missed (or one
-    where it was)."""
+    missing, repeated or out of order, a passage in the wrong line (joined to
+    the line before it when the app says not, or not when it says so, #561),
+    speaker turns wrong, an edit lost or drawn over, or a whole redraw where
+    appending was not safe missed (or one where it was). Passages are counted
+    by their text spans, not by lines, since a joined line holds several."""
     problems = []
     if result.get("page_errors"):
         problems.append(f"transcribing: the page threw: {'; '.join(result['page_errors'][:3])}")
     if not result.get("each_once_in_order"):
-        problems.append(f"transcribing: the page shows {result.get('rows_shown')} rows, not each "
-                        f"of the {result.get('rows_expected')} passages once and in order")
+        problems.append(f"transcribing: the page shows {result.get('rows_shown')} passages, not "
+                        f"each of the {result.get('rows_expected')} once and in order")
+    if result.get("joins_right") is not True:
+        problems.append("transcribing: passages are joined into lines wrongly")
     if not result.get("turns_right"):
         problems.append("transcribing: speaker turns are marked wrongly")
     if result.get("edit_held_back") is not True:

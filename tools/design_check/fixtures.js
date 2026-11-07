@@ -381,9 +381,17 @@
 
   function growFinish() {
     const rows = data.transcript["m-garden"];
-    const shown = [...document.querySelectorAll("#transcript > li")];
-    const ids = shown.map((li) => Number(li.dataset.id));
-    // A passage starts a turn when its speaker differs from the one before.
+    // Each passage is a text span with its id, in a line of its own or joined
+    // to the line before it (#561): the passages shown are counted, not the
+    // lines, and each must be in the line the app's joined flag says.
+    const pieces = [...document.querySelectorAll("#transcript > li .text")];
+    const ids = pieces.map((span) => Number(span.dataset.id));
+    const page = transcriptPage("m-garden", 0, rows.length).items;
+    const lineOf = pieces.map((span) => span.closest("li"));
+    const joinsRight = pieces.length === page.length && lineOf.every((li, i) =>
+      i === 0 ? !page[0].joined : (li === lineOf[i - 1]) === !!page[i].joined);
+    // A passage starts a turn when its speaker differs from the one before; a
+    // joined passage never does (it has the line's speaker).
     const turns = rows.map((r, i) => !!r[2] && (i === 0 || r[2] !== rows[i - 1][2]));
     const edited = document.querySelector(`#transcript .text[data-id="${grow.editId}"]`);
     const result = {
@@ -398,8 +406,10 @@
       rows_shown: ids.length,
       rows_expected: rows.length,
       each_once_in_order: ids.length === rows.length && ids.every((id, i) => id === rows[i][5]),
-      turns_right: shown.length === rows.length &&
-                   shown.every((li, i) => li.classList.contains("turn") === turns[i]),
+      joins_right: joinsRight,
+      turns_right: pieces.length === rows.length &&
+                   lineOf.every((li, i) => (i > 0 && li === lineOf[i - 1]) ? !turns[i]
+                     : li.classList.contains("turn") === turns[i]),
       edit_held_back: grow.editHeld,
       held_rows_drawn: grow.heldDrawn,
       held_rows_expected: GROW_HELD,
@@ -428,8 +438,9 @@
   const LIMITS = "This removes the app's own working copies on this computer. It cannot remove copies elsewhere: synced or backed-up folders (for example OneDrive), the original on a phone or recorder, or anything you shared with an AI assistant or other service. Ordinary deletion is not a forensic erasure of the disk.";
   const GARDEN = [
     [0, 2, "SPEAKER_00", "Thanks for making time this morning."],
-    [2, 6, "SPEAKER_00", "Let's go through the plan for the community garden project."],
-    [6, 8, "SPEAKER_00", "Then agree who does what."],
+    // A sentence split in two (#561): shown, copied and handed off as one line.
+    [2, 6, "SPEAKER_00", "Let's go through the plan for the community garden project,"],
+    [6, 8, "SPEAKER_00", "then agree who does what."],
     [8, 10, "SPEAKER_01", "Sounds good."],
     [10, 13, "SPEAKER_01", "The main thing from last week is the budget."],
     [13, 19, "SPEAKER_01", "We have quotes for the raised beds and the water tank, and both came in under budget."],
@@ -523,7 +534,10 @@
   function handoffPreview(anonymise) {
     const opts = data.options || { omitted: [13], redactions: ["water tank"] };
     const who = (label) => (anonymise ? { SPEAKER_00: "Speaker 1", SPEAKER_01: "Speaker 2" } : NAMES)[label];
-    const lines = GARDEN.slice(0, 7).map(([t, , label, text]) =>
+    const shown = [];                 // joined lines as one, as the app hands them off (#561)
+    for (const it of transcriptPage("m-garden", 0, 8).items)
+      if (it.joined && shown.length) shown[shown.length - 1].text += ` ${it.text}`; else shown.push({ ...it });
+    const lines = shown.map(({ t, label, text }) =>
       `[${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}] ${who(label)}: ${text.replace("water tank", "[redacted]")}`);
     const combined = "[Template prompt appears here: the wording saved in the selected template]\n\n" +
       "## Transcript\nCommunity garden planning (sample)\n\n" + lines.join("\n");
@@ -1125,10 +1139,17 @@
   // -- the bridge ----------------------------------------------------------------------
   // A row's id is its sixth field where it has one (the transcribing mode's
   // passages keep theirs when others land before them), else its place.
+  // joined: the app's rule for joined lines (workspace/joins.py, #561), on the
+  // whole list, so the first item of a page is right too.
   function transcriptPage(mid, start, count) {
     const rows = (data.transcript[mid] || []).map(([t, end, label, text, edited, id], i) => ({
       id: id || i + 1, t, end, text, edited: !!edited, label, who: NAMES[label] || null, overlap: false }));
+    rows.forEach((r, i) => { r.joined = i > 0 && joinsPrevious(rows[i - 1], r); });
     return { total: rows.length, start, items: rows.slice(start, start + count) };
+  }
+  function joinsPrevious(p, c) {
+    return !/[.?!][\s"')\]}\u2019\u201d\u00bb]*$/.test(p.text) && c.t - p.end <= 1.0 &&
+      (p.label || null) === (c.label || null) && !p.overlap && !c.overlap;
   }
   const handlers = {
     setup_state: () => ({ cards: data.cards, token_remembered: false,

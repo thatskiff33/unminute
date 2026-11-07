@@ -26,7 +26,7 @@ from pathlib import Path
 
 from workspace import asr_engines
 from workspace import (audit, cleanup, clipboard, credentials, diag, drafts, engines, gpu,
-                       handoff, holds, instance, instant, intake, keystore,
+                       handoff, holds, instance, instant, intake, joins, keystore,
                        media, policy, power, recorder,
                        resources, runner, setup, speaker_names, speakers)
 from workspace.chunking import plan_chunks
@@ -169,6 +169,12 @@ def _clean_text(text, limit, label=False):
     if len(text) > limit:
         raise WorkspaceError(f"That is too long (limit {limit} characters).")
     return text
+
+
+def _piece(item):
+    """A transcript item as workspace/joins.py takes it."""
+    return {"text": item["text"], "start": item["t"], "end": item["end"],
+            "label": item["label"], "overlap": item["overlap"]}
 
 
 class Workspace(RecordingMixin, SettingsMixin, HandoffMixin, WatchedFoldersMixin):
@@ -1557,17 +1563,24 @@ class Workspace(RecordingMixin, SettingsMixin, HandoffMixin, WatchedFoldersMixin
         v = self._version(mid, version)
         if v is None:
             return {"total": 0, "start": 0, "items": []}
-        # Paged in SQL: only this page's passages are read and opened (#111).
+        # Paged in SQL: only this page's passages are read and opened (#111),
+        # with the one before the page, so its first item's `joined` is right.
         # Under the store's lock, so the total and the page agree.
+        before = 1 if start > 0 else 0
         with self.store._lock:
             total = self.store.passage_count(v["id"])
-            page = self.store.transcript_page(v["id"], start, count, words=False)
+            page = self.store.transcript_page(v["id"], start - before, count + before,
+                                              words=False)
         view = speaker_names.resolve(self.store, v["id"])
-        return {"total": total, "start": start, "items": [
-            {"id": r["id"], "t": r["start_s"], "end": r["end_s"], "text": r["text"],
-             "edited": bool(r["edited"]), "label": view["labels"].get(r["id"]),
-             "who": view["names"].get(view["labels"].get(r["id"])),
-             "overlap": bool(view["overlap"].get(r["id"]))} for r in page]}
+        items = [{"id": r["id"], "t": r["start_s"], "end": r["end_s"], "text": r["text"],
+                  "edited": bool(r["edited"]), "label": view["labels"].get(r["id"]),
+                  "who": view["names"].get(view["labels"].get(r["id"])),
+                  "overlap": bool(view["overlap"].get(r["id"]))} for r in page]
+        # joined (#561, DEC-100): shown as part of the line before it. Display
+        # only; the passages themselves never change.
+        for i, item in enumerate(items):
+            item["joined"] = i > 0 and joins.joins_previous(_piece(items[i - 1]), _piece(item))
+        return {"total": total, "start": start, "items": items[before:]}
 
     # -- speaker names (#21) ------------------------------------------------------------
 

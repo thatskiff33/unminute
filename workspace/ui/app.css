@@ -672,6 +672,8 @@ kbd.plain { padding: 0; border: 0; background: none; font-size: inherit; }
 .text[contenteditable="plaintext-only"] {
   padding: 6px 10px; margin-block: 0; border: 2px solid var(--primary); background: var(--input-bg); outline: none; text-decoration: none;
 }
+/* A joined line (#561): its passages flow as one paragraph, each still its own span. */
+.line { font-size: 15px; line-height: 1.5; overflow-wrap: anywhere; }
 .edit-hint { font-size: 12px; color: var(--muted); }
 .overlap { font-size: 12px; color: var(--muted); }
 .reassign {

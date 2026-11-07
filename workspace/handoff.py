@@ -27,6 +27,7 @@ import time
 import unicodedata
 from pathlib import Path
 
+from workspace.joins import lines as joined_lines
 from workspace.speaker_names import given_names, resolve
 from workspace.store import DamagedContent
 
@@ -521,14 +522,39 @@ def _one_line(text):
 
 def _redactor(phrases):
     """Whole words only ("Ann" does not touch "Annual"), any spacing between
-    words, case-insensitive; longest phrase first."""
+    words, case-insensitive. Every match of every phrase is redacted, even
+    where two overlap ("call John" and "John Smith" in "call John Smith"),
+    or where one phrase's matches overlap ("na na" in "na na na"): their
+    spans are merged and each merged span becomes one marker, so no part of
+    a phrase is left showing (#561 review: a joined line can bring such
+    phrases together). Returns the text and the number of markers."""
     phrases = [p for p in (_one_line(p) for p in phrases) if p]   # also ones saved before
     if not phrases:
         return lambda text: (text, 0)
-    parts = [r"\s+".join(re.escape(w) for w in p.split())
-             for p in sorted(phrases, key=len, reverse=True)]
-    pattern = re.compile(r"(?<!\w)(?:" + "|".join(parts) + r")(?!\w)", re.IGNORECASE)
-    return lambda text: pattern.subn(REDACTED, text)
+    words = [r"\s+".join(re.escape(w) for w in p.split()) for p in phrases]
+    # A lookahead finds a match at every start position, overlapping ones too.
+    patterns = [re.compile(r"(?<!\w)(?=(" + w + r")(?!\w))", re.IGNORECASE) for w in words]
+    # One combined pattern finds a match in a text exactly when some phrase
+    # matches in it, and quickly: a text it finds nothing in is left as it is.
+    any_phrase = re.compile(r"(?<!\w)(?:" + "|".join(words) + r")(?!\w)", re.IGNORECASE)
+
+    def redact(text):
+        if not any_phrase.search(text):
+            return text, 0
+        spans = sorted((m.start(1), m.end(1)) for pat in patterns
+                       for m in pat.finditer(text) if m.end(1) > m.start(1))
+        merged = []
+        for start, end in spans:
+            if merged and start <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end])
+        out, at = [], 0
+        for start, end in merged:
+            out += [text[at:start], REDACTED]
+            at = end
+        return "".join(out) + text[at:], len(merged)
+    return redact
 
 
 def _stamp(t):
@@ -606,9 +632,18 @@ def _build(store, mid, template, anonymise, title_in_name):
     v = store.active_version(mid)
     opts = options(store, mid)
     redact = _redactor(opts["redactions"])
-    omitted = set(opts["omitted"])
     view = resolve(store, v["id"])
     rows = store.transcript(v["id"], words=False)      # the text only, no word timings
+    # One line per joined line (#561, DEC-100), by the rule the transcript
+    # view uses (workspace/joins.py). A line is left out whole when any of its
+    # passages is (3a: the page offers one choice per line), so no part of a
+    # line left out ever goes.
+    groups = joined_lines([{"row": row, "text": row["text"], "start": row["start_s"],
+                            "end": row["end_s"], "label": view["labels"].get(row["id"]),
+                            "overlap": bool(view["overlap"].get(row["id"]))} for row in rows])
+    chosen = set(opts["omitted"])
+    left_out = [g for g in groups if any(p["row"]["id"] in chosen for p in g)]
+    omitted = {p["row"]["id"] for g in left_out for p in g}
     pseudo = _pseudonyms(view, rows, omitted) if anonymise else {}
     rename = lambda text: text      # noqa: E731
     if anonymise:
@@ -627,17 +662,20 @@ def _build(store, mid, template, anonymise, title_in_name):
     title = r(m["title"]) or "Meeting"
     names = (pseudo if anonymise else
              {lbl: r(name) for lbl, name in view["names"].items()})   # counted once each
-    lines, speakers, skipped = [], [], 0
-    for row in rows:
-        if row["id"] in omitted:
-            skipped += 1
+    lines, speakers, skipped = [], [], len(left_out)
+    for group in groups:
+        first = group[0]["row"]
+        if first["id"] in omitted:
             continue
-        label = view["labels"].get(row["id"])
+        # The first passage's time and speaker (every passage in a line has
+        # the same speaker). Redaction and names are applied to the line as
+        # shown, so a phrase split between two of its passages is found too.
+        label = group[0]["label"]
         who = names.get(label) if label else None
         if who and who not in speakers:
             speakers.append(who)
-        lines.append(f"[{_stamp(row['start_s'])}] " + (f"**{who}:** " if who else "")
-                     + r(row["text"]))
+        lines.append(f"[{_stamp(first['start_s'])}] " + (f"**{who}:** " if who else "")
+                     + r(" ".join(_one_line(p["row"]["text"]) for p in group)))
     head = [f"# {title}", "",
             f"- Date imported: {time.strftime('%d %B %Y', time.localtime(m['created_at']))}",
             f"- Speakers (as labelled): {', '.join(speakers) if speakers else 'not identified'}",
