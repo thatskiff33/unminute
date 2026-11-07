@@ -39,7 +39,7 @@ Follow `docs/PACKAGING.md`, "Managed deployment (Intune)": a Win32 app in user c
 
 ## 3. Lowest-supported laptop and the release performance run (#189, sitting 2)
 
-There is no named reference laptop (owner decision DEC-005, 18 October 2026, #121). The release performance run is on whichever Windows machine prepares the release, and records that machine's specification. The lowest-supported run below is for information.
+From v0.5.0-preview.9 the release performance run is on one standard machine, the owner's second Windows PC (the owner's decision DEC-097, 7 November 2026, #121; docs/RELEASING.md, step 3), and records that machine's specification. Before that there was no named reference machine (owner decision DEC-005, 18 October 2026, #121). The lowest-supported run below is for information.
 
 **Define the floor first.** Agree the lowest-supported specification, for example 4 cores and 8 GB of memory, CPU only. Record it on #189: it becomes the documented minimum.
 
