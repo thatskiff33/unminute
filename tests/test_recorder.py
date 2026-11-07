@@ -1044,6 +1044,22 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.assertEqual(info["sources"], ["microphone"])
         self.assertFalse((self.ws.media / m["id"] / "recording.json").exists())
 
+    def test_a_confirmation_of_an_earlier_wording_starts_nothing(self):
+        # #554: a record of wording version 2 (no choice of meeting) or 1 is
+        # history only; a new recording needs one of the question shown now.
+        self.ws.settings.update(microphone=True)
+        self.ws.start()
+        for wording in (1, 2):
+            with self.subTest(wording=wording), \
+                    self.assertRaisesRegex(WorkspaceError, "not valid"):
+                self.ws.start_recording(3, consent={**CONSENT, "wording": wording})
+        self.assertIsNone(self.ws._recording)
+        self.assertEqual(self.holder, {})
+        self.ws.start_recording(3, consent=CONSENT)
+        self.assertEqual(recorder.read_journal(self.ws._recording.folder)["consent"]["wording"],
+                         consent.RECORDING_WORDING_VERSION)
+        self.ws.stop_recording()
+
     def test_policy_can_turn_the_confirmation_off(self):
         self.ws.close()
         self.ws = self.make(policy_reader=lambda: ({"RequireRecordingConsent": False}, ()))

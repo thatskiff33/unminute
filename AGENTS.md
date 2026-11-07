@@ -115,7 +115,9 @@ Recording and confirmations
 - **R1** Recording, granting delete-originals authority and discarding a meeting each need a
   confirmation drawn outside the page (`workspace/shell.py`, wording in `workspace/consent.py`).
   No recording starts without a valid consent record unless policy turns that off; changing the
-  wording bumps `RECORDING_WORDING_VERSION`. Guard: `tests/test_app.py`, `tests/test_recorder.py`,
+  wording bumps `RECORDING_WORDING_VERSION`. Whether a recording takes computer audio (In person
+  or Online meeting) is chosen in that confirmation each time, never by the page or a setting
+  (the user's decisions DEC-099). Guard: `tests/test_app.py`, `tests/test_recorder.py`,
   `tests/test_policy.py`, `tests/test_two_track.py` (no computer track opens without a
   confirmation that names it); `tools/workspace_ui_check.py` end to end.
 

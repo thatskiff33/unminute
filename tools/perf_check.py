@@ -687,12 +687,20 @@ def consent_answerer(recording_title):
     function for make_api's confirm: yes to the recording question only, so
     the recording is started, and its consent record made, by the shipped
     bridge; no to anything else (a deletion grant or a discard is never
-    approved). Returns (confirm, asked), asked listing the titles shown."""
+    approved). Where the recording question asks which kind of meeting it
+    is (#554), the answer is "In person meeting": the microphone only, as
+    these runs record. Returns (confirm, asked), asked listing the titles
+    shown."""
     asked = []
 
     def confirm(question):
         asked.append(question.get("title"))
-        return question.get("title") == recording_title
+        if question.get("title") != recording_title:
+            return False
+        for choice in question.get("choices") or ():
+            if list(choice["sources"]) == ["microphone"]:
+                return tuple(choice["sources"])
+        return not question.get("choices")
     return confirm, asked
 
 
@@ -700,14 +708,16 @@ def consent_outcome(required, record, asked, recording_title, valid):
     """How the recording was confirmed, checked against managed policy:
     "asked and recorded" when the confirmation is required (only the
     recording question was asked and the record is valid), "off by policy"
-    when policy turns it off (nothing asked, no record). Raises otherwise."""
+    when policy turns it off (no record; nothing asked, or only the recording
+    question, which then asks just the kind of meeting where policy allows
+    computer audio: #554, DEC-099 decision 2). Raises otherwise."""
     if required:
         if not valid(record):
             raise RuntimeError("the recording has no valid consent record")
         if asked != [recording_title]:
             raise RuntimeError(f"unexpected questions: {asked}")
         return "asked and recorded"
-    if record is not None or asked:
+    if record is not None or asked not in ([], [recording_title]):
         raise RuntimeError(f"the confirmation is off by policy, yet asked: {asked}")
     return "off by policy"
 

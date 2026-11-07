@@ -122,10 +122,11 @@ FINISH_ONLY_BANNER = ("An update is waiting for this workspace. Finish your meet
 GPU_UPKEEP_DELAY_S = 60
 
 # Computer audio (#108): a recording opens a computer track only when this is
-# True, the user's switch is on and policy allows it, and the confirmation
-# named it (wording version 2). The page part of #108 turned it on; setting it
-# back to False hides the switch's effect again (set_settings refuses it and
-# no recording opens a computer track), as the tests check.
+# True, policy allows it, and the person chose "Online meeting" in the
+# recording question, which named it (wording version 3, #554). The page part
+# of #108 turned it on; setting it back to False takes "Online meeting" out of
+# the question again, and start_recording refuses computer audio, as the
+# tests check.
 COMPUTER_AUDIO_STARTS = True
 
 
@@ -828,12 +829,22 @@ class Workspace(RecordingMixin, SettingsMixin, HandoffMixin, WatchedFoldersMixin
 
     # -- recording (#30; the rest is in workspace/recording_ws.py, #414) -----------
 
-    def _computer_wanted(self):
-        """A recording started now would record computer audio: the app opens
-        computer tracks at all (COMPUTER_AUDIO_STARTS), the user's switch is
-        on (off by default) and policy allows it."""
-        return bool(COMPUTER_AUDIO_STARTS and self.settings["computer_audio"]
-                    and self._computer_audio_allowed())
+    def computer_audio_offered(self):
+        """The recording question offers "Online meeting" (#554, DEC-099),
+        and a recording may open a computer track: the app opens computer
+        tracks at all (COMPUTER_AUDIO_STARTS) and policy allows computer
+        audio (K3: 0, an invalid value or an unreadable key grants nothing).
+        Read when the question is built and again when the recording starts.
+        There is no setting: the choice is made for each recording."""
+        return bool(COMPUTER_AUDIO_STARTS and self._computer_audio_allowed())
+
+    def _need_computer_audio(self):
+        """Refuse computer audio for a recording about to start, unless it is
+        offered now (policy may have changed while the question was open)."""
+        if not COMPUTER_AUDIO_STARTS:
+            raise WorkspaceError("Computer audio is not available in this version.")
+        if not self._computer_audio_allowed():
+            raise WorkspaceError(MANAGED_OFF.format(what="Computer audio recording"))
 
     def _erase_if_key_gone(self, recording_id):
         """After a meeting's first version is set up: if its transaction
@@ -2283,9 +2294,6 @@ class Workspace(RecordingMixin, SettingsMixin, HandoffMixin, WatchedFoldersMixin
         effective = dict(self.settings.values)
         if not self._allowed("AllowMicrophoneRecording"):
             effective["microphone"] = False
-        if not (COMPUTER_AUDIO_STARTS and self._computer_audio_allowed()
-                and effective["microphone"]):
-            effective["computer_audio"] = False
         if not self._allowed("AllowGpuComponent"):
             effective["gpu_speakers"] = False
         lid_managed = self._display_value("lid_managed", self.lid.managed)
@@ -2336,19 +2344,6 @@ class Workspace(RecordingMixin, SettingsMixin, HandoffMixin, WatchedFoldersMixin
             raise WorkspaceError("Expected settings.")
         if changes.get("microphone") is True and not self._allowed("AllowMicrophoneRecording"):
             raise WorkspaceError(MANAGED_OFF.format(what="Microphone recording"))
-        if changes.get("computer_audio") is True:
-            # The page part of #108 offers the switch (COMPUTER_AUDIO_STARTS
-            # is True). If the feature is ever turned off again, this keeps the
-            # switch refused and nothing in the same change is saved.
-            if not COMPUTER_AUDIO_STARTS:
-                raise WorkspaceError("Computer audio is not available in this version.")
-            if not self._computer_audio_allowed():
-                raise WorkspaceError(MANAGED_OFF.format(what="Computer audio recording"))
-            if not changes.get("microphone", self.settings["microphone"]):
-                raise WorkspaceError("Turn on microphone recording first: computer audio is "
-                                     "recorded beside the microphone.")
-        if changes.get("microphone") is False:
-            changes = {**changes, "computer_audio": False}    # never without the microphone
         if changes.get("gpu_speakers") is True and not self._allowed("AllowGpuComponent"):
             raise WorkspaceError(MANAGED_OFF.format(what="The graphics card component"))
         if changes.get("live_drafts") is True and not self._allowed("AllowLiveDrafts"):

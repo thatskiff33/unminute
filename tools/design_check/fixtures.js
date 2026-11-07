@@ -499,7 +499,7 @@
   const SETTINGS = {
     mode: "quiet", battery_override: false, speakers: true, gpu_speakers: false, microphone: true,
     model: "parakeet-tdt-0.6b-v2", onboarded: true, recording_display: "flow",
-    live_drafts: false, live_drafts_audio: "microphone", computer_audio: false,
+    live_drafts: false, live_drafts_audio: "microphone",
     live_drafts_model: { state: "ready", label: "Parakeet v2", offered: true },
     // Each with its state as the Downloads page shows it (#244); CARDS above.
     choices: [{ name: "parakeet-tdt-0.6b-v2", label: "Parakeet v2", recommended: true,
@@ -590,7 +590,7 @@
     ],
     detail: { "m-garden": meeting({}) },
     transcript: { "m-garden": GARDEN },
-    recording: { enabled: true, computer_audio: false, display: "flow", recording: null, reports: [] },
+    recording: { enabled: true, display: "flow", recording: null, reports: [] },
     status: { busy: null, message: "", import_errors: [], importing: 0, mode: "quiet", integrity: null },
     reminders: { holds_due: [], awaiting_confirmation: [], retention: [], recordings_waiting: [],
                  thresholds: { review_days: 30, action_days: 0, managed: { review: false, action: false } } },
@@ -701,12 +701,9 @@
       },
       steps: [],
     },
-    // Computer audio (#108): on in Settings, so the line under Record says so.
-    "home-computer": { change: (d) => { d.recording.computer_audio = true; }, steps: [] },
     // A two-track recording recovered after the app closed: each track's length (#108 slice 5).
     "home-recovered-computer": {
       change: (d) => {
-        d.recording.computer_audio = true;
         d.recording.reports = [{ id: "rep-recovered", title: null, events: [], pending: "sample", recovered: true,
           started_at: at(9, 30), seconds: 1512.4, computer_seconds: 1497.9,
           note: "The app closed while this was recording. Keep it to transcribe it, or delete it." }];
@@ -717,7 +714,6 @@
     "recording-computer": {
       change: (d) => {
         SCENARIOS.recording.change(d);
-        d.recording.computer_audio = true;
         d.recording.recording.computer = { on: true, level_db: -30, device: "Speakers (sample)" };
         d.compLevels = true;
       },
@@ -895,8 +891,6 @@
     "setup-3": { change: firstRun, steps: [() => window.workspace.setStep(3)] },
     "setup-4": { change: (d) => { firstRun(d); d.micHeard = true; },
                  steps: [() => window.workspace.setStep(4), wait(500), () => document.getElementById("su-test").click()] },
-    "setup-4-computer": { change: (d) => { firstRun(d); d.settings.computer_audio = true; d.micHeard = true; },
-                          steps: [() => window.workspace.setStep(4), wait(500), () => document.getElementById("su-test").click()] },
     "setup-5": {
       change: (d) => { firstRun(d); d.settings.microphone = false; },
       steps: [() => window.workspace.setStep(4), wait(400), () => window.workspace.setStep(5)],
@@ -910,11 +904,8 @@
       },
       steps: [show("settings")],
     },
-    // Computer audio (#108): turned on, and turned off by the organisation.
-    "settings-computer": {
-      change: (d) => { SCENARIOS.settings.change(d); d.settings = { ...d.settings, computer_audio: true }; },
-      steps: [show("settings")],
-    },
+    // Computer audio (#108) turned off by the organisation: no Online
+    // meeting, so Settings says so and has no draft text choice (#554).
     "settings-computer-managed": {
       change: (d) => {
         SCENARIOS.settings.change(d);
@@ -943,8 +934,8 @@
       },
       steps: [show("settings")],
     },
-    // Live drafts (#104): the switch on; and with computer audio on (#108,
-    // a later version), the choice of what the draft follows.
+    // Live drafts (#104): the switch on; and the choice of what the draft
+    // follows in online meetings (#108, #554), on the mix.
     "settings-drafts": {
       change: (d) => { SCENARIOS.settings.change(d); d.settings = { ...d.settings, live_drafts: true }; },
       steps: [show("settings")],
@@ -952,7 +943,7 @@
     "settings-drafts-mix": {
       change: (d) => {
         SCENARIOS.settings.change(d);
-        d.settings = { ...d.settings, live_drafts: true, computer_audio: true, live_drafts_audio: "mix" };
+        d.settings = { ...d.settings, live_drafts: true, live_drafts_audio: "mix" };
       },
       steps: [show("settings")],
     },

@@ -34,18 +34,17 @@ function allowed(name) {
   return !m || !m.allow || m.allow[name] !== false;
 }
 const MANAGED_NOTE = "Turned off by your organisation.";
-// Computer audio (#108): its switch's note in Settings and Setup.
-const COMPUTER_NOTE = "Records the other side of a Teams or Zoom call as a second track. Any other sound playing on this computer is recorded too, such as notifications and videos. Tell everyone on the call before you start.";
+// Computer audio (#108) has no switch (#554, DEC-099): each recording's
+// confirmation, drawn by the app outside the page, asks which kind of meeting
+// it is. The page only says so; it never sends the choice.
 function computerAllowed() {
   return allowed("AllowComputerAudioRecording") && allowed("AllowMicrophoneRecording");
 }
-function computerNote(s) {
-  return !computerAllowed() ? MANAGED_NOTE
-    : !s.microphone ? "Turn on Record with a microphone first: computer audio is recorded beside it."
-    : COMPUTER_NOTE;
+function meetingKindNote() {
+  return computerAllowed()
+    ? "Each time you record, you choose In person meeting (your microphone) or Online meeting (your microphone and the sound from this computer, including other people on the call)."
+    : "Records your microphone. Your organisation has turned off computer audio recording.";
 }
-// Always possible to turn off; turning on needs policy and the microphone.
-const computerLocked = (s) => !s.computer_audio && (!computerAllowed() || !s.microphone);
 // Model downloads are off: AllowModelDownloads, or AllowUserModels on a machine
 // install (#111 B7a; the window reports it allowed on a per-user install).
 function modelDownloadsOff() {
@@ -76,7 +75,7 @@ const MODE_NOTE = {
 const SETTING_NAMES = {
   mode: "Processing speed", model: "Speech model", speakers: "Identify speakers",
   battery_override: "Process on battery power", onboarded: "Guided setup",
-  microphone: "Microphone recording", computer_audio: "Computer audio recording",
+  microphone: "Microphone recording",
   gpu_speakers: "NVIDIA graphics card",
   recording_display: "Recording display", live_drafts: "Draft text while recording",
   live_drafts_audio: "What draft text follows",
@@ -130,7 +129,8 @@ function modelChoice(c) {
 }
 
 // Live drafts (#104): off by default, Parakeet v2 only, and IT can turn it
-// off. With computer audio on, the user chooses what the draft follows.
+// off. For Online meetings (with computer audio), the user chooses what the
+// draft follows.
 function renderDraftSettings(s) {
   const permitted = allowed("AllowLiveDrafts");
   const model = s.live_drafts_model || {};
@@ -142,8 +142,9 @@ function renderDraftSettings(s) {
       ? `Needs ${model.label}: download it in Manage downloads (Speech model, above).`
       : `Needs ${model.label}. Ask your IT team.`)
     : "Rough text a few seconds after people speak. The full transcript replaces it after you stop. Uses more memory and processor time while recording.";
-  // The choice matters only while computer audio is recorded as well (#108).
-  $("s-drafts-audio-box").hidden = !s.computer_audio;
+  // The choice matters only in Online meetings, which record computer audio
+  // as well (#108, #554): not offered where policy turns computer audio off.
+  $("s-drafts-audio-box").hidden = !computerAllowed();
   for (const r of document.querySelectorAll('input[name="draftsaudio"]')) {
     r.checked = r.value === (s.live_drafts_audio || "microphone");
     r.disabled = !permitted || !s.live_drafts;
@@ -161,8 +162,8 @@ function renderDraftSettings(s) {
       : `Needs ${words.label}, which is not downloaded. Ask your IT team.`)
     : "Words in grey moments after people speak, until the draft text replaces them. Paused while Unminute is minimised. Uses more memory and processor time while recording.";
   $("s-drafts-audio-note").textContent = s.live_drafts_audio === "mix"
-    ? "Draft text also includes what others say on the call. The full transcript always uses both."
-    : "Draft text follows your microphone only. The full transcript always uses both.";
+    ? "In online meetings, draft text also includes what others say on the call. The full transcript always uses both."
+    : "In online meetings, draft text follows your microphone only. The full transcript always uses both.";
 }
 
 async function renderSettings() {
@@ -198,9 +199,7 @@ async function renderSettings() {
         : `${s.gpu.card}. Speeds up ${gpuUses.join(" and ")} in Faster mode only.`;
   $("s-microphone").checked = !!s.microphone;
   $("s-microphone").disabled = !allowed("AllowMicrophoneRecording");
-  $("s-computer").checked = !!s.computer_audio;
-  $("s-computer").disabled = computerLocked(s);
-  $("s-computer-note").textContent = computerNote(s);
+  $("s-microphone-note").textContent = `Adds Record a meeting to the Meetings page. ${meetingKindNote()}`;
   renderDraftSettings(s);
   // The lid (#172): "Do nothing" while recording, put back afterwards.
   $("s-lid").checked = !!s.lid_override;
@@ -307,6 +306,6 @@ function setSetting(changes, near) {
 
 // What the page's other modules import from this one (#488).
 export {
-  computerLocked, computerNote, downloadOff, itManaged, modelDownloadsOff, renderDownloads,
-  renderSettings, setSetting
+  downloadOff, itManaged, meetingKindNote, modelDownloadsOff, renderDownloads, renderSettings,
+  setSetting
 };

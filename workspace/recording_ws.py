@@ -5,9 +5,9 @@
 # methods on the Workspace as before. The mixin keeps no state of its own:
 # every attribute, thread and lock it uses is the Workspace's, set in
 # Workspace.__init__, so the locking is unchanged. What stays in app.py:
-# COMPUTER_AUDIO_STARTS and _computer_wanted (tests patch
-# workspace.app.COMPUTER_AUDIO_STARTS), the indicator, the lid and the policy
-# tick that calls _draft_tick.
+# COMPUTER_AUDIO_STARTS, computer_audio_offered and _need_computer_audio
+# (tests patch workspace.app.COMPUTER_AUDIO_STARTS), the indicator, the lid
+# and the policy tick that calls _draft_tick.
 
 import json
 import threading
@@ -29,8 +29,8 @@ if TYPE_CHECKING:                      # the type check only (tools/type_check.p
     from workspace.store import Store
     from workspace.worker import WorkerHandle
 
-SOURCES_CHANGED = ("What would be recorded changed while you were confirming (computer audio "
-                   "was turned on or off). Start the recording again.")
+SOURCES_CHANGED = ("The confirmation was for a different kind of meeting. "
+                   "Start the recording again.")
 COMPUTER_POLICY_STOP = ("Your organisation turned off computer audio. Only the microphone "
                         "is recorded from here.")
 
@@ -97,7 +97,8 @@ class RecordingMixin:
         watch_microphones: Any | None
 
         def _allowed(self, name): ...
-        def _computer_wanted(self): ...
+        def _need_computer_audio(self): ...
+        def computer_audio_offered(self): ...
         def _forget_recording_key(self, recording_id): ...
         def _import_one(self, path, folder_id=None, title=None, recording=None, stream=None): ...
         def _indicate(self): ...
@@ -119,20 +120,14 @@ class RecordingMixin:
         return (self._allowed("AllowMicrophoneRecording")
                 and self._allowed("AllowComputerAudioRecording"))
 
-    def recording_sources(self):
-        """What a recording started now would record, for the confirmation
-        the bridge shows (wording version 2): from the app's own settings and
-        policy, never from the page."""
-        return (recording_consent.WITH_COMPUTER if self._computer_wanted()
-                else recording_consent.MICROPHONE_ONLY)
-
-    def _computer_track(self):
-        """The computer track for a recording about to start, or None. The
-        source is every active output, mixed (the owner's decision 1, 25 Oct
-        2026, after real-sound trials: the default output alone missed a call
-        on a headset's hands-free output, and a meeting app's own process gave
-        silence)."""
-        if not self._computer_wanted():
+    def _computer_track(self, sources):
+        """The computer track for a recording about to start with these
+        sources (the kind of meeting chosen, #554), or None for the
+        microphone alone. The source is every active output, mixed (the
+        owner's decision 1, 25 Oct 2026, after real-sound trials: the default
+        output alone missed a call on a headset's hands-free output, and a
+        meeting app's own process gave silence)."""
+        if tuple(sources) != recording_consent.WITH_COMPUTER:
             return None
         from workspace import loopback       # only when a recording needs it
         return {"open": self.open_loopback or loopback.open_loopback,
@@ -251,20 +246,28 @@ class RecordingMixin:
     def _capturing(self):
         return self._recording is not None or self._rec_starting
 
-    def start_recording(self, device, name=None, consent=None):
+    def start_recording(self, device, name=None, consent=None,
+                        sources=recording_consent.MICROPHONE_ONLY):
         """consent: the record of the confirmation (workspace.consent),
         kept with the recording. The bridge asks for it; it is required unless
-        policy turns the confirmation off. Refused while locked (#111 C4a)
-        and in finish-only mode (#111 B5b)."""
+        policy turns the confirmation off. sources: what to record, from the
+        kind of meeting chosen in the app's own window (#554): the microphone
+        alone, or with computer audio, which policy must allow now (K3).
+        Refused while locked (#111 C4a) and in finish-only mode (#111 B5b)."""
         self._not_locked()
         self._not_finish_only()
         self._need_microphone()
-        # Worked out once: the sources the confirmation must name are the
-        # ones this recording opens (#108). A switch or policy changed while
-        # the question was open means asking again, never a different start.
-        computer = self._computer_track()
-        sources = (recording_consent.WITH_COMPUTER if computer is not None
-                   else recording_consent.MICROPHONE_ONLY)
+        try:
+            sources = recording_consent._sources(sources)
+        except ValueError:
+            raise WorkspaceError("Unknown recording sources.") from None
+        # Policy is read again: it may have changed while the question was
+        # open, and computer audio is then refused, never dropped silently.
+        if sources == recording_consent.WITH_COMPUTER:
+            self._need_computer_audio()
+        # The sources the confirmation must name are the ones this recording
+        # opens (#108).
+        computer = self._computer_track(sources)
         if consent is not None and not recording_consent.valid_recording_record(consent,
                                                                                  sources):
             if any(recording_consent.valid_recording_record(consent, other) for other in
@@ -447,14 +450,14 @@ class RecordingMixin:
     def recording_status(self):
         rec = self._recording
         if self.locked is not None:              # nothing records, and no report is shown
-            return {"enabled": False, "computer_audio": False,
+            return {"enabled": False,
                     "display": self.settings["recording_display"],
                     "lid_override": False, "lid_refused": None, "recording": None,
                     "reports": [], "draft": None}
         enabled = bool(self.settings["microphone"] and self._allowed("AllowMicrophoneRecording"))
+        # Whether a recording takes computer audio is chosen for each one
+        # (#554): its own status says ("computer"), not a setting.
         return {"enabled": enabled,
-                # A recording started now records computer audio too (#108).
-                "computer_audio": enabled and self._computer_wanted(),
                 "display": self.settings["recording_display"],
                 # The lid action is "Do nothing" for this recording (set, or already so).
                 "lid_override": bool(self._lid_result and self._lid_result[0]),
