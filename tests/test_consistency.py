@@ -684,7 +684,8 @@ class DocsTests(unittest.TestCase):
             for job_id, body in blocks.items():
                 with self.subTest(workflow=name, job=job_id):
                     event = "push" if job_id in jobs else "pull_request"
-                    self.assertIn(f"    if: github.event_name == '{event}'\n", body)
+                    # The job's own if: (four spaces), not a step's.
+                    self.assertRegex(body, rf"(?m)^    if: github\.event_name == '{event}'$")
             self.assertTrue(set(jobs) <= set(blocks), f"{name} lacks a job named here")
         self.assertIn("Commit emails", self.required_jobs("email-guard.yml"))
         self.assertNotIn("Main commit emails", self.required_jobs("email-guard.yml"))
