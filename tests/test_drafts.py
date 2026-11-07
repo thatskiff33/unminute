@@ -33,6 +33,9 @@ if HAVE_DEPS:
     from workspace.app import Workspace, WorkspaceError
 
 CONSENT = consent.recording_record(clock=lambda: 1000.0)
+# Imports follow Windows path rules (#552's tests import a meeting first).
+WINDOWS_IMPORTS = unittest.skipUnless(
+    os.name == "nt", "imports use Windows path rules (the app is Windows-only)")
 # drafts.ON_PAGE as the module ships it, read before any test patches it.
 SHIPPED_ON_PAGE = drafts.ON_PAGE if HAVE_DEPS else None
 FAKE = "test:fake_worker_engines:"
@@ -875,6 +878,7 @@ class WorkspaceDraftTests(DraftWorkspaceCase):
         self.assertTrue(wait_for(self.running, 60))
         return started, time.monotonic() - began
 
+    @WINDOWS_IMPORTS
     def test_a_recording_started_during_transcription_starts_at_once(self):
         # The step in progress is stopped and redone after the recording (DEC-096).
         started, drafting = self.start_during("sleepy", "fake_diarizer", "transcribe")
@@ -884,6 +888,7 @@ class WorkspaceDraftTests(DraftWorkspaceCase):
         self.assertIsNone(self.ws._next_work())          # and waits for the recording
         self.ws.stop_recording()
 
+    @WINDOWS_IMPORTS
     def test_a_recording_started_during_speakers_on_the_card_starts_at_once(self):
         started, drafting = self.start_during("sentences", "diarizer_sleepy", "speakers",
                                               gpu_speakers=True)
