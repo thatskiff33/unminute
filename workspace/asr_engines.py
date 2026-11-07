@@ -1146,10 +1146,28 @@ def _token_words(start, end, tokens, timestamps):
 # transcribes a meeting in chunks of about 45 s (workspace/chunking.py), each
 # with no text before it, and without a prompt Whisper wrote about a third of
 # the chunks of public AMI meetings in lower case with no punctuation at all.
-# A fixed prompt keeps every chunk independent of the others' text (a prompt
-# from the previous chunk spread one unpunctuated chunk to the next). Chosen
-# on public audio only: docs/ENGINE_EVALUATION.md "Whisper punctuation by chunk".
+# The prompt leads each chunk's first 30 s window; later windows in the chunk
+# see it and the text before them (faster-whisper's defaults). It never holds
+# another chunk's text: a prompt from the previous chunk spread one
+# unpunctuated chunk to the next. Chosen on public audio only:
+# docs/ENGINE_EVALUATION.md "Whisper punctuation by chunk".
 WHISPER_PROMPT = "Okay. Let's begin."
+# Whisper can repeat its prompt as if it were speech, mostly on speech it
+# cannot make out (#553 review). A segment made only of the prompt's words,
+# with at least one of these, is checked against a decode without the prompt.
+# "Okay" alone is ordinary speech and is never treated as an echo.
+_PROMPT_WORDS = frozenset({"okay", "let's", "begin"})
+_ECHO_MARKERS = frozenset({"let's", "begin"})
+
+
+def _words_of(text):
+    return re.findall(r"[a-z']+", text.lower().replace("’", "'"))
+
+
+def is_prompt_echo(text):
+    """True when a segment's words are only the prompt's, including a marker word."""
+    words = _words_of(text)
+    return bool(words) and set(words) <= _PROMPT_WORDS and bool(set(words) & _ECHO_MARKERS)
 
 
 class WhisperEngine:
@@ -1169,14 +1187,33 @@ class WhisperEngine:
     def description(self):
         return f"{self.label} (faster-whisper, {self.precision}, {self.device})"
 
-    def transcribe(self, audio):
-        """`audio` is a path or a 16 kHz float32 waveform. Returns (segments, duration)."""
+    def _decode(self, audio, prompt):
         segments, info = self.model.transcribe(
             audio, language=self.language, vad_filter=True, beam_size=self.beam_size,
-            word_timestamps=True, initial_prompt=WHISPER_PROMPT)
-        return (Segment(s.start, s.end, s.text.strip(),
+            word_timestamps=True, initial_prompt=prompt)
+        return [Segment(s.start, s.end, s.text.strip(),
                         tuple((w.start, w.end, w.word) for w in (s.words or ())))
-                for s in segments), info.duration
+                for s in segments], info.duration
+
+    def transcribe(self, audio):
+        """`audio` is a path or a 16 kHz float32 waveform. Returns (segments, duration).
+
+        Decoded with WHISPER_PROMPT. A segment that only repeats the prompt
+        (is_prompt_echo) is replaced by what a decode without the prompt heard
+        in its place, so a real "let's begin" stays and an echo goes; nothing
+        from that decode that overlaps a kept segment is added (no word twice)."""
+        segments, duration = self._decode(audio, WHISPER_PROMPT)
+        echoes = [s for s in segments if is_prompt_echo(s.text)]
+        if not echoes:
+            return segments, duration
+        kept = [s for s in segments if not is_prompt_echo(s.text)]
+        plain, _ = self._decode(audio, None)
+
+        def overlaps(a, b):
+            return a.start < b.end and b.start < a.end
+        added = [p for p in plain
+                 if any(overlaps(p, e) for e in echoes) and not any(overlaps(p, k) for k in kept)]
+        return sorted(kept + added, key=lambda s: (s.start, s.end)), duration
 
     def close(self):
         self.model = None

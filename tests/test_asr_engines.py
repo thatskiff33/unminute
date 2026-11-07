@@ -566,6 +566,77 @@ class EngineTests(unittest.TestCase):
         self.assertTrue(prompt[:1].isupper() and prompt.rstrip().endswith("."), prompt)
         self.assertLessEqual(len(prompt.split()), 6, "keep the prompt short (#553)")
 
+    def _fake_whisper(self, with_prompt, without_prompt):
+        """A model that returns one list of (start, end, text) with the prompt
+        and another without, recording each call's prompt."""
+        calls = []
+
+        class Seg:
+            def __init__(self, s, e, t):
+                self.start, self.end, self.text = s, e, t
+                self.words = [type("W", (), {"start": s, "end": e, "word": " " + t})()]
+
+        class Info:
+            duration = 60.0
+
+        class FakeWhisper:
+            def transcribe(self, audio, **kw):
+                calls.append(kw.get("initial_prompt"))
+                rows = with_prompt if kw.get("initial_prompt") else without_prompt
+                return iter([Seg(*r) for r in rows]), Info()
+
+        return ae.WhisperEngine(FakeWhisper(), "large-v3-turbo", "int8", "en"), calls
+
+    def test_a_segment_that_only_repeats_the_prompt_is_replaced(self):
+        # #553 review: on speech it could not make out, Whisper wrote
+        # "Let's begin." from the prompt. That stretch takes the decode
+        # without the prompt instead; the punctuated text around it stays.
+        engine, calls = self._fake_whisper(
+            [(0.0, 4.0, "Good morning, everyone."), (5.0, 9.0, "Let's begin."),
+             (10.0, 14.0, "First, the budget.")],
+            [(0.0, 4.0, "good morning everyone"), (5.2, 8.8, "kia ora koutou"),
+             (10.0, 14.0, "first the budget")])
+        segs, duration = engine.transcribe("x.wav")
+        self.assertEqual([s.text for s in segs],
+                         ["Good morning, everyone.", "kia ora koutou", "First, the budget."])
+        self.assertEqual(calls, [ae.WHISPER_PROMPT, None])
+        self.assertEqual(duration, 60.0)
+
+    def test_a_real_lets_begin_is_kept(self):
+        # Said in the room, it is there without the prompt too, so it stays.
+        engine, _ = self._fake_whisper([(1.0, 2.0, "Okay, let's begin.")],
+                                       [(1.0, 2.0, "okay let's begin")])
+        segs, _ = engine.transcribe("x.wav")
+        self.assertEqual([s.text for s in segs], ["okay let's begin"])
+
+    def test_an_echo_over_silence_is_dropped(self):
+        engine, _ = self._fake_whisper([(3.0, 5.0, "Let's begin.")], [])
+        segs, _ = engine.transcribe("x.wav")
+        self.assertEqual(list(segs), [])
+
+    def test_unprompted_text_overlapping_kept_text_is_not_added(self):
+        # No word may appear twice: only the unprompted segments that lie
+        # outside every kept segment fill the echo's place.
+        engine, _ = self._fake_whisper(
+            [(0.0, 5.0, "We agreed."), (5.0, 7.0, "Let's begin.")],
+            [(4.0, 6.0, "agreed so"), (6.0, 7.0, "right")])
+        segs, _ = engine.transcribe("x.wav")
+        self.assertEqual([s.text for s in segs], ["We agreed.", "right"])
+
+    def test_okay_alone_is_speech_not_an_echo(self):
+        engine, calls = self._fake_whisper([(0.0, 1.0, "Okay.")], [(0.0, 1.0, "okay")])
+        segs, _ = engine.transcribe("x.wav")
+        self.assertEqual([s.text for s in segs], ["Okay."])
+        self.assertEqual(calls, [ae.WHISPER_PROMPT], "no second decode without an echo")
+
+    def test_prompt_echo_rules(self):
+        for text in ("Let's begin.", "Okay. Let's begin.", "okay let's begin", "Begin.",
+                     "Let’s begin!"):
+            self.assertTrue(ae.is_prompt_echo(text), text)
+        for text in ("", "Okay.", "Okay, okay.", "Let's begin with the budget.",
+                     "So let's begin.", "..."):
+            self.assertFalse(ae.is_prompt_echo(text), text)
+
     def test_parakeet_refuses_to_load_incomplete_install(self):
         with tempfile.TemporaryDirectory() as tmp:
             ae.model_dir(ae.PARAKEET_MODELS[ae.RECOMMENDED_PARAKEET], tmp).mkdir(parents=True)
