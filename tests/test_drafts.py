@@ -876,8 +876,7 @@ class WorkspaceDraftTests(DraftWorkspaceCase):
         self.assertTrue(wait_for(lambda: self.ws._busy and self.ws._busy[1] == kind, 120))
         time.sleep(1.0)                                  # well inside the step
         began = time.monotonic()
-        self.ws.start_recording(3, consent=consent.recording_record(
-            sources=self.ws.recording_sources(), clock=lambda: 1000.0))
+        self.ws.start_recording(3, consent=consent.recording_record(clock=lambda: 1000.0))
         started = time.monotonic() - began
         self.assertTrue(wait_for(self.running, 60))
         return started, time.monotonic() - began
