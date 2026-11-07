@@ -517,14 +517,19 @@ class DocsTests(unittest.TestCase):
     # "Review record" is required since the owner added it to the ruleset (#410);
     # it keeps its own workflow because it also runs when a review is submitted.
     # review-record-rerun.yml only re-runs it when a collaborator comments.
+    # email-guard.yml's "Commit emails" (DEC-094) is required since the owner added it
+    # after 10 consecutive green runs; it keeps its own workflow because it also runs
+    # when a description is edited. Its "Main commit emails" job is in POST_MERGE_JOBS:
+    # it runs only on a push to main, after the merge, so it is never a required check
+    # (test_post_merge_jobs_never_run_on_a_pull_request).
     REQUIRED_WORKFLOWS = ("ci.yml", "changelog.yml", "audit.yml", "codeql.yml",
-                          "review-record.yml")
+                          "review-record.yml", "email-guard.yml")
     SUPPORT_JOBS = {"ci.yml": ("select-tests",)}
+    POST_MERGE_JOBS = {"email-guard.yml": ("main",)}
     REPORT_ONLY_WORKFLOWS = ("quality.yml", "scorecard.yml")
-    # email-guard.yml (DEC-094): "Commit emails" on pull requests and "Main commit
-    # emails" on pushes to main, until 10 consecutive green runs and the owner add
-    # the pull request check to the ruleset (docs/RELEASING.md).
-    PENDING_REQUIRED_WORKFLOWS = ("email-guard.yml",)
+    # A workflow whose jobs will become required after their green runs
+    # (docs/RELEASING.md): none at present.
+    PENDING_REQUIRED_WORKFLOWS = ()
     OTHER_WORKFLOWS = ("release.yml", "review-record-rerun.yml")
 
     @staticmethod
@@ -553,7 +558,8 @@ class DocsTests(unittest.TestCase):
     def required_jobs(cls, name):
         """The names of the required status checks in .github/workflows/<name>."""
         support = {one(r"^    name: (.+)$", cls.job_blocks(name)[job_id], f"{job_id}'s name")
-                   for job_id in cls.SUPPORT_JOBS.get(name, ())}
+                   for job_id in cls.SUPPORT_JOBS.get(name, ())
+                   + cls.POST_MERGE_JOBS.get(name, ())}
         return [job for job in cls.workflow_jobs(name)[1]
                 if not cls.is_matrix_part(job) and job not in support]
 
@@ -666,6 +672,22 @@ class DocsTests(unittest.TestCase):
                                         or "run_tests.py\" --gate" in body, other)
                     # Every required check that runs tests is among them.
                     self.assertTrue({"check", "windows-tests"} <= set(required))
+
+    def test_post_merge_jobs_never_run_on_a_pull_request(self):
+        # A job left out of the required checks because it runs after the merge
+        # must never run on a pull request: a check that could pass or fail there
+        # would then block nothing. And every other job in its workflow runs only
+        # on pull requests, so the required checks are exactly the others.
+        for name, jobs in self.POST_MERGE_JOBS.items():
+            self.assertIn(name, self.REQUIRED_WORKFLOWS)
+            blocks = self.job_blocks(name)
+            for job_id, body in blocks.items():
+                with self.subTest(workflow=name, job=job_id):
+                    event = "push" if job_id in jobs else "pull_request"
+                    self.assertIn(f"    if: github.event_name == '{event}'\n", body)
+            self.assertTrue(set(jobs) <= set(blocks), f"{name} lacks a job named here")
+        self.assertIn("Commit emails", self.required_jobs("email-guard.yml"))
+        self.assertNotIn("Main commit emails", self.required_jobs("email-guard.yml"))
 
     # One group per pull request, cancelled by a newer push; every other run in a
     # group of its own (its run id), never cancelled.

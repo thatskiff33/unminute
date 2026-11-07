@@ -12,9 +12,9 @@
 #   be undone by a push (main is never force-pushed); it says the account's email
 #   privacy setting needs turning on before the next merge.
 #
-# Not yet a required check: a check joins the ruleset after 10 consecutive green runs,
-# and only the owner account can add it (docs/RELEASING.md). tests/test_consistency.py
-# lists this workflow as pending.
+# "Commit emails" is a required check (docs/RELEASING.md), added to the ruleset by the
+# owner account after 10 consecutive green runs. "Main commit emails" runs only after
+# a merge, so it is never one: tests/test_consistency.py lists it in POST_MERGE_JOBS.
 #
 # The same supply-chain rules as ci.yml apply (see its header). Both jobs read only,
 # hold no secret and write nothing. The pull request job runs the checker from the base
