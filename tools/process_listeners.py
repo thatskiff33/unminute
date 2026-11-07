@@ -12,24 +12,58 @@ import subprocess
 import windows_powershell
 
 
-def process_tree(root_pid):
-    """PIDs of root and all its descendants (WebView2 runs child processes)."""
+# Each process as "pid parent-pid created name": created is its start time in
+# Windows file-time ticks (UTC), or 0 where Windows gives none.
+PROCESSES = ("Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) "
+             "$($_.ParentProcessId) $(if ($_.CreationDate) { $_.CreationDate.ToFileTimeUtc() } "
+             "else { 0 }) $($_.Name)\" }")
+
+
+def processes():
+    """{pid: (parent pid, start time or 0, name)} for every process now."""
     # Windows PowerShell by full path, with a minimal environment (#237).
-    out = windows_powershell.run("Get-CimInstance Win32_Process | ForEach-Object "
-                                 "{ \"$($_.ProcessId) $($_.ParentProcessId) $($_.Name)\" }"
-                                 ).stdout
-    rows = [line.split(" ", 2) for line in out.splitlines() if line.strip()]
-    children, names = {}, {}
-    for pid, ppid, name in rows:
-        children.setdefault(int(ppid), []).append(int(pid))
-        names[int(pid)] = name
-    tree, todo = set(), [root_pid]
+    out = windows_powershell.run(PROCESSES).stdout
+    found = {}
+    for line in out.splitlines():
+        parts = line.strip().split(" ", 3)
+        if len(parts) >= 3 and all(p.isdigit() for p in parts[:3]):
+            found[int(parts[0])] = (int(parts[1]), int(parts[2]),
+                                    parts[3] if len(parts) == 4 else "?")
+    return found
+
+
+def descendants(procs, root_pid):
+    """{pid: name} of root and every descendant in `procs` (processes()).
+
+    A process names its parent by PID only, and Windows reuses a PID once its
+    process has ended: a process whose parent ended long ago can name a PID
+    that now belongs to this check, or to the app. So a process counts as a
+    child only if it started no earlier than the parent it names, where both
+    start times are known. (In v0.5.0-preview.9's release evidence, 8 Nov
+    2026, the UI check reported a listener of OneDrive's sync service, whose
+    parent had long ended, as the app's; a reused PID is the likely cause.)"""
+    kids = {}
+    for pid, (ppid, _, _) in procs.items():
+        if pid != ppid:
+            kids.setdefault(ppid, []).append(pid)
+    tree, todo = {}, [root_pid]
     while todo:
         p = todo.pop()
-        if p not in tree:
-            tree.add(p)
-            todo += children.get(p, [])
-    return {p: names.get(p, "?") for p in tree}
+        if p in tree:
+            continue
+        tree[p] = procs.get(p, (0, 0, "?"))[2]
+        born = procs.get(p, (0, 0, "?"))[1]
+        for kid in kids.get(p, []):
+            kid_born = procs[kid][1]
+            if not (born and kid_born and kid_born < born):
+                todo.append(kid)
+    return tree
+
+
+def process_tree(root_pid):
+    """PIDs of root and all its descendants (WebView2 runs child processes),
+    with their names."""
+    return descendants(processes(), root_pid)
 
 
 def listeners(pids):

@@ -377,5 +377,51 @@ class WindowsPowerShellTests(unittest.TestCase):
         self.assertEqual(kind, "System.Management.Automation.Signature")
 
 
+class ProcessTreeTests(unittest.TestCase):
+    """v0.5.0-preview.9's release evidence: the UI check reported a listener
+    of OneDrive's sync service, whose parent had long ended, as the app's. A
+    process names its parent by PID only, and Windows reuses PIDs, so a
+    process that started before the parent it names is not its child."""
+
+    # pid: (parent pid, start time in file-time ticks or 0, name)
+    PROCS = {
+        100: (4, 5000, "python.exe"),                 # the check (the root)
+        101: (100, 6000, "msedgewebview2.exe"),       # its child
+        102: (101, 7000, "msedgewebview2.exe"),       # a grandchild
+        8836: (100, 50, "OneDrive.Sync.Service.exe"), # names a reused PID
+        9000: (8836, 60, "helper.exe"),               # and its own child
+        103: (100, 0, "unknown start.exe"),           # no start time: kept
+        200: (4, 4000, "other.exe"),                  # not in the tree
+        4: (0, 10, "System"),
+    }
+
+    def test_a_process_older_than_the_parent_it_names_is_not_its_child(self):
+        tree = process_listeners.descendants(self.PROCS, 100)
+        self.assertEqual({100: "python.exe", 101: "msedgewebview2.exe",
+                          102: "msedgewebview2.exe", 103: "unknown start.exe"}, tree)
+
+    def test_the_process_list_is_read_with_start_times_and_names_with_spaces(self):
+        out = ("100 4 5000 python.exe\r\n8836 100 50 OneDrive.Sync.Service.exe\n"
+               "103 100 0 unknown start.exe\nnot a row\n\n")
+        done = subprocess.CompletedProcess([], 0, out, "")
+        with mock.patch.object(process_listeners.windows_powershell, "run",
+                               return_value=done) as run:
+            found = process_listeners.processes()
+        self.assertIn("CreationDate", run.call_args.args[0])
+        self.assertEqual({100: (4, 5000, "python.exe"),
+                          8836: (100, 50, "OneDrive.Sync.Service.exe"),
+                          103: (100, 0, "unknown start.exe")}, found)
+        with mock.patch.object(process_listeners, "processes", return_value=self.PROCS):
+            self.assertNotIn(8836, process_listeners.process_tree(100))
+
+    def test_the_package_check_never_ends_a_process_with_a_reused_parent_pid(self):
+        # packaged_check ends the app's tree with taskkill: a reused PID would
+        # take in another program's process.
+        with mock.patch.object(process_listeners, "processes", return_value=self.PROCS):
+            tree = packaged_check.tree(100)
+        self.assertEqual(100, tree[0])
+        self.assertEqual({100, 101, 102, 103}, set(tree))
+
+
 if __name__ == "__main__":
     unittest.main()
