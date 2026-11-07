@@ -917,6 +917,42 @@ class DraftsInputTests(unittest.TestCase):
                               problem(False, str(wav), tmp, start, seconds))
 
 
+class ConsentOutcomeCallerTests(unittest.TestCase):
+    """v0.5.0-preview.9's release evidence: #554 added consent_outcome's
+    kind_offered argument, and packaged_check still called it without one,
+    so its recording step failed with a TypeError. Every caller in tools/
+    passes exactly the arguments the function takes."""
+
+    def test_every_caller_passes_every_argument(self):
+        import ast
+        import inspect
+        params = inspect.signature(perf_check.consent_outcome).parameters
+        calls = []
+
+        def scan(name, source):
+            # A tool may carry the code of a child process as a string (as
+            # packaged_check's LIFECYCLE does, where the stale call was): scan
+            # every string that parses as code and names the function too.
+            for node in ast.walk(ast.parse(source)):
+                if isinstance(node, ast.Call) and getattr(
+                        node.func, "attr", getattr(node.func, "id", None)) == "consent_outcome":
+                    calls.append((name, node))
+                elif (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                      and "consent_outcome(" in node.value):
+                    try:
+                        scan(name, node.value)
+                    except SyntaxError:
+                        pass
+        for path in sorted((ROOT / "tools").glob("*.py")):
+            scan(path.name, path.read_text(encoding="utf-8"))
+        self.assertEqual({"packaged_check.py", "perf_check.py"}, {name for name, _ in calls})
+        for name, node in calls:
+            with self.subTest(tool=name):
+                self.assertFalse(any(isinstance(a, ast.Starred) for a in node.args))
+                given = len(node.args) + len(node.keywords)
+                self.assertEqual(len(params), given)
+
+
 class ConsentOutcomeTests(unittest.TestCase):
     """Review of 51a7605: the confirmation may be off by managed policy."""
 
