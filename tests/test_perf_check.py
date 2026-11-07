@@ -917,6 +917,23 @@ class DraftsInputTests(unittest.TestCase):
                               problem(False, str(wav), tmp, start, seconds))
 
 
+class ProcessTreeReuseTests(unittest.TestCase):
+    """perf_check measures the app's process tree. A process that names a
+    reused PID as its parent (it started before that process) is not the
+    app's and must not be measured (the #564 review)."""
+
+    def test_a_process_older_than_the_parent_it_names_is_not_measured(self):
+        table = {100: (4, "python.exe"), 101: (100, "msedgewebview2.exe"),
+                 8836: (100, "onedrive.sync.service.exe"), 9000: (8836, "helper.exe"),
+                 103: (100, "unknown.exe"), 4: (0, "system")}
+        born = {100: 5000, 101: 6000, 8836: 50, 9000: 60, 103: 0, 4: 10}
+        with (mock.patch.object(perf_check, "processes", return_value=table),
+              mock.patch.object(perf_check, "created", side_effect=born.get)):
+            got = perf_check.tree(100)
+        self.assertEqual(100, got[0][0])
+        self.assertEqual({100, 101, 103}, {pid for pid, _ in got})
+
+
 class ConsentOutcomeCallerTests(unittest.TestCase):
     """v0.5.0-preview.9's release evidence: #554 added consent_outcome's
     kind_offered argument, and packaged_check still called it without one,
