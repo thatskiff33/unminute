@@ -531,11 +531,16 @@ def _redactor(phrases):
     phrases = [p for p in (_one_line(p) for p in phrases) if p]   # also ones saved before
     if not phrases:
         return lambda text: (text, 0)
+    words = [r"\s+".join(re.escape(w) for w in p.split()) for p in phrases]
     # A lookahead finds a match at every start position, overlapping ones too.
-    patterns = [re.compile(r"(?<!\w)(?=(" + r"\s+".join(re.escape(w) for w in p.split())
-                           + r")(?!\w))", re.IGNORECASE) for p in phrases]
+    patterns = [re.compile(r"(?<!\w)(?=(" + w + r")(?!\w))", re.IGNORECASE) for w in words]
+    # One combined pattern finds a match in a text exactly when some phrase
+    # matches in it, and quickly: a text it finds nothing in is left as it is.
+    any_phrase = re.compile(r"(?<!\w)(?:" + "|".join(words) + r")(?!\w)", re.IGNORECASE)
 
     def redact(text):
+        if not any_phrase.search(text):
+            return text, 0
         spans = sorted((m.start(1), m.end(1)) for pat in patterns
                        for m in pat.finditer(text) if m.end(1) > m.start(1))
         merged = []
