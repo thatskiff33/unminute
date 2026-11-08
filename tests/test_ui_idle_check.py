@@ -222,7 +222,8 @@ class TranscribingTests(unittest.TestCase):
     # A long meeting open while it is transcribed (#127): new passages are
     # appended, and the whole list is redrawn only where appending is not safe.
     RIGHT = {"page_errors": [], "each_once_in_order": True, "rows_shown": 3095,
-             "rows_expected": 3095, "turns_right": True, "edit_held_back": True,
+             "rows_expected": 3095, "joins_right": True, "turns_right": True,
+             "edit_held_back": True,
              "held_rows_drawn": 10, "held_rows_expected": 10, "edit_kept": True,
              "redraw_steps": [3, 7, 10], "expected_redraw_steps": [3, 7, 10]}
 
@@ -234,6 +235,9 @@ class TranscribingTests(unittest.TestCase):
                 ({"page_errors": ["TypeError: x"]}, "threw"),
                 ({"each_once_in_order": False, "rows_shown": 3105}, "once and in order"),
                 ({"turns_right": False}, "turns"),
+                # A passage in the wrong line (#561), or the figure missing.
+                ({"joins_right": False}, "joined into lines"),
+                ({"joins_right": None}, "joined into lines"),
                 ({"edit_held_back": False}, "being edited"),
                 # The rows held back by the edit never drawn once it ended
                 # (the given-up append's signature not put back) ...

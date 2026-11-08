@@ -173,6 +173,7 @@
    "workspace/handoff.py",
    "workspace/handoff_ws.py",
    "workspace/intake.py",
+   "workspace/joins.py",
    "workspace/media.py",
    "workspace/recorder.py",
    "workspace/recording_ws.py",
@@ -462,6 +463,7 @@
    "workspace/clipboard.py",
    "workspace/handoff.py",
    "workspace/handoff_ws.py",
+   "workspace/joins.py",
    "workspace/recording_ws.py",
    "workspace/settings_ws.py",
    "workspace/speaker_names.py",
@@ -543,6 +545,19 @@
    "workspace/settings_ws.py",
    "workspace/setup.py",
    "workspace/watched_ws.py"
+  ],
+  "test_joined_lines_page": [
+   "tools/design_check.py",
+   "workspace/joins.py",
+   "workspace/ui/**"
+  ],
+  "test_joins": [
+   "workspace/app.py",
+   "workspace/asr_engines.py",
+   "workspace/handoff.py",
+   "workspace/joins.py",
+   "workspace/speaker_names.py",
+   "workspace/ui/**"
   ],
   "test_launch": [
    "packaging/install.ps1",

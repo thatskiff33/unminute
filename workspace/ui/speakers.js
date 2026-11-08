@@ -4,7 +4,8 @@
 "use strict";
 import { $, PAGE, SAVE_DELAY_MS, attempt, call, el, fmtTime, say, sayDone, state } from "./core.js";
 import {
-  initials, mergeIcon, playIcon, plural, renderMeeting, speakerClass, transcriptRow
+  endsSentence, initials, joinPiece, mergeIcon, playIcon, plural, renderMeeting, speakerClass,
+  transcriptRow
 } from "./meeting.js";
 import {
   markHits, newSearch, play, searchSeq, showHits, takeJump, updatePlayer
@@ -28,6 +29,9 @@ function whoButton(item, again) {
 
 // Reassigning needs an explicit Move: arrow keys on a select fire "change"
 // on every step, which must not move the passage.
+// A joined line (#561) holds several passages with one speaker label: the box
+// then also asks which of them moves (the first by default), and moving one
+// splits the line, as the app's rule says (2a).
 async function reassign(opener, item) {
   if (!canName()) { say("Speakers can be changed only before the review is confirmed."); return; }
   const open = opener.closest("li").querySelector(".reassign");
@@ -39,10 +43,19 @@ async function reassign(opener, item) {
                                                  selected: s.label === item.label })),
     el("option", { value: "new", textContent: "Someone else (new speaker)" }));
   const body = opener.closest("li").querySelector(".row-body");
-  const box = el("div", { class: "reassign" }, el("label", {}, "Move this passage to ", sel));
+  const pieces = [...body.querySelectorAll(".text")];
+  const part = pieces.length > 1 ? el("select", { "aria-label": "Which passage of this line moves" },
+    ...pieces.map((span) => {
+      const id = Number(span.dataset.id);
+      const found = (state.items || []).find((it) => it.id === id);
+      const words = span.textContent.length > 40 ? `${span.textContent.slice(0, 40)}\u2026` : span.textContent;
+      return el("option", { value: String(id), textContent: `${found ? `${fmtTime(found.t)} ` : ""}${words}` });
+    })) : null;
+  const box = el("div", { class: "reassign" }, el("label", {}, "Move this passage to ", sel),
+    part ? el("label", {}, "Which passage: ", part) : null);
   const restore = () => { if (box.isConnected) { box.remove(); opener.hidden = false; } };
   const move = el("button", { type: "button", class: "primary", textContent: "Move", on: { click: () => attempt(async () => {
-    await call("assign_speaker", state.mid, item.id, sel.value);
+    await call("assign_speaker", state.mid, part ? Number(part.value) : item.id, sel.value);
     restore();
     state.signature = "";
     sayDone("Speaker changed. Undo speaker change reverses it.");
@@ -181,6 +194,22 @@ function afterNamesChange(rebuildPanel) {
   renderMeeting();
 }
 
+// The rows for items, in order: a new line for each passage, except that a
+// joined passage goes into the line before it (#561), which may be `row`, a
+// line already drawn whose last passage had the label `prev`. Returns the new
+// lines only.
+function drawRows(items, audio, row, prev) {
+  const rows = [];
+  for (const item of items) {
+    if (item.joined && row) { joinPiece(row, item); prev = item.label; continue; }
+    const turn = !!item.label && (prev === undefined || item.label !== prev);
+    prev = item.label;
+    row = transcriptRow(item, audio, turn);
+    rows.push(row);
+  }
+  return rows;
+}
+
 async function renderTranscript() {
   const list = $("transcript");
   const audio = state.detail && state.detail.audio_available;
@@ -215,12 +244,7 @@ async function renderTranscript() {
     if (query && seq === searchSeq) showHits(query, hits, takeJump());   // on the rows shown
     return;
   }
-  let prev;
-  list.replaceChildren(...items.map((item, i) => {
-    const turn = !!item.label && (i === 0 || item.label !== prev);
-    prev = item.label;
-    return transcriptRow(item, audio, turn);
-  }));
+  list.replaceChildren(...drawRows(items, audio, null, undefined));
   state.items = items;
   state.total = total;
   state.drawnFor = `${mid}|${version}`;
@@ -269,17 +293,13 @@ async function appendTranscript() {
   const last = base[n - 1], first = fetched[0];
   if (total < n || fetched.length !== total - (n - 1) || !first || first.id !== last.id ||
       first.label !== last.label || first.who !== last.who || first.overlap !== last.overlap ||
-      $("m-search").value.trim())
+      !!first.joined !== !!last.joined || $("m-search").value.trim())
     return REDRAW;
   const added = fetched.slice(1);
   if (added.length) {
     const audio = state.detail && state.detail.audio_available;
-    let prev = last.label;
-    $("transcript").append(...added.map((item) => {
-      const turn = !!item.label && item.label !== prev;
-      prev = item.label;
-      return transcriptRow(item, audio, turn);
-    }));
+    // A passage joined to the last line drawn goes into that line (#561).
+    $("transcript").append(...drawRows(added, audio, $("transcript").lastElementChild, last.label));
     state.items = base.concat(added);
   }
   state.total = total;
@@ -295,8 +315,9 @@ function startEditing(span) {
   if (state.editing === span) return;
   stopEditing();
   state.editing = span;
+  state.editedFrom = span.textContent;           // to tell whether the edit could change a join
   span.contentEditable = "plaintext-only";
-  span.after(el("span", { class: "edit-hint", textContent: EDIT_HINT }));
+  hintPlace(span).after(el("span", { class: "edit-hint", textContent: EDIT_HINT }));
   span.focus();
   span.addEventListener("input", scheduleSave);
   span.addEventListener("blur", stopEditing, { once: true });
@@ -337,9 +358,38 @@ function stopEditing() {
   span.removeEventListener("input", scheduleSave);
   span.removeEventListener("keydown", editKeys);
   span.contentEditable = "false";
-  const hint = span.nextElementSibling;
+  const hint = hintPlace(span).nextElementSibling;
   if (hint && hint.classList.contains("edit-hint")) hint.remove();
-  save(span);
+  const before = state.editedFrom;
+  save(span).then(async () => {
+    if (await joinChanged(Number(span.dataset.id), before, span.textContent)) {
+      state.signature = "";
+      renderMeeting();
+    }
+  });
+}
+
+// The edit hint goes under the passage's line: after a joined line as a whole
+// (#561), not inside it.
+function hintPlace(span) {
+  return span.closest(".line") || span;
+}
+
+// Joined lines (#561): an edit or Undo that adds or removes the end of a
+// sentence can change whether the next passage joins this one (1a). Only
+// then is the next passage's flag asked for, so an ordinary edit costs no
+// request; true when it changed, and the caller redraws the list. The rule
+// is the app's: the page asks rather than deciding.
+async function joinChanged(id, before, after) {
+  if (endsSentence(before) === endsSentence(after)) return false;
+  const items = state.items || [], mid = state.mid;
+  const i = items.findIndex((it) => it.id === id);
+  if (i < 0 || i + 1 >= items.length || state.version !== null) return false;
+  let page;
+  try { page = await call("transcript", mid, i + 1, 1, null); } catch { return false; }
+  const next = page.items[0];
+  return state.mid === mid && state.items === items && !!next && next.id === items[i + 1].id &&
+    !!next.joined !== !!items[i + 1].joined;
 }
 
 async function undo() {
@@ -349,7 +399,11 @@ async function undo() {
   const r = await attempt(() => call("undo", state.mid));
   if (r) {
     const span = document.querySelector(`#transcript .text[data-id="${r.id}"]`);
-    if (span) { span.textContent = r.text; span.classList.toggle("edited", r.edited); span.scrollIntoView({ block: "center" }); }
+    if (span) {
+      const before = span.textContent;
+      span.textContent = r.text; span.classList.toggle("edited", r.edited); span.scrollIntoView({ block: "center" });
+      if (await joinChanged(r.id, before, r.text)) state.signature = "";   // redrawn below
+    }
     sayDone("Edit undone");
   } else if (r === null) say("Nothing to undo");
   renderMeeting();

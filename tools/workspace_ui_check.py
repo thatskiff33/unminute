@@ -1019,7 +1019,7 @@ def draft_area_checks(window, ws):
 
 GROW_FIRST = 3000      # passages in the growing meeting's first chunk
 GROW_MORE = 20         # passages in each chunk after it
-GROW_TEXT = "Edited while transcribing"
+GROW_TEXT = "Edited while transcribing."     # a sentence: its line stays its own (#561)
 # The growing transcript's edit ends (grow_update's `first`, #308): unfocused
 # or not, the page must see the blur, so the rows held back can be appended.
 GROW_END_EDIT = "focused = blurLikeFocused(g.span); await wait(1500);"
@@ -1379,7 +1379,7 @@ def commit_passages(ws, mid, idx, n):
     gap = (chunk["end_sample"] - chunk["start_sample"]) / SAMPLE_RATE / n
     assert ws.store.commit_chunk(vid, idx, [
         types.SimpleNamespace(start=start + i * gap, end=start + (i + 0.8) * gap,
-                              text=f"growing passage {idx}.{i} about the plan", words=())
+                              text=f"growing passage {idx}.{i} about the plan.", words=())
         for i in range(n)]), f"chunk {idx} was not committed"
 
 
@@ -1401,7 +1401,7 @@ def add_long_meeting(ws, root, passages=5000):
     assert pending and ws.store.passage_count(vid) == 0, "the long meeting was transcribed"
     assert ws.store.commit_chunk(vid, pending[0]["idx"], [
         types.SimpleNamespace(start=i * 3.0, end=i * 3.0 + 2.5,
-                              text=f"passage {i} about the budget", words=())
+                              text=f"passage {i} about the budget.", words=())
         for i in range(passages)]), "the passages were not committed"
     with ws.store.tx() as db:            # the rest of the plan: nothing more to do
         db.execute("UPDATE chunks SET status = 'done' WHERE version_id = ?", (vid,))

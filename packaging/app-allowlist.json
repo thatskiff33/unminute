@@ -35,6 +35,7 @@
   "workspace/instant_engine.py",
   "workspace/intake.py",
   "workspace/jobs.py",
+  "workspace/joins.py",
   "workspace/keystore.py",
   "workspace/launch.py",
   "workspace/launchcheck.py",

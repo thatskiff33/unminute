@@ -21,6 +21,7 @@ const SAVE_DELAY_MS = 800;   // autosave after typing stops
 const state = {
   view: "meetings", mid: null, detail: null, total: -1, signature: "",
   hits: [], hit: -1, editing: null, saveTimer: null,
+  editedFrom: "",                // the passage's text when its edit began (joined lines, #561)
   version: null,                 // null = current version; else an earlier one (read only)
   drawnFor: null,                // "meeting|version" of the transcript rows last drawn in full
   saving: Promise.resolve(),     // edits are saved strictly in order

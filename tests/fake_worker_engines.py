@@ -33,7 +33,9 @@ def _sentences(word):
     def run(a):
         out, t, dur = [], 0.5, len(a) / SR
         while t + 3.0 <= dur:
-            out.append(Segment(t, t + 3.0, f"{word} {t:.1f}", ((t, t + 3.0, " " + word),)))
+            # A full stop: each is a sentence of its own, so the page shows one
+            # line per passage (joined lines, #561).
+            out.append(Segment(t, t + 3.0, f"{word} {t:.1f}.", ((t, t + 3.0, " " + word),)))
             t += 4.0
         return out
     return run
